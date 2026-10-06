@@ -5,7 +5,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ConversationHandler
 from config import load_settings
 from logging_config import configure_logging
-from manejadores import (
+from handlers import (
     start, help_command, order_command, 
     iniciar_busqueda, seleccionar_referencia, seleccionar_color, 
     cancelar, SELECCIONANDO_REFERENCIA, SELECCIONANDO_COLOR
