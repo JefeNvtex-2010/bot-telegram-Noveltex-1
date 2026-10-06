@@ -12,14 +12,16 @@ def cargar_catalogo():
     try:
         df = pd.read_csv(GOOGLE_SHEET_URL, dtype=str, keep_default_na=False)
         df.columns = df.columns.str.strip()
+        
+        # Limpiar la columna de documentos para evitar errores de espacios o decimales (.0)
+        if 'Documento Pd' in df.columns:
+            df['Documento Pd'] = df['Documento Pd'].astype(str).str.split('.').str[0].str.strip()
+            
         logger.info(f"✅ ¡Catálogo de Google Sheets leído con éxito! ({len(df)} filas)")
         return df
     except Exception as e:
         logger.error(f"⚠️ Error al leer Google Sheets: {e}")
         return None
-
-# Cargar al iniciar el módulo
-catalogo_df = cargar_catalogo()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
@@ -45,8 +47,6 @@ async def order_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     )
 
 async def buscar_pedido(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    global catalogo_df
-
     if not context.args:
         await update.message.reply_text(
             "⚠️ Por favor, ingresa el número de documento a buscar.\n"
@@ -56,8 +56,8 @@ async def buscar_pedido(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     doc_buscado = context.args[0].strip()
 
-    if catalogo_df is None:
-        catalogo_df = cargar_catalogo()
+    # CARGAR SIEMPRE FRESCO DE GOOGLE SHEETS EN CADA BÚSQUEDA (Adiós a la memoria estática)
+    catalogo_df = cargar_catalogo()
 
     if catalogo_df is None:
         await update.message.reply_text("⚠️ El catálogo de Google Sheets no está disponible.")
@@ -70,7 +70,7 @@ async def buscar_pedido(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     # Filtramos todas las filas que coincidan con el Documento Pd
-    resultado = catalogo_df[catalogo_df[columna_doc].astype(str).str.contains(doc_buscado, na=False)]
+    resultado = catalogo_df[catalogo_df[columna_doc] == doc_buscado]
 
     if resultado.empty:
         await update.message.reply_text(f"❌ No se encontró ningún registro con el documento: *{doc_buscado}*.", parse_mode="Markdown")
@@ -89,8 +89,8 @@ async def buscar_pedido(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         cantidad_pedida = fila.get('Cantidad Ped', 'N/A')
         cantidad_alistada = fila.get('Cantidad Alistada', 'N/A')
         estado_factura = fila.get('Estado Factura', 'N/A')
-        fecha_despacho = fila.get('Fecha Factura', 'N/A') # Mapeado desde Fecha Factura o Fecha Despacho según tu hoja
-        id_operario = fila.get('Id Operario Asignado', 'N/A') # Si no existe la columna, devolverá N/A de forma segura
+        fecha_despacho = fila.get('Fecha Factura', 'N/A') 
+        id_operario = fila.get('Id Operario Asignado', 'N/A') 
         estado_pedido = fila.get('Clasificacion Pedido', 'N/A')
 
         mensaje += (
@@ -108,9 +108,7 @@ async def buscar_pedido(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             f"• *Estado del Pedido:* {estado_pedido}\n"
         )
 
-    # Telegram tiene un límite de caracteres por mensaje (4096). Si el pedido es muy grande, lo enviamos en bloques o completo si cabe.
     if len(mensaje) > 4000:
-        # Dividir si es muy largo o enviar una versión resumida, pero para la mayoría de pedidos funcionará perfecto.
         for i in range(0, len(mensaje), 4000):
             await update.message.reply_text(mensaje[i:i+4000], parse_mode="Markdown")
     else:
