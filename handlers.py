@@ -209,7 +209,7 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         f"• *Color:* {color}\n"            
         f"• *Document Status SAP:* {doc_status_sap}\n"
         f"• *Line Status Sap:* {line_status_sap}\n"
-        f"• *Cantidad pedida:* {cantidad_pedida}\n"
+        f"• *Cantidad pedida:* {cantidad_pedjan if 'Cantidad Ped' in locals() else cantidad_pedida}\n" # Ajustado seguro
         f"• *Cantidad alistada:* {cantidad_alistada}\n"            
         f"• *Fecha Despacho:* {fecha_despacho}\n"
         f"• *Id Operario Asignado:* {id_operario}\n"
