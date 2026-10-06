@@ -2,10 +2,14 @@ import logging
 import threading
 import os
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from telegram.ext import ApplicationBuilder, CommandHandler
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ConversationHandler
 from config import load_settings
 from logging_config import configure_logging
-from handlers import start, help_command, order_command, buscar_pedido
+from manejadores import (
+    start, help_command, order_command, 
+    iniciar_busqueda, seleccionar_referencia, seleccionar_color, 
+    cancelar, SELECCIONANDO_REFERENCIA, SELECCIONANDO_COLOR
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,11 +36,24 @@ def main() -> None:
     
     application = ApplicationBuilder().token(settings.telegram_bot_token).build()
     
+    # Configurar el ConversationHandler para el flujo interactivo de /buscar
+    conv_handler = ConversationHandler(
+        entry_points=[
+            CommandHandler("buscar", iniciar_busqueda),
+            CommandHandler("BUSCAR", iniciar_busqueda)
+        ],
+        states={
+            SELECCIONANDO_REFERENCIA: [CallbackQueryHandler(seleccionar_referencia, pattern="^ref_")],
+            SELECCIONANDO_COLOR: [CallbackQueryHandler(seleccionar_color, pattern="^col_")],
+        },
+        fallbacks=[CommandHandler("cancelar", cancelar)],
+    )
+
+    # Registrar manejadores
+    application.add_handler(conv_handler)
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("pedido", order_command))
-    application.add_handler(CommandHandler("buscar", buscar_pedido))
-    application.add_handler(CommandHandler("BUSCAR", buscar_pedido))
     
     application.run_polling()
 
