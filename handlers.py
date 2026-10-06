@@ -45,7 +45,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def order_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "📦 ¡Perfecto! Vamos a registrar tu pedido.\n\n"
-        "Por favor, escribe el **nombre del producto** que necesitas:",
+        "Por escribe el **nombre del producto** que necesitas:",
         parse_mode="Markdown"
     )
 
@@ -209,7 +209,7 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         f"• *Color:* {color}\n"            
         f"• *Document Status SAP:* {doc_status_sap}\n"
         f"• *Line Status Sap:* {line_status_sap}\n"
-        f"• *Cantidad pedida:* {cantidad_pedjan if 'Cantidad Ped' in locals() else cantidad_pedida}\n" # Ajustado seguro
+        f"• *Cantidad pedida:* {cantidad_pedida}\n"
         f"• *Cantidad alistada:* {cantidad_alistada}\n"            
         f"• *Fecha Despacho:* {fecha_despacho}\n"
         f"• *Id Operario Asignado:* {id_operario}\n"
@@ -221,4 +221,5 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("❌ Búsqueda cancelada.")
+    return ConversationHandler.END
     return ConversationHandler.END
