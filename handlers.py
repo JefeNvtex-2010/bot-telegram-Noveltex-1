@@ -95,14 +95,14 @@ async def buscar_pedido(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
         mensaje += (
             f"\n-----------------------------------\n"
-            f"• *Id referencia:* {id_referencia}\n"
-            f"• *Color:* {color}\n"
+            f"• *Estado factura:* {estado_factura}\n"
             f"• *Ubicación:* {ubicacion}\n"
+            f"• *Id referencia:* {id_referencia}\n"
+            f"• *Color:* {color}\n"            
             f"• *Document Status SAP:* {doc_status_sap}\n"
             f"• *Line Status Sap:* {line_status_sap}\n"
             f"• *Cantidad pedida:* {cantidad_pedida}\n"
-            f"• *Cantidad alistada:* {cantidad_alistada}\n"
-            f"• *Estado factura:* {estado_factura}\n"
+            f"• *Cantidad alistada:* {cantidad_alistada}\n"            
             f"• *Fecha Despacho:* {fecha_despacho}\n"
             f"• *Id Operario Asignado:* {id_operario}\n"
             f"• *Estado del Pedido:* {estado_pedido}\n"
