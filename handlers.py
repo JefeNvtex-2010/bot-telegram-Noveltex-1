@@ -220,8 +220,8 @@ async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_T
                 f"• *Ubicación:* {ubicacion}\n"
                 f"• *Id referencia:* {id_referencia}\n"
                 f"• *Color:* {color}\n"                    
-                f"• *Estado documentos SAP:* {doc_status_sap}\n"
-                f"• *Estado Linea SAP:* {line_status_sap}\n"
+                f"• *Estado del pedido:* {doc_status_sap}\n"
+                f"• *Estado del item:* {line_status_sap}\n"
                 f"• *Cantidad pedida:* {cantidad_pedida}\n"
                 f"• *Cantidad alistada:* {cantidad_alistada}\n"           
                 f"• *Fecha Despacho:* {fecha_despacho}\n"
@@ -277,7 +277,8 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             return ConversationHandler.END
 
         # Reemplazar bost_Open por abierto
-        resultado = resultado.replace('bost_Open', 'abierto')
+        resultado = resultado.replace('bost_Open', 'Abierto')
+        resultado = resultado.replace('bost_Close', 'Cerrado')
 
         resultado['Id Refer'] = resultado['Id Refer'].astype(str).str.strip()
         resultado['Color'] = resultado['Color'].astype(str).str.strip()
@@ -310,8 +311,8 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             f"• *Ubicación:* {ubicacion}\n"
             f"• *Id referencia:* {id_referencia}\n"
             f"• *Color:* {color}\n"                    
-            f"• *Estado documentos SAP:* {doc_status_sap}\n"
-            f"• *Estado Linea SAP:* {line_status_sap}\n"
+            f"• *Estado del pedido:* {doc_status_sap}\n"
+            f"• *Estado del item:* {line_status_sap}\n"
             f"• *Cantidad pedida:* {cantidad_pedida}\n"
             f"• *Cantidad alistada:* {cantidad_alistada}\n"           
             f"• *Fecha Despacho:* {fecha_despacho}\n"
