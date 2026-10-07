@@ -141,7 +141,7 @@ async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 return ConversationHandler.END
 
         if catalogo_df is None or (isinstance(catalogo_df, pd.DataFrame) and catalogo_df.empty):
-            await update.message.reply_text("⚠️ El catálogo de Google Sheets no está disponible o está vacío.")
+            await update.message.reply_text("⚠️ El catálogo de Google Sheets não está disponible o está vacío.")
             return ConversationHandler.END
 
         columna_doc = 'Documento Pd'
@@ -193,6 +193,9 @@ async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_T
         await query.edit_message_text(text="⚠️ La sesión ha expirado o se reinició. Por favor, realiza la búsqueda de nuevo con `/PV [número]`.", parse_mode="Markdown")
         return ConversationHandler.END
 
+    # Reemplazar bost_Open por abierto
+    resultado = resultado.replace('bost_Open', 'abierto')
+
     if referencia_elegida == "ver_todo":
         mensaje = f"🔍 *Detalle Completo del Documento {doc_buscado}* (Total ítems: {len(resultado)}):\n"
 
@@ -217,8 +220,8 @@ async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_T
                 f"• *Ubicación:* {ubicacion}\n"
                 f"• *Id referencia:* {id_referencia}\n"
                 f"• *Color:* {color}\n"                    
-                f"• *Document Status SAP:* {doc_status_sap}\n"
-                f"• *Line Status Sap:* {line_status_sap}\n"
+                f"• *Estado documentos SAP:* {doc_status_sap}\n"
+                f"• *Estado Linea SAP:* {line_status_sap}\n"
                 f"• *Cantidad pedida:* {cantidad_pedida}\n"
                 f"• *Cantidad alistada:* {cantidad_alistada}\n"           
                 f"• *Fecha Despacho:* {fecha_despacho}\n"
@@ -273,6 +276,9 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             await query.edit_message_text(text="⚠️ La sesión ha expirado o se reinició. Por favor, realiza la búsqueda de nuevo con `/PV [número]`.", parse_mode="Markdown")
             return ConversationHandler.END
 
+        # Reemplazar bost_Open por abierto
+        resultado = resultado.replace('bost_Open', 'abierto')
+
         resultado['Id Refer'] = resultado['Id Refer'].astype(str).str.strip()
         resultado['Color'] = resultado['Color'].astype(str).str.strip()
 
@@ -304,8 +310,8 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             f"• *Ubicación:* {ubicacion}\n"
             f"• *Id referencia:* {id_referencia}\n"
             f"• *Color:* {color}\n"                    
-            f"• *Document Status SAP:* {doc_status_sap}\n"
-            f"• *Line Status Sap:* {line_status_sap}\n"
+            f"• *Estado documentos SAP:* {doc_status_sap}\n"
+            f"• *Estado Linea SAP:* {line_status_sap}\n"
             f"• *Cantidad pedida:* {cantidad_pedida}\n"
             f"• *Cantidad alistada:* {cantidad_alistada}\n"           
             f"• *Fecha Despacho:* {fecha_despacho}\n"
