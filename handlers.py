@@ -1,5 +1,6 @@
 import logging
 import pandas as pd
+import concurrent.futures
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 
@@ -11,27 +12,38 @@ SELECCIONANDO_REFERENCIA, SELECCIONANDO_COLOR = range(2)
 # Enlace de tu Google Sheets adaptado a exportación CSV
 GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1vw8Vvane83LnGi8kLLznefY-9T3EZCJ6G8lI_wBdWK0/export?format=csv"
 
+def _descargar_csv():
+    """Función auxiliar interna para la lectura del CSV."""
+    df = pd.read_csv(GOOGLE_SHEET_URL, dtype=str, keep_default_na=False)
+    df.columns = df.columns.str.strip()
+    
+    # Limpiar la columna de documentos para evitar errores de espacios o decimales (.0)
+    if 'Documento Pd' in df.columns:
+        df['Documento Pd'] = df['Documento Pd'].astype(str).str.split('.').str[0].str.strip()
+    return df
+
 def cargar_catalogo():
-    try:
-        df = pd.read_csv(GOOGLE_SHEET_URL, dtype=str, keep_default_na=False)
-        df.columns = df.columns.str.strip()
-        
-        # Limpiar la columna de documentos para evitar errores de espacios o decimales (.0)
-        if 'Documento Pd' in df.columns:
-            df['Documento Pd'] = df['Documento Pd'].astype(str).str.split('.').str[0].str.strip()
-            
-        logger.info(f"✅ ¡Catálogo de Google Sheets leído con éxito! ({len(df)} filas)")
-        return df
-    except Exception as e:
-        logger.error(f"⚠️ Error al leer Google Sheets: {e}")
-        return None
+    """Carga el catálogo con un límite estricto de 5 segundos de timeout."""
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(_descargar_csv)
+        try:
+            # Espera máximo 5 segundos para evitar que se quede pegado
+            df = future.result(timeout=5.0)
+            logger.info(f"✅ ¡Catálogo de Google Sheets leído con éxito! ({len(df)} filas)")
+            return df
+        except concurrent.futures.TimeoutError:
+            logger.error("⚠️ Timeout: La conexión tardó más de 5 segundos en responder.")
+            return "TIMEOUT"
+        except Exception as e:
+            logger.error(f"⚠️ Error al leer Google Sheets: {e}")
+            return None
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     name = user.first_name if user else "allí"
     await update.message.reply_text(
         f"¡Hola {name}! Bienvenido al sistema de pedidos.\n\n"
-        "Usa el comando /pedido para iniciar una nueva orden de compra o /buscar [Nro_Documento]."
+        "Usa el comando /pedido para iniciar una nueva orden de compra o /PV [Nro_Documento]."
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -39,13 +51,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "Comandos disponibles:\n"
         "/start - Iniciar el bot\n"
         "/pedido - Registrar un pedido\n"
-        "/buscar [Nro_Documento] - Consultar estatus en Google Sheets"
+        "/PV [Nro_Documento] - Consultar estatus en Google Sheets"
     )
 
 async def order_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "📦 ¡Perfecto! Vamos a registrar tu pedido.\n\n"
-        "Por escribe el **nombre del producto** que necesitas:",
+        "Por favor, escribe el **nombre del producto** que necesitas:",
         parse_mode="Markdown"
     )
 
@@ -55,17 +67,21 @@ async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if not context.args:
         await update.message.reply_text(
             "⚠️ Por favor, ingresa el número de documento a buscar.\n"
-            "Ejemplo: `/buscar 5270`", parse_mode="Markdown"
+            "Ejemplo: `/PV 5270`", parse_mode="Markdown"
         )
         return ConversationHandler.END
 
     doc_buscado = context.args[0].strip()
 
-    # Cargar fresco de Google Sheets
+    # Cargar fresco de Google Sheets con control de 5 segundos
     catalogo_df = cargar_catalogo()
 
+    if catalogo_df == "TIMEOUT":
+        await update.message.reply_text("⏱️ La consulta tardó más de 5 segundos en responder. El proceso se ha reiniciado por seguridad. Intenta buscar de nuevo con `/PV [número]`.", parse_mode="Markdown")
+        return ConversationHandler.END
+
     if catalogo_df is None:
-        await update.message.reply_text("⚠️ El catálogo de Google Sheets no está disponible.")
+        await update.message.reply_text("⚠️ El catálogo de Google Sheets no está disponible o hubo un error al leerlo.")
         return ConversationHandler.END
 
     columna_doc = 'Documento Pd'
@@ -221,5 +237,4 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("❌ Búsqueda cancelada.")
-    return ConversationHandler.END
     return ConversationHandler.END
