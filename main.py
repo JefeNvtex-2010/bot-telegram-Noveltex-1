@@ -36,18 +36,25 @@ def main() -> None:
     
     application = ApplicationBuilder().token(settings.telegram_bot_token).build()
     
-    # Configurar el ConversationHandler para el flujo interactivo de /buscar
+    # Configurar el ConversationHandler para el flujo interactivo usando /PV
     conv_handler = ConversationHandler(
         entry_points=[
-            CommandHandler("buscar", iniciar_busqueda),
-            CommandHandler("BUSCAR", iniciar_busqueda)
+            CommandHandler("PV", iniciar_busqueda),
+            CommandHandler("pv", iniciar_busqueda)
         ],
         states={
-            # Usamos patrones flexibles para capturar cualquier callback de referencia o color
-            SELECCIONANDO_REFERENCIA: [CallbackQueryHandler(seleccionar_referencia, pattern="^(ref_|ver_todo)")],
-            SELECCIONANDO_COLOR: [CallbackQueryHandler(seleccionar_color)],
+            SELECCIONANDO_REFERENCIA: [
+                CallbackQueryHandler(seleccionar_referencia, pattern="^(ref_|ver_todo)")
+            ],
+            SELECCIONANDO_COLOR: [
+                CallbackQueryHandler(seleccionar_color)
+            ],
         },
-        fallbacks=[CommandHandler("cancelar", cancelar)],
+        fallbacks=[
+            CommandHandler("cancelar", cancelar),
+            CommandHandler("PV", iniciar_busqueda),  # Permite reiniciar si se vuelve a enviar /PV
+            CommandHandler("pv", iniciar_busqueda)
+        ],
     )
 
     # Registrar manejadores
