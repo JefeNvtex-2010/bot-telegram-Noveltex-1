@@ -225,7 +225,7 @@ async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_T
                 f"• *Id Operario Asignado:* {id_operario}\n"
                 f"• *Nombre Operario Asignado:* {nombre_operario}\n"
                 f"• *Estado del Pedido:* {estado_pedido}\n"
-                f"• *Observacion Adicionarl:* {observacion_adicional}\n"
+                f"• *Observacion Adicional:* {observacion_adicional}\n"
             )
 
         if len(mensaje) > 4000:
@@ -312,7 +312,7 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 f"• *Id Operario Asignado:* {id_operario}\n"
                 f"• *Nombre Operario Asignado:* {nombre_operario}\n"
                 f"• *Estado del Pedido:* {estado_pedido}\n"
-                f"• *Observacion Adicionarl:* {observacion_adicional}\n"
+                f"• *Observacion Adicional:* {observacion_adicional}\n"
         )
 
         await query.edit_message_text(text=mensaje, parse_mode="Markdown")
