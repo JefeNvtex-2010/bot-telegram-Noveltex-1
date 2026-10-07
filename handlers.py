@@ -65,7 +65,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/start - Iniciar el bot\n"
         "/pedido - Registrar un pedido\n"
         "/PV [Nro_Documento] - Consultar estatus en Google Sheets\n"
-        "/reiniciar - Reiniciar servicio de Render (Solo autorizado)"
+        "/reiniciar - Reiniciar servicio de Render (Solo autorizado)\n"
+        "/actualizar - Limpiar caché y desplegar en Render (Solo autorizado)"
     )
 
 async def order_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -75,7 +76,7 @@ async def order_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         parse_mode="Markdown"
     )
 
-# --- FUNCIÓN PARA REINICIAR RENDER DESDE EL BOT ---
+# --- FUNCIONES DE ADMINISTRACIÓN REMOTA DE RENDER ---
 
 async def reiniciar_render(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     MI_TELEGRAM_ID = 5655537446
@@ -84,7 +85,6 @@ async def reiniciar_render(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await update.message.reply_text("⛔ No tienes permisos para ejecutar este comando.")
         return
 
-    # Reemplaza esta URL con tu Deploy Hook secreto generado en Render
     RENDER_DEPLOY_HOOK_URL = "https://api.render.com/deploy/srv-db2ktt7avr4c73eet090?key=gstG3k654R4"
 
     try:
@@ -95,6 +95,26 @@ async def reiniciar_render(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             await update.message.reply_text(f"⚠️ Error al conectar con Render. Código HTTP: {response.status_code}")
     except Exception as e:
         logger.error(f"Error al reiniciar Render: {e}")
+        await update.message.reply_text(f"⚠️ Ocurrió un error inesperado: `{e}`", parse_mode="Markdown")
+
+
+async def limpiar_cache_y_deploy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    MI_TELEGRAM_ID = 5655537446
+    
+    if update.effective_user.id != MI_TELEGRAM_ID:
+        await update.message.reply_text("⛔ No tienes permisos para ejecutar este comando.")
+        return
+
+    RENDER_CACHE_HOOK_URL = "https://api.render.com/deploy/srv-db2ktt7avr4c73eet090?key=gstG3k654R4&clearCache=true"
+
+    try:
+        response = requests.post(RENDER_CACHE_HOOK_URL)
+        if response.status_code == 200:
+            await update.message.reply_text("🧹 ¡Orden enviada! Limpiando caché y desplegando nueva versión en Render...")
+        else:
+            await update.message.reply_text(f"⚠️ Error al conectar con Render. Código HTTP: {response.status_code}")
+    except Exception as e:
+        logger.error(f"Error al limpiar caché en Render: {e}")
         await update.message.reply_text(f"⚠️ Ocurrió un error inesperado: `{e}`", parse_mode="Markdown")
 
 # --- FLUJO INTERACTIVO DE BÚSQUEDA ---
