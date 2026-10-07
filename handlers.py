@@ -216,7 +216,7 @@ async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_T
                 f"• *Estado factura:* {estado_factura}\n"
                 f"• *Ubicación:* {ubicacion}\n"
                 f"• *Id referencia:* {id_referencia}\n"
-                f"• *Color:* {color}\n"            
+                f"• *Color:* {color}\n"                    
                 f"• *Document Status SAP:* {doc_status_sap}\n"
                 f"• *Line Status Sap:* {line_status_sap}\n"
                 f"• *Cantidad pedida:* {cantidad_pedida}\n"
