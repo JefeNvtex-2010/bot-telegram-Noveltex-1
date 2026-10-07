@@ -1,4 +1,6 @@
 import logging
+import io
+import requests
 import pandas as pd
 import concurrent.futures
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -13,8 +15,12 @@ SELECCIONANDO_REFERENCIA, SELECCIONANDO_COLOR = range(2)
 GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1vw8Vvane83LnGi8kLLznefY-9T3EZCJ6G8lI_wBdWK0/export?format=csv"
 
 def _descargar_csv():
-    """Función auxiliar interna para la lectura del CSV."""
-    df = pd.read_csv(GOOGLE_SHEET_URL, dtype=str, keep_default_na=False)
+    """Función auxiliar robusta usando requests para manejar redirecciones de Google Sheets."""
+    response = requests.get(GOOGLE_SHEET_URL, timeout=25)
+    response.raise_for_status()
+    
+    # Leer el texto descargado con pandas usando StringIO
+    df = pd.read_csv(io.StringIO(response.text), dtype=str, keep_default_na=False)
     df.columns = df.columns.str.strip()
     
     # Limpiar la columna de documentos para evitar errores de espacios o decimales (.0)
@@ -35,7 +41,7 @@ def cargar_catalogo():
             return "TIMEOUT"
         except Exception as e:
             logger.error(f"⚠️ Error al leer Google Sheets: {e}")
-            return None
+            return f"ERROR: {e}"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
@@ -63,56 +69,66 @@ async def order_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 # --- FLUJO INTERACTIVO DE BÚSQUEDA ---
 
 async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    if not context.args:
+    try:
+        if not context.args:
+            await update.message.reply_text(
+                "⚠️ Por favor, ingresa el número de documento a buscar.\n"
+                "Ejemplo: `/PV 5270`", parse_mode="Markdown"
+            )
+            return ConversationHandler.END
+
+        doc_buscado = context.args[0].strip()
+
+        catalogo_df = cargar_catalogo()
+
+        if catalogo_df == "TIMEOUT":
+            await update.message.reply_text("⏱️ La consulta a Google Sheets tardó demasiado (más de 30s). Por favor, intenta de nuevo con `/PV [número]`.", parse_mode="Markdown")
+            return ConversationHandler.END
+
+        if isinstance(catalogo_df, str) and catalogo_df.startswith("ERROR"):
+            await update.message.reply_text(f"⚠️ Error al conectar con Google Sheets:\n`{catalogo_df}`", parse_mode="Markdown")
+            return ConversationHandler.END
+
+        if catalogo_df is None:
+            await update.message.reply_text("⚠️ El catálogo de Google Sheets no está disponible o hubo un error al leerlo.")
+            return ConversationHandler.END
+
+        columna_doc = 'Documento Pd'
+
+        if columna_doc not in catalogo_df.columns:
+            await update.message.reply_text(f"⚠️ No se encontró la columna '{columna_doc}' en la hoja.")
+            return ConversationHandler.END
+
+        resultado = catalogo_df[catalogo_df[columna_doc] == doc_buscado]
+
+        if resultado.empty:
+            await update.message.reply_text(f"❌ No se encontró ningún registro con el documento: *{doc_buscado}*.", parse_mode="Markdown")
+            return ConversationHandler.END
+
+        context.user_data['df_pedido'] = resultado
+        context.user_data['doc_buscado'] = doc_buscado
+
+        referencias = resultado['Id Refer'].unique()
+
+        keyboard = []
+        keyboard.append([InlineKeyboardButton("📄 Ver todo", callback_data="ref_ver_todo")])
+
+        for ref in referencias:
+            keyboard.append([InlineKeyboardButton(str(ref), callback_data=f"ref_{ref}")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
         await update.message.reply_text(
-            "⚠️ Por favor, ingresa el número de documento a buscar.\n"
-            "Ejemplo: `/PV 5270`", parse_mode="Markdown"
+            f"🔍 Documento *{doc_buscado}*.\nSelecciona una referencia o elige 'Ver todo':",
+            reply_markup=reply_markup,
+            parse_mode="Markdown"
         )
+        return SELECCIONANDO_REFERENCIA
+
+    except Exception as e:
+        logger.error(f"Excepción no controlada en iniciar_busqueda: {e}")
+        await update.message.reply_text(f"⚠️ Ocurrió un error inesperado al procesar tu búsqueda: `{e}`", parse_mode="Markdown")
         return ConversationHandler.END
-
-    doc_buscado = context.args[0].strip()
-
-    catalogo_df = cargar_catalogo()
-
-    if catalogo_df == "TIMEOUT":
-        await update.message.reply_text("⏱️ La consulta a Google Sheets tardó demasiado (más de 30s). Por favor, intenta de nuevo con `/PV [número]`.", parse_mode="Markdown")
-        return ConversationHandler.END
-
-    if catalogo_df is None:
-        await update.message.reply_text("⚠️ El catálogo de Google Sheets no está disponible o hubo un error al leerlo.")
-        return ConversationHandler.END
-
-    columna_doc = 'Documento Pd'
-
-    if columna_doc not in catalogo_df.columns:
-        await update.message.reply_text(f"⚠️ No se encontró la columna '{columna_doc}' en la hoja.")
-        return ConversationHandler.END
-
-    resultado = catalogo_df[catalogo_df[columna_doc] == doc_buscado]
-
-    if resultado.empty:
-        await update.message.reply_text(f"❌ No se encontró ningún registro con el documento: *{doc_buscado}*.", parse_mode="Markdown")
-        return ConversationHandler.END
-
-    context.user_data['df_pedido'] = resultado
-    context.user_data['doc_buscado'] = doc_buscado
-
-    referencias = resultado['Id Refer'].unique()
-
-    keyboard = []
-    keyboard.append([InlineKeyboardButton("📄 Ver todo", callback_data="ref_ver_todo")])
-
-    for ref in referencias:
-        keyboard.append([InlineKeyboardButton(str(ref), callback_data=f"ref_{ref}")])
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    await update.message.reply_text(
-        f"🔍 Documento *{doc_buscado}*.\nSelecciona una referencia o elige 'Ver todo':",
-        reply_markup=reply_markup,
-        parse_mode="Markdown"
-    )
-    return SELECCIONANDO_REFERENCIA
 
 async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
