@@ -85,7 +85,7 @@ async def reiniciar_render(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
 
     # Reemplaza esta URL con tu Deploy Hook secreto generado en Render
-    RENDER_DEPLOY_HOOK_URL = "https://api.render.com/deploy/srv-TU_URL_AQUI?key=TU_TOKEN_SECRETO"
+    RENDER_DEPLOY_HOOK_URL = "https://api.render.com/deploy/srv-db2ktt7avr4c73eet090?key=gstG3k654R4"
 
     try:
         response = requests.post(RENDER_DEPLOY_HOOK_URL)
