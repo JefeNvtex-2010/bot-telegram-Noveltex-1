@@ -14,6 +14,16 @@ SELECCIONANDO_REFERENCIA, SELECCIONANDO_COLOR = range(2)
 # Enlace de tu Google Sheets adaptado a exportación CSV
 GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1vw8Vvane83LnGi8kLLznefY-9T3EZCJ6G8lI_wBdWK0/export?format=csv"
 
+def escapar_markdown(texto: str) -> str:
+    """Escapa caracteres especiales de Markdown en Telegram para evitar errores de parseo."""
+    if not isinstance(texto, str):
+        texto = str(texto)
+    # Caracteres especiales que rompen el Markdown v1 de Telegram
+    caracteres = ['_', '*', '`', '[']
+    for c in caracteres:
+        texto = texto.replace(c, '')
+    return texto.strip()
+
 def _descargar_csv():
     """Función auxiliar robusta usando requests para manejar redirecciones de Google Sheets."""
     response = requests.get(GOOGLE_SHEET_URL, timeout=25)
@@ -144,17 +154,17 @@ async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_T
         mensaje = f"🔍 *Detalle Completo del Documento {doc_buscado}* (Total ítems: {len(resultado)}):\n"
 
         for index, fila in resultado.iterrows():
-            id_referencia = str(fila.get('Id Refer', 'N/A')).strip()
-            color = str(fila.get('Color', 'N/A')).strip()
-            ubicacion = str(fila.get('Ubicación del Pedido', 'N/A')).strip()
-            doc_status_sap = str(fila.get('Document Status SAP', 'N/A')).strip()
-            line_status_sap = str(fila.get('Line Status Sap', 'N/A')).strip()
-            cantidad_pedida = str(fila.get('Cantidad Ped', 'N/A')).strip()
-            cantidad_alistada = str(fila.get('Cantidad Alistada', 'N/A')).strip()
-            estado_factura = str(fila.get('Estado Factura', 'N/A')).strip()
-            fecha_despacho = str(fila.get('Fecha Factura', 'N/A')).strip() 
-            id_operario = str(fila.get('Id Operario Asignado', 'N/A')).strip() 
-            estado_pedido = str(fila.get('Clasificacion Pedido', 'N/A')).strip()
+            id_referencia = escapar_markdown(fila.get('Id Refer', 'N/A'))
+            color = escapar_markdown(fila.get('Color', 'N/A'))
+            ubicacion = escapar_markdown(fila.get('Ubicación del Pedido', 'N/A'))
+            doc_status_sap = escapar_markdown(fila.get('Document Status SAP', 'N/A'))
+            line_status_sap = escapar_markdown(fila.get('Line Status Sap', 'N/A'))
+            cantidad_pedida = escapar_markdown(fila.get('Cantidad Ped', 'N/A'))
+            cantidad_alistada = escapar_markdown(fila.get('Cantidad Alistada', 'N/A'))
+            estado_factura = escapar_markdown(fila.get('Estado Factura', 'N/A'))
+            fecha_despacho = escapar_markdown(fila.get('Fecha Factura', 'N/A')) 
+            id_operario = escapar_markdown(fila.get('Id Operario Asignado', 'N/A')) 
+            estado_pedido = escapar_markdown(fila.get('Clasificacion Pedido', 'N/A'))
 
             mensaje += (
                 f"\n-----------------------------------\n"
@@ -227,17 +237,17 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
         fila = fila_match.iloc[0]
 
-        id_referencia = str(fila.get('Id Refer', 'N/A')).strip()
-        color = str(fila.get('Color', 'N/A')).strip()
-        ubicacion = str(fila.get('Ubicación del Pedido', 'N/A')).strip()
-        doc_status_sap = str(fila.get('Document Status SAP', 'N/A')).strip()
-        line_status_sap = str(fila.get('Line Status Sap', 'N/A')).strip()
-        cantidad_pedida = str(fila.get('Cantidad Ped', 'N/A')).strip()
-        cantidad_alistada = str(fila.get('Cantidad Alistada', 'N/A')).strip()
-        estado_factura = str(fila.get('Estado Factura', 'N/A')).strip()
-        fecha_despacho = str(fila.get('Fecha Factura', 'N/A')).strip() 
-        id_operario = str(fila.get('Id Operario Asignado', 'N/A')).strip() 
-        estado_pedido = str(fila.get('Clasificacion Pedido', 'N/A')).strip()
+        id_referencia = escapar_markdown(fila.get('Id Refer', 'N/A'))
+        color = escapar_markdown(fila.get('Color', 'N/A'))
+        ubicacion = escapar_markdown(fila.get('Ubicación del Pedido', 'N/A'))
+        doc_status_sap = escapar_markdown(fila.get('Document Status SAP', 'N/A'))
+        line_status_sap = escapar_markdown(fila.get('Line Status Sap', 'N/A'))
+        cantidad_pedida = escapar_markdown(fila.get('Cantidad Ped', 'N/A'))
+        cantidad_alistada = escapar_markdown(fila.get('Cantidad Alistada', 'N/A'))
+        estado_factura = escapar_markdown(fila.get('Estado Factura', 'N/A'))
+        fecha_despacho = escapar_markdown(fila.get('Fecha Factura', 'N/A')) 
+        id_operario = escapar_markdown(fila.get('Id Operario Asignado', 'N/A')) 
+        estado_pedido = escapar_markdown(fila.get('Clasificacion Pedido', 'N/A'))
 
         mensaje = (
             f"🔍 *Detalle del Documento {doc_buscado}*:\n\n"
