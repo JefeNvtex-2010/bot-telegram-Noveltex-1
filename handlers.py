@@ -197,6 +197,7 @@ async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_T
         mensaje = f"🔍 *Detalle Completo del Documento {doc_buscado}* (Total ítems: {len(resultado)}):\n"
 
         for index, fila in resultado.iterrows():
+    (
             id_referencia = escapar_markdown(fila.get('Id Refer', 'N/A'))
             color = escapar_markdown(fila.get('Color', 'N/A'))
             ubicacion = escapar_markdown(fila.get('Ubicación del Pedido', 'N/A'))
@@ -283,7 +284,7 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             return ConversationHandler.END
 
         fila = fila_match.iloc[0]
-
+(
             id_referencia = escapar_markdown(fila.get('Id Refer', 'N/A'))
             color = escapar_markdown(fila.get('Color', 'N/A'))
             ubicacion = escapar_markdown(fila.get('Ubicación del Pedido', 'N/A'))
