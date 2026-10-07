@@ -81,16 +81,17 @@ async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
         catalogo_df = cargar_catalogo()
 
-        if catalogo_df == "TIMEOUT":
-            await update.message.reply_text("⏱️ La consulta a Google Sheets tardó demasiado (más de 30s). Por favor, intenta de nuevo con `/PV [número]`.", parse_mode="Markdown")
-            return ConversationHandler.END
+        # Validación corregida para evitar conflictos con DataFrames de Pandas
+        if isinstance(catalogo_df, str):
+            if catalogo_df == "TIMEOUT":
+                await update.message.reply_text("⏱️ La consulta a Google Sheets tardó demasiado (más de 30s). Por favor, intenta de nuevo con `/PV [número]`.", parse_mode="Markdown")
+                return ConversationHandler.END
+            elif catalogo_df.startswith("ERROR"):
+                await update.message.reply_text(f"⚠️ Error al conectar con Google Sheets:\n`{catalogo_df}`", parse_mode="Markdown")
+                return ConversationHandler.END
 
-        if isinstance(catalogo_df, str) and catalogo_df.startswith("ERROR"):
-            await update.message.reply_text(f"⚠️ Error al conectar con Google Sheets:\n`{catalogo_df}`", parse_mode="Markdown")
-            return ConversationHandler.END
-
-        if catalogo_df is None:
-            await update.message.reply_text("⚠️ El catálogo de Google Sheets no está disponible o hubo un error al leerlo.")
+        if catalogo_df is None or (isinstance(catalogo_df, pd.DataFrame) and catalogo_df.empty):
+            await update.message.reply_text("⚠️ El catálogo de Google Sheets no está disponible o está vacío.")
             return ConversationHandler.END
 
         columna_doc = 'Documento Pd'
