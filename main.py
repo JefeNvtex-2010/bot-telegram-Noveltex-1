@@ -8,7 +8,7 @@ from logging_config import configure_logging
 from handlers import (
     start, help_command, order_command, 
     iniciar_busqueda, seleccionar_referencia, seleccionar_color, 
-    cancelar, SELECCIONANDO_REFERENCIA, SELECCIONANDO_COLOR
+    cancelar, reiniciar_render, SELECCIONANDO_REFERENCIA, SELECCIONANDO_COLOR
 )
 
 logger = logging.getLogger(__name__)
@@ -62,6 +62,7 @@ def main() -> None:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("pedido", order_command))
+    application.add_handler(CommandHandler("reiniciar", reiniciar_render))
     
     application.run_polling()
 
