@@ -23,16 +23,16 @@ def _descargar_csv():
     return df
 
 def cargar_catalogo():
-    """Carga el catálogo con un límite estricto de 5 segundos de timeout."""
+    """Carga el catálogo con un límite de 30 segundos de timeout para evitar bloqueos."""
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(_descargar_csv)
         try:
-            # Espera máximo 5 segundos para evitar que se quede pegado
-            df = future.result(timeout=5.0)
+            # Ampliado a 30 segundos de margen máximo
+            df = future.result(timeout=30.0)
             logger.info(f"✅ ¡Catálogo de Google Sheets leído con éxito! ({len(df)} filas)")
             return df
         except concurrent.futures.TimeoutError:
-            logger.error("⚠️ Timeout: La conexión tardó más de 5 segundos en responder.")
+            logger.error("⚠️ Timeout: La conexión tardó más de 30 segundos en responder.")
             return "TIMEOUT"
         except Exception as e:
             logger.error(f"⚠️ Error al leer Google Sheets: {e}")
@@ -73,11 +73,11 @@ async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     doc_buscado = context.args[0].strip()
 
-    # Cargar fresco de Google Sheets con control de 5 segundos
+    # Cargar fresco de Google Sheets con control de tiempo de 30s
     catalogo_df = cargar_catalogo()
 
     if catalogo_df == "TIMEOUT":
-        await update.message.reply_text("⏱️ La consulta tardó más de 5 segundos en responder. El proceso se ha reiniciado por seguridad. Intenta buscar de nuevo con `/PV [número]`.", parse_mode="Markdown")
+        await update.message.reply_text("⏱️ La consulta a Google Sheets tardó demasiado (más de 30s). Por favor, intenta de nuevo con `/PV [número]`.", parse_mode="Markdown")
         return ConversationHandler.END
 
     if catalogo_df is None:
@@ -126,8 +126,12 @@ async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_T
     await query.answer()
 
     referencia_elegida = query.data.replace("ref_", "")
-    resultado = context.user_data['df_pedido']
-    doc_buscado = context.user_data['doc_buscado']
+    resultado = context.user_data.get('df_pedido')
+    doc_buscado = context.user_data.get('doc_buscado', 'Desconocido')
+
+    if resultado is None:
+        await query.edit_message_text(text="⚠️ La sesión ha expirado o se reinició. Por favor, realiza la búsqueda de nuevo con `/PV [número]`.", parse_mode="Markdown")
+        return ConversationHandler.END
 
     # Si el usuario eligió "Ver todo"
     if referencia_elegida == "ver_todo":
@@ -192,9 +196,13 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await query.answer()
 
     color_elegido = query.data.replace("col_", "")
-    doc_buscado = context.user_data['doc_buscado']
-    ref_elegida = context.user_data['ref_elegida']
-    resultado = context.user_data['df_pedido']
+    doc_buscado = context.user_data.get('doc_buscado', 'Desconocido')
+    ref_elegida = context.user_data.get('ref_elegida')
+    resultado = context.user_data.get('df_pedido')
+
+    if resultado is None or ref_elegida is None:
+        await query.edit_message_text(text="⚠️ La sesión ha expirado o se reinició. Por favor, realiza la búsqueda de nuevo con `/PV [número]`.", parse_mode="Markdown")
+        return ConversationHandler.END
 
     # Filtrar la fila exacta por referencia y color
     fila_match = resultado[(resultado['Id Refer'] == ref_elegida) & (resultado['Color'] == color_elegido)]
