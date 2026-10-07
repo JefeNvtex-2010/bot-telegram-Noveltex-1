@@ -27,7 +27,6 @@ def cargar_catalogo():
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(_descargar_csv)
         try:
-            # Ampliado a 30 segundos de margen máximo
             df = future.result(timeout=30.0)
             logger.info(f"✅ ¡Catálogo de Google Sheets leído con éxito! ({len(df)} filas)")
             return df
@@ -73,7 +72,6 @@ async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     doc_buscado = context.args[0].strip()
 
-    # Cargar fresco de Google Sheets con control de tiempo de 30s
     catalogo_df = cargar_catalogo()
 
     if catalogo_df == "TIMEOUT":
@@ -90,25 +88,21 @@ async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await update.message.reply_text(f"⚠️ No se encontró la columna '{columna_doc}' en la hoja.")
         return ConversationHandler.END
 
-    # Filtrar todas las filas que coincidan con el Documento Pd
     resultado = catalogo_df[catalogo_df[columna_doc] == doc_buscado]
 
     if resultado.empty:
         await update.message.reply_text(f"❌ No se encontró ningún registro con el documento: *{doc_buscado}*.", parse_mode="Markdown")
         return ConversationHandler.END
 
-    # Guardar en contexto para los siguientes pasos de los botones
     context.user_data['df_pedido'] = resultado
     context.user_data['doc_buscado'] = doc_buscado
 
-    # Obtener referencias únicas
     referencias = resultado['Id Refer'].unique()
 
     keyboard = []
-    # Botón para ver todo de una vez
+    # Botón de ver todo adaptado al prefijo ref_ para que concuerde con el filtro
     keyboard.append([InlineKeyboardButton("📄 Ver todo", callback_data="ref_ver_todo")])
 
-    # Agregar botones por cada referencia
     for ref in referencias:
         keyboard.append([InlineKeyboardButton(str(ref), callback_data=f"ref_{ref}")])
     
@@ -133,7 +127,6 @@ async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_T
         await query.edit_message_text(text="⚠️ La sesión ha expirado o se reinició. Por favor, realiza la búsqueda de nuevo con `/PV [número]`.", parse_mode="Markdown")
         return ConversationHandler.END
 
-    # Si el usuario eligió "Ver todo"
     if referencia_elegida == "ver_todo":
         mensaje = f"🔍 *Detalle Completo del Documento {doc_buscado}* (Total ítems: {len(resultado)}):\n"
 
@@ -173,7 +166,6 @@ async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_T
         
         return ConversationHandler.END
 
-    # De lo contrario, guardamos la referencia y mostramos los colores disponibles
     context.user_data['ref_elegida'] = referencia_elegida
     df_ref = resultado[resultado['Id Refer'] == referencia_elegida]
     colores = df_ref['Color'].unique()
@@ -204,7 +196,6 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await query.edit_message_text(text="⚠️ La sesión ha expirado o se reinició. Por favor, realiza la búsqueda de nuevo con `/PV [número]`.", parse_mode="Markdown")
         return ConversationHandler.END
 
-    # Filtrar la fila exacta por referencia y color
     fila_match = resultado[(resultado['Id Refer'] == ref_elegida) & (resultado['Color'] == color_elegido)]
 
     if fila_match.empty:
@@ -246,3 +237,75 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("❌ Búsqueda cancelada.")
     return ConversationHandler.END
+2. main.py (Limpio y con el patrón de botones optimizado)
+Python
+import logging
+import threading
+import os
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ConversationHandler
+from config import load_settings
+from logging_config import configure_logging
+from handlers import (
+    start, help_command, order_command, 
+    iniciar_busqueda, seleccionar_referencia, seleccionar_color, 
+    cancelar, SELECCIONANDO_REFERENCIA, SELECCIONANDO_COLOR
+)
+
+logger = logging.getLogger(__name__)
+
+class SimpleHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is alive!")
+
+def run_dummy_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), SimpleHandler)
+    server.serve_forever()
+
+def main() -> None:
+    settings = load_settings()
+    configure_logging(settings.telegram_bot_token)
+    
+    # Iniciar servidor web en segundo plano para cumplir con Render
+    server_thread = threading.Thread(target=run_dummy_server, daemon=True)
+    server_thread.start()
+    
+    logger.info("Iniciando el bot de Telegram...")
+    
+    application = ApplicationBuilder().token(settings.telegram_bot_token).build()
+    
+    # Configurar el ConversationHandler para el flujo interactivo usando /PV
+    conv_handler = ConversationHandler(
+        entry_points=[
+            CommandHandler("PV", iniciar_busqueda),
+            CommandHandler("pv", iniciar_busqueda)
+        ],
+        states={
+            SELECCIONANDO_REFERENCIA: [
+                # Patrón corregido para atrapar tanto 'ref_ver_todo' como cualquier otra referencia 'ref_*'
+                CallbackQueryHandler(seleccionar_referencia, pattern="^ref_")
+            ],
+            SELECCIONANDO_COLOR: [
+                CallbackQueryHandler(seleccionar_color, pattern="^col_")
+            ],
+        },
+        fallbacks=[
+            CommandHandler("cancelar", cancelar),
+            CommandHandler("PV", iniciar_busqueda),  # Permite reiniciar si se vuelve a enviar /PV
+            CommandHandler("pv", iniciar_busqueda)
+        ],
+    )
+
+    # Registrar manejadores
+    application.add_handler(conv_handler)
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("pedido", order_command))
+    
+    application.run_polling()
+
+if __name__ == "__main__":
+    main()
