@@ -64,7 +64,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "Comandos disponibles:\n"
         "/start - Iniciar el bot\n"
         "/pedido - Registrar un pedido\n"
-        "/PV [Nro_Documento] - Consultar estatus en Google Sheets"
+        "/PV [Nro_Documento] - Consultar estatus en Google Sheets\n"
+        "/reiniciar - Reiniciar servicio de Render (Solo autorizado)"
     )
 
 async def order_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -73,6 +74,28 @@ async def order_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "Por favor, escribe el **nombre del producto** que necesitas:",
         parse_mode="Markdown"
     )
+
+# --- FUNCIÓN PARA REINICIAR RENDER DESDE EL BOT ---
+
+async def reiniciar_render(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    MI_TELEGRAM_ID = 5655537446
+    
+    if update.effective_user.id != MI_TELEGRAM_ID:
+        await update.message.reply_text("⛔ No tienes permisos para ejecutar este comando.")
+        return
+
+    # Reemplaza esta URL con tu Deploy Hook secreto generado en Render
+    RENDER_DEPLOY_HOOK_URL = "https://api.render.com/deploy/srv-TU_URL_AQUI?key=TU_TOKEN_SECRETO"
+
+    try:
+        response = requests.post(RENDER_DEPLOY_HOOK_URL)
+        if response.status_code == 200:
+            await update.message.reply_text("🔄 ¡Orden enviada con éxito! Reiniciando el servicio en Render...")
+        else:
+            await update.message.reply_text(f"⚠️ Error al conectar con Render. Código HTTP: {response.status_code}")
+    except Exception as e:
+        logger.error(f"Error al reiniciar Render: {e}")
+        await update.message.reply_text(f"⚠️ Ocurrió un error inesperado: `{e}`", parse_mode="Markdown")
 
 # --- FLUJO INTERACTIVO DE BÚSQUEDA ---
 
