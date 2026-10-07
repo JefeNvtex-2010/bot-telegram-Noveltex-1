@@ -43,8 +43,9 @@ def main() -> None:
             CommandHandler("BUSCAR", iniciar_busqueda)
         ],
         states={
-            SELECCIONANDO_REFERENCIA: [CallbackQueryHandler(seleccionar_referencia, pattern="^ref_")],
-            SELECCIONANDO_COLOR: [CallbackQueryHandler(seleccionar_color, pattern="^col_")],
+            # Usamos patrones flexibles para capturar cualquier callback de referencia o color
+            SELECCIONANDO_REFERENCIA: [CallbackQueryHandler(seleccionar_referencia, pattern="^(ref_|ver_todo)")],
+            SELECCIONANDO_COLOR: [CallbackQueryHandler(seleccionar_color)],
         },
         fallbacks=[CommandHandler("cancelar", cancelar)],
     )
