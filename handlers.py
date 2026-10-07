@@ -207,7 +207,9 @@ async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_T
             estado_factura = escapar_markdown(fila.get('Estado Factura', 'N/A'))
             fecha_despacho = escapar_markdown(fila.get('Fecha Factura', 'N/A')) 
             id_operario = escapar_markdown(fila.get('Id Operario Asignado', 'N/A')) 
+            nombre_operario = escapar_markdown(fila.get('Nombre Operario Asignado', 'N/A'))
             estado_pedido = escapar_markdown(fila.get('Clasificacion Pedido', 'N/A'))
+            observacion_adicional = escarpar_markdown(fila.get('Observacion Adicional', 'N/A'))
 
             mensaje += (
                 f"\n-----------------------------------\n"
@@ -221,7 +223,9 @@ async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_T
                 f"• *Cantidad alistada:* {cantidad_alistada}\n"            
                 f"• *Fecha Despacho:* {fecha_despacho}\n"
                 f"• *Id Operario Asignado:* {id_operario}\n"
+                f"• *Nombre Operario Asignado:* {nombre_operario}\n"
                 f"• *Estado del Pedido:* {estado_pedido}\n"
+                f"• *Observacion Adicionarl:* {observacion_adicional}\n"
             )
 
         if len(mensaje) > 4000:
