@@ -284,31 +284,35 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
         fila = fila_match.iloc[0]
 
-        id_referencia = escapar_markdown(fila.get('Id Refer', 'N/A'))
-        color = escapar_markdown(fila.get('Color', 'N/A'))
-        ubicacion = escapar_markdown(fila.get('Ubicación del Pedido', 'N/A'))
-        doc_status_sap = escapar_markdown(fila.get('Document Status SAP', 'N/A'))
-        line_status_sap = escapar_markdown(fila.get('Line Status Sap', 'N/A'))
-        cantidad_pedida = escapar_markdown(fila.get('Cantidad Ped', 'N/A'))
-        cantidad_alistada = escapar_markdown(fila.get('Cantidad Alistada', 'N/A'))
-        estado_factura = escapar_markdown(fila.get('Estado Factura', 'N/A'))
-        fecha_despacho = escapar_markdown(fila.get('Fecha Factura', 'N/A')) 
-        id_operario = escapar_markdown(fila.get('Id Operario Asignado', 'N/A')) 
-        estado_pedido = escapar_markdown(fila.get('Clasificacion Pedido', 'N/A'))
+            id_referencia = escapar_markdown(fila.get('Id Refer', 'N/A'))
+            color = escapar_markdown(fila.get('Color', 'N/A'))
+            ubicacion = escapar_markdown(fila.get('Ubicación del Pedido', 'N/A'))
+            doc_status_sap = escapar_markdown(fila.get('Document Status SAP', 'N/A'))
+            line_status_sap = escapar_markdown(fila.get('Line Status Sap', 'N/A'))
+            cantidad_pedida = escapar_markdown(fila.get('Cantidad Ped', 'N/A'))
+            cantidad_alistada = escapar_markdown(fila.get('Cantidad Alistada', 'N/A'))
+            estado_factura = escapar_markdown(fila.get('Estado Factura', 'N/A'))
+            fecha_despacho = escapar_markdown(fila.get('Fecha Factura', 'N/A')) 
+            id_operario = escapar_markdown(fila.get('Id Operario Asignado', 'N/A')) 
+            nombre_operario = escapar_markdown(fila.get('Nombre Operario Asignado', 'N/A'))
+            estado_pedido = escapar_markdown(fila.get('Clasificacion Pedido', 'N/A'))
+            observacion_adicional = escarpar_markdown(fila.get('Observacion Adicional', 'N/A'))
 
         mensaje = (
             f"🔍 *Detalle del Documento {doc_buscado}*:\n\n"
             f"• *Estado factura:* {estado_factura}\n"
-            f"• *Ubicación:* {ubicacion}\n"
-            f"• *Id referencia:* {id_referencia}\n"
-            f"• *Color:* {color}\n"            
-            f"• *Document Status SAP:* {doc_status_sap}\n"
-            f"• *Line Status Sap:* {line_status_sap}\n"
-            f"• *Cantidad pedida:* {cantidad_pedida}\n"
-            f"• *Cantidad alistada:* {cantidad_alistada}\n"            
-            f"• *Fecha Despacho:* {fecha_despacho}\n"
-            f"• *Id Operario Asignado:* {id_operario}\n"
-            f"• *Estado del Pedido:* {estado_pedido}"
+                f"• *Ubicación:* {ubicacion}\n"
+                f"• *Id referencia:* {id_referencia}\n"
+                f"• *Color:* {color}\n"                    
+                f"• *Document Status SAP:* {doc_status_sap}\n"
+                f"• *Line Status Sap:* {line_status_sap}\n"
+                f"• *Cantidad pedida:* {cantidad_pedida}\n"
+                f"• *Cantidad alistada:* {cantidad_alistada}\n"            
+                f"• *Fecha Despacho:* {fecha_despacho}\n"
+                f"• *Id Operario Asignado:* {id_operario}\n"
+                f"• *Nombre Operario Asignado:* {nombre_operario}\n"
+                f"• *Estado del Pedido:* {estado_pedido}\n"
+                f"• *Observacion Adicionarl:* {observacion_adicional}\n"
         )
 
         await query.edit_message_text(text=mensaje, parse_mode="Markdown")
