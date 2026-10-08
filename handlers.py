@@ -132,7 +132,17 @@ async def mostrar_ver_todo_referencia(query, context) -> int:
     resultado['Id Refer'] = resultado['Id Refer'].astype(str).str.strip()
     df_ref = resultado[resultado['Id Refer'] == ref_elegida]
 
-    mensaje = f"🔍 *Detalle Completo - Referencia {ref_elegida}* (Documento {doc_buscado}, Total ítems: {len(df_ref)}):\n"
+    # Obtener el operario general del primer registro de la referencia o del documento
+    operario_general = "N/A"
+    if 'Nombre Operario Asignado' in df_ref.columns and not df_ref.empty:
+        val_op = df_ref.iloc[0].get('Nombre Operario Asignado')
+        if val_op:
+            operario_general = escapar_markdown(str(val_op))
+
+    mensaje = (
+        f"🔍 *Detalle Completo - Referencia {ref_elegida}* (Documento {doc_buscado}, Total ítems: {len(df_ref)}):\n"
+        f"• *Operario:* {operario_general}\n"
+    )
 
     for index, fila in df_ref.iterrows():
         id_referencia = escapar_markdown(fila.get('Id Refer', 'N/A'))
@@ -144,7 +154,6 @@ async def mostrar_ver_todo_referencia(query, context) -> int:
         cantidad_alistada = escapar_markdown(fila.get('Cantidad Alistada', 'N/A'))
         estado_factura = escapar_markdown(fila.get('Estado Factura', 'N/A'))
         fecha_despacho = escapar_markdown(fila.get('Fecha Factura', 'N/A')) 
-        operario = escapar_markdown(fila.get('Nombre Operario Asignado', 'N/A'))
         clasificacion = escapar_markdown(fila.get('Clasificacion Pedido', 'N/A'))
         observacion_adicional = escapar_markdown(fila.get('Observacion Adicional', 'N/A'))
 
@@ -159,7 +168,6 @@ async def mostrar_ver_todo_referencia(query, context) -> int:
             f"• *Cantidad pedida:* {cantidad_pedida}\n"
             f"• *Cantidad alistada:* {cantidad_alistada}\n"           
             f"• *Fecha Despacho:* {fecha_despacho}\n"
-            f"• *Operario:* {operario}\n"
             f"• *Clasificación:* {clasificacion}\n"
             f"• *Observacion Adicional:* {observacion_adicional}\n"
         )
@@ -218,12 +226,17 @@ async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
         referencias = resultado['Id Refer'].unique()
 
-        # Usar la clasificación general pero con la etiqueta solicitada: Estado del Pedido
         estado_pedido_general = "N/A"
         if 'Clasificacion Pedido' in resultado.columns and not resultado.empty:
             val_estado = resultado.iloc[0].get('Clasificacion Pedido')
             if val_estado:
                 estado_pedido_general = escapar_markdown(str(val_estado))
+
+        operario_general = "N/A"
+        if 'Nombre Operario Asignado' in resultado.columns and not resultado.empty:
+            val_op = resultado.iloc[0].get('Nombre Operario Asignado')
+            if val_op:
+                operario_general = escapar_markdown(str(val_op))
 
         keyboard = []
         for ref in referencias:
@@ -233,7 +246,8 @@ async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
         await update.message.reply_text(
             f"🔍 Documento *{doc_buscado}*.\n"
-            f"• *Estado del Pedido:* {estado_pedido_general}\n\n"
+            f"• *Estado del Pedido:* {estado_pedido_general}\n"
+            f"• *Operario:* {operario_general}\n\n"
             f"Selecciona una referencia:",
             reply_markup=reply_markup,
             parse_mode="Markdown"
@@ -267,6 +281,12 @@ async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_T
             if val_estado:
                 estado_pedido_general = escapar_markdown(str(val_estado))
 
+        operario_general = "N/A"
+        if 'Nombre Operario Asignado' in resultado.columns and not resultado.empty:
+            val_op = resultado.iloc[0].get('Nombre Operario Asignado')
+            if val_op:
+                operario_general = escapar_markdown(str(val_op))
+
         keyboard = []
         for ref in referencias:
             keyboard.append([InlineKeyboardButton(str(ref), callback_data=f"ref_{ref}")])
@@ -274,7 +294,8 @@ async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_T
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(
             text=f"🔍 Documento *{doc_buscado}*.\n"
-                 f"• *Estado del Pedido:* {estado_pedido_general}\n\n"
+                 f"• *Estado del Pedido:* {estado_pedido_general}\n"
+                 f"• *Operario:* {operario_general}\n\n"
                  f"Selecciona una referencia:",
             reply_markup=reply_markup,
             parse_mode="Markdown"
@@ -393,17 +414,17 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         observacion_adicional = escapar_markdown(fila.get('Observacion Adicional', 'N/A'))
 
         mensaje = (
-            f"🔍 *Detalle del Documento {doc_buscado}*:\n\n"
+            f"🔍 *Detalle del Documento {doc_buscado}*:\n"
+            f"• *Operario:* {operario}\n\n"
             f"• *Estado factura:* {estado_factura}\n"
             f"• *Ubicación:* {ubicacion}\n"
             f"• *Id referencia:* {id_referencia}\n"
-            f"• *Color:* {color}\n"                    
+            f"• *Color:* {color}                    \n"
             f"• *Estado de Pedido:* {estado_de_pedido}\n"
             f"• *Estado Linea SAP:* {line_status_sap}\n"
             f"• *Cantidad pedida:* {cantidad_pedida}\n"
-            f"• *Cantidad alistada:* {cantidad_alistada}\n"           
+            f"• *Cantidad alistada:* {cantidad_alistada}           \n"
             f"• *Fecha Despacho:* {fecha_despacho}\n"
-            f"• *Operario:* {operario}\n"
             f"• *Clasificación:* {clasificacion}\n"
             f"• *Observacion Adicional:* {observacion_adicional}\n"
         )
