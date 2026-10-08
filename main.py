@@ -1,4 +1,3 @@
-Python
 import logging
 import threading
 import os
