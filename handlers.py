@@ -354,7 +354,8 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             return ConversationHandler.END
 
         # Reemplazar bost_Open por abierto
-        resultado = resultado.replace('bost_Open', 'abierto')
+        resultado = resultado.replace('bost_Open', 'Abierto')
+         resultado = resultado.replace('bost_Close', 'Cerrado')
 
         resultado['Id Refer'] = resultado['Id Refer'].astype(str).str.strip()
         resultado['Color'] = resultado['Color'].astype(str).str.strip()
