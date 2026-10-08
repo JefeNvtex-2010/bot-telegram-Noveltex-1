@@ -144,7 +144,6 @@ async def mostrar_ver_todo_referencia(query, context) -> int:
         cantidad_alistada = escapar_markdown(fila.get('Cantidad Alistada', 'N/A'))
         estado_factura = escapar_markdown(fila.get('Estado Factura', 'N/A'))
         fecha_despacho = escapar_markdown(fila.get('Fecha Factura', 'N/A')) 
-        id_operario = escapar_markdown(fila.get('Id Operario Asignado', 'N/A')) 
         operario = escapar_markdown(fila.get('Nombre Operario Asignado', 'N/A'))
         clasificacion = escapar_markdown(fila.get('Clasificacion Pedido', 'N/A'))
         observacion_adicional = escapar_markdown(fila.get('Observacion Adicional', 'N/A'))
@@ -160,7 +159,6 @@ async def mostrar_ver_todo_referencia(query, context) -> int:
             f"• *Cantidad pedida:* {cantidad_pedida}\n"
             f"• *Cantidad alistada:* {cantidad_alistada}\n"           
             f"• *Fecha Despacho:* {fecha_despacho}\n"
-            f"• *Id Operario Asignado:* {id_operario}\n"
             f"• *Operario:* {operario}\n"
             f"• *Clasificación:* {clasificacion}\n"
             f"• *Observacion Adicional:* {observacion_adicional}\n"
@@ -220,7 +218,6 @@ async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
         referencias = resultado['Id Refer'].unique()
 
-        # Usar la clasificación general pero con la etiqueta solicitada: Estado del Pedido
         estado_pedido_general = "N/A"
         if 'Clasificacion Pedido' in resultado.columns and not resultado.empty:
             val_estado = resultado.iloc[0].get('Clasificacion Pedido')
@@ -384,45 +381,4 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         id_referencia = escapar_markdown(fila.get('Id Refer', 'N/A'))
         color = escapar_markdown(fila.get('Color', 'N/A'))
         ubicacion = escapar_markdown(fila.get('Ubicación del Pedido', 'N/A'))
-        estado_de_pedido = escapar_markdown(fila.get('Document Status SAP', 'N/A'))
-        line_status_sap = escapar_markdown(fila.get('Line Status Sap', 'N/A'))
-        cantidad_pedida = escapar_markdown(fila.get('Cantidad Ped', 'N/A'))
-        cantidad_alistada = escapar_markdown(fila.get('Cantidad Alistada', 'N/A'))
-        estado_factura = escapar_markdown(fila.get('Estado Factura', 'N/A'))
-        fecha_despacho = escapar_markdown(fila.get('Fecha Factura', 'N/A')) 
-        id_operario = escapar_markdown(fila.get('Id Operario Asignado', 'N/A')) 
-        operario = escapar_markdown(fila.get('Nombre Operario Asignado', 'N/A'))
-        clasificacion = escapar_markdown(fila.get('Clasificacion Pedido', 'N/A'))
-        observacion_adicional = escapar_markdown(fila.get('Observacion Adicional', 'N/A'))
-
-        mensaje = (
-            f"🔍 *Detalle del Documento {doc_buscado}*:\n\n"
-            f"• *Estado factura:* {estado_factura}\n"
-            f"• *Ubicación:* {ubicacion}\n"
-            f"• *Id referencia:* {id_referencia}\n"
-            f"• *Color:* {color}\n"                    
-            f"• *Estado de Pedido:* {estado_de_pedido}\n"
-            f"• *Estado Linea SAP:* {line_status_sap}\n"
-            f"• *Cantidad pedida:* {cantidad_pedida}\n"
-            f"• *Cantidad alistada:* {cantidad_alistada}\n"           
-            f"• *Fecha Despacho:* {fecha_despacho}\n"
-            f"• *Id Operario Asignado:* {id_operario}\n"
-            f"• *Operario:* {operario}\n"
-            f"• *Clasificación:* {clasificacion}\n"
-            f"• *Observacion Adicional:* {observacion_adicional}\n"
-        )
-
-        keyboard = [[InlineKeyboardButton("🔙 Volver a colores", callback_data="volver_colores")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
-        await query.edit_message_text(text=mensaje, reply_markup=reply_markup, parse_mode="Markdown")
-        return SELECCIONANDO_COLOR
-
-    except Exception as e:
-        logger.error(f"Error en seleccionar_color: {e}")
-        await query.edit_message_text(text=f"⚠️ Ocurrió un error al procesar el color: `{e}`", parse_mode="Markdown")
-        return ConversationHandler.END
-
-async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text("❌ Búsqueda cancelada.")
-    return ConversationHandler.END
+        estado_de_pedido = escapar_markdown
