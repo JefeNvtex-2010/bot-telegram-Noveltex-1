@@ -118,6 +118,63 @@ async def limpiar_cache_y_deploy(update: Update, context: ContextTypes.DEFAULT_T
 
 # --- FLUJO INTERACTIVO DE BÚSQUEDA ---
 
+async def mostrar_ver_todo(query, context) -> int:
+    """Función auxiliar para mostrar el detalle completo de todos los ítems."""
+    resultado = context.user_data.get('df_pedido')
+    doc_buscado = context.user_data.get('doc_buscado', 'Desconocido')
+
+    if resultado is None:
+        await query.edit_message_text(text="⚠️ La sesión ha expirado o se reinició. Por favor, realiza la búsqueda de nuevo con `/PV [número]`.", parse_mode="Markdown")
+        return ConversationHandler.END
+
+    resultado = resultado.replace('bost_Open', 'abierto')
+
+    mensaje = f"🔍 *Detalle Completo del Documento {doc_buscado}* (Total ítems: {len(resultado)}):\n"
+
+    for index, fila in resultado.iterrows():
+        id_referencia = escapar_markdown(fila.get('Id Refer', 'N/A'))
+        color = escapar_markdown(fila.get('Color', 'N/A'))
+        ubicacion = escapar_markdown(fila.get('Ubicación del Pedido', 'N/A'))
+        doc_status_sap = escapar_markdown(fila.get('Document Status SAP', 'N/A'))
+        line_status_sap = escapar_markdown(fila.get('Line Status Sap', 'N/A'))
+        cantidad_pedida = escapar_markdown(fila.get('Cantidad Ped', 'N/A'))
+        cantidad_alistada = escapar_markdown(fila.get('Cantidad Alistada', 'N/A'))
+        estado_factura = escapar_markdown(fila.get('Estado Factura', 'N/A'))
+        fecha_despacho = escapar_markdown(fila.get('Fecha Factura', 'N/A')) 
+        id_operario = escapar_markdown(fila.get('Id Operario Asignado', 'N/A')) 
+        nombre_operario = escapar_markdown(fila.get('Nombre Operario Asignado', 'N/A'))
+        estado_pedido = escapar_markdown(fila.get('Clasificacion Pedido', 'N/A'))
+        observacion_adicional = escapar_markdown(fila.get('Observacion Adicional', 'N/A'))
+
+        mensaje += (
+            f"\n-----------------------------------\n"
+            f"• *Estado factura:* {estado_factura}\n"
+            f"• *Ubicación:* {ubicacion}\n"
+            f"• *Id referencia:* {id_referencia}\n"
+            f"• *Color:* {color}\n"                    
+            f"• *Estado documentos SAP:* {doc_status_sap}\n"
+            f"• *Estado Linea SAP:* {line_status_sap}\n"
+            f"• *Cantidad pedida:* {cantidad_pedida}\n"
+            f"• *Cantidad alistada:* {cantidad_alistada}\n"           
+            f"• *Fecha Despacho:* {fecha_despacho}\n"
+            f"• *Id Operario Asignado:* {id_operario}\n"
+            f"• *Nombre Operario Asignado:* {nombre_operario}\n"
+            f"• *Estado del Pedido:* {estado_pedido}\n"
+            f"• *Observacion Adicional:* {observacion_adicional}\n"
+        )
+
+    keyboard = [[InlineKeyboardButton("🔙 Volver a referencias", callback_data="volver_referencias")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    if len(mensaje) > 4000:
+        for i in range(0, len(mensaje), 4000):
+            await query.message.reply_text(mensaje[i:i+4000], parse_mode="Markdown")
+        await query.edit_message_text(text="📌 Fin del detalle completo.", reply_markup=reply_markup, parse_mode="Markdown")
+    else:
+        await query.edit_message_text(text=mensaje, reply_markup=reply_markup, parse_mode="Markdown")
+    
+    return SELECCIONANDO_REFERENCIA
+
 async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     try:
         if not context.args:
@@ -184,7 +241,6 @@ async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_T
 
     data_callback = query.data
 
-    # Manejar el botón de "Volver" a la lista de referencias desde la pantalla de color o "Ver todo"
     if data_callback == "volver_referencias":
         resultado = context.user_data.get('df_pedido')
         doc_buscado = context.user_data.get('doc_buscado', 'Desconocido')
@@ -206,6 +262,9 @@ async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_T
         )
         return SELECCIONANDO_REFERENCIA
 
+    if data_callback == "ref_ver_todo":
+        return await mostrar_ver_todo(query, context)
+
     referencia_elegida = data_callback.replace("ref_", "").strip()
     resultado = context.user_data.get('df_pedido')
     doc_buscado = context.user_data.get('doc_buscado', 'Desconocido')
@@ -213,56 +272,6 @@ async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_T
     if resultado is None:
         await query.edit_message_text(text="⚠️ La sesión ha expirado o se reinició. Por favor, realiza la búsqueda de nuevo con `/PV [número]`.", parse_mode="Markdown")
         return ConversationHandler.END
-
-    # Reemplazar bost_Open por abierto
-    resultado = resultado.replace('bost_Open', 'abierto')
-
-    if referencia_elegida == "ver_todo":
-        mensaje = f"🔍 *Detalle Completo del Documento {doc_buscado}* (Total ítems: {len(resultado)}):\n"
-
-        for index, fila in resultado.iterrows():
-            id_referencia = escapar_markdown(fila.get('Id Refer', 'N/A'))
-            color = escapar_markdown(fila.get('Color', 'N/A'))
-            ubicacion = escapar_markdown(fila.get('Ubicación del Pedido', 'N/A'))
-            doc_status_sap = escapar_markdown(fila.get('Document Status SAP', 'N/A'))
-            line_status_sap = escapar_markdown(fila.get('Line Status Sap', 'N/A'))
-            cantidad_pedida = escapar_markdown(fila.get('Cantidad Ped', 'N/A'))
-            cantidad_alistada = escapar_markdown(fila.get('Cantidad Alistada', 'N/A'))
-            estado_factura = escapar_markdown(fila.get('Estado Factura', 'N/A'))
-            fecha_despacho = escapar_markdown(fila.get('Fecha Factura', 'N/A')) 
-            id_operario = escapar_markdown(fila.get('Id Operario Asignado', 'N/A')) 
-            nombre_operario = escapar_markdown(fila.get('Nombre Operario Asignado', 'N/A'))
-            estado_pedido = escapar_markdown(fila.get('Clasificacion Pedido', 'N/A'))
-            observacion_adicional = escapar_markdown(fila.get('Observacion Adicional', 'N/A'))
-
-            mensaje += (
-                f"\n-----------------------------------\n"
-                f"• *Estado factura:* {estado_factura}\n"
-                f"• *Ubicación:* {ubicacion}\n"
-                f"• *Id referencia:* {id_referencia}\n"
-                f"• *Color:* {color}\n"                    
-                f"• *Estado documentos SAP:* {doc_status_sap}\n"
-                f"• *Estado Linea SAP:* {line_status_sap}\n"
-                f"• *Cantidad pedida:* {cantidad_pedida}\n"
-                f"• *Cantidad alistada:* {cantidad_alistada}\n"           
-                f"• *Fecha Despacho:* {fecha_despacho}\n"
-                f"• *Id Operario Asignado:* {id_operario}\n"
-                f"• *Nombre Operario Asignado:* {nombre_operario}\n"
-                f"• *Estado del Pedido:* {estado_pedido}\n"
-                f"• *Observacion Adicional:* {observacion_adicional}\n"
-            )
-
-        keyboard = [[InlineKeyboardButton("🔙 Volver a referencias", callback_data="volver_referencias")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
-        if len(mensaje) > 4000:
-            for i in range(0, len(mensaje), 4000):
-                await query.message.reply_text(mensaje[i:i+4000], parse_mode="Markdown")
-            await query.edit_message_text(text="📌 Fin del detalle completo.", reply_markup=reply_markup, parse_mode="Markdown")
-        else:
-            await query.edit_message_text(text=mensaje, reply_markup=reply_markup, parse_mode="Markdown")
-        
-        return SELECCIONANDO_REFERENCIA
 
     context.user_data['ref_elegida'] = referencia_elegida
     
@@ -272,7 +281,6 @@ async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_T
     colores = df_ref['Color'].astype(str).str.strip().unique()
 
     keyboard = []
-    # Añadimos el botón "Ver todo" para que actúe correctamente
     keyboard.append([InlineKeyboardButton("📄 Ver todo", callback_data="ref_ver_todo")])
 
     for color in colores:
@@ -281,7 +289,6 @@ async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_T
             cb_data = cb_data[:64]
         keyboard.append([InlineKeyboardButton(str(color), callback_data=cb_data)])
 
-    # Botón Volver para regresar a las referencias
     keyboard.append([InlineKeyboardButton("🔙 Volver", callback_data="volver_referencias")])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -300,16 +307,12 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     try:
         data_callback = query.data
 
-        # Si desde la selección de color presionan "Ver todo", delegamos la acción a seleccionar_referencia con ref_ver_todo
         if data_callback == "ref_ver_todo":
-            query.data = "ref_ver_todo"
-            return await seleccionar_referencia(update, context)
+            return await mostrar_ver_todo(query, context)
 
-        # Si presionan "Volver" a referencias desde el color
         if data_callback == "volver_referencias":
             return await seleccionar_referencia(update, context)
 
-        # Si el usuario presiona "Volver" desde el detalle de un color, regresamos a la selección de colores de esa referencia
         if data_callback == "volver_colores":
             ref_elegida = context.user_data.get('ref_elegida')
             resultado = context.user_data.get('df_pedido')
