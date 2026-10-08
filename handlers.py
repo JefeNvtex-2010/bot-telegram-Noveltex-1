@@ -349,3 +349,82 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 cb_data = f"col_{color}"
                 if len(cb_data.encode('utf-8')) > 64:
                     cb_data = cb_data[:64]
+                keyboard.append([InlineKeyboardButton(str(color), callback_data=cb_data)])
+            keyboard.append([InlineKeyboardButton("🔙 Volver", callback_data="volver_referencias")])
+
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(
+                text=f"Referencia seleccionada: *{ref_elegida}*.\nAhora selecciona el color:",
+                reply_markup=reply_markup,
+                parse_mode="Markdown"
+            )
+            return SELECCIONANDO_COLOR
+
+        color_elegido = data_callback.replace("col_", "").strip()
+        doc_buscado = context.user_data.get('doc_buscado', 'Desconocido')
+        ref_elegida = context.user_data.get('ref_elegida')
+        resultado = context.user_data.get('df_pedido')
+
+        if resultado is None or ref_elegida is None:
+            await query.edit_message_text(text="⚠️ La sesión ha expirado o se reinició. Por favor, realiza la búsqueda de nuevo con `/PV [número]`.", parse_mode="Markdown")
+            return ConversationHandler.END
+
+        # Reemplazar bost_Open por abierto
+        resultado = resultado.replace('bost_Open', 'abierto')
+
+        resultado['Id Refer'] = resultado['Id Refer'].astype(str).str.strip()
+        resultado['Color'] = resultado['Color'].astype(str).str.strip()
+
+        fila_match = resultado[(resultado['Id Refer'] == ref_elegida) & (resultado['Color'] == color_elegido)]
+
+        if fila_match.empty:
+            await query.edit_message_text(text=f"❌ No se encontró información para la referencia *{ref_elegida}* y color *{color_elegido}*.", parse_mode="Markdown")
+            return ConversationHandler.END
+
+        fila = fila_match.iloc[0]
+        
+        id_referencia = escapar_markdown(fila.get('Id Refer', 'N/A'))
+        color = escapar_markdown(fila.get('Color', 'N/A'))
+        ubicacion = escapar_markdown(fila.get('Ubicación del Pedido', 'N/A'))
+        doc_status_sap = escapar_markdown(fila.get('Document Status SAP', 'N/A'))
+        line_status_sap = escapar_markdown(fila.get('Line Status Sap', 'N/A'))
+        cantidad_pedida = escapar_markdown(fila.get('Cantidad Ped', 'N/A'))
+        cantidad_alistada = escapar_markdown(fila.get('Cantidad Alistada', 'N/A'))
+        estado_factura = escapar_markdown(fila.get('Estado Factura', 'N/A'))
+        fecha_despacho = escapar_markdown(fila.get('Fecha Factura', 'N/A')) 
+        id_operario = escapar_markdown(fila.get('Id Operario Asignado', 'N/A')) 
+        nombre_operario = escapar_markdown(fila.get('Nombre Operario Asignado', 'N/A'))
+        estado_pedido = escapar_markdown(fila.get('Clasificacion Pedido', 'N/A'))
+        observacion_adicional = escapar_markdown(fila.get('Observacion Adicional', 'N/A'))
+
+        mensaje = (
+            f"🔍 *Detalle del Documento {doc_buscado}*:\n\n"
+            f"• *Estado factura:* {estado_factura}\n"
+            f"• *Ubicación:* {ubicacion}\n"
+            f"• *Id referencia:* {id_referencia}\n"
+            f"• *Color:* {color}\n"                    
+            f"• *Estado documentos SAP:* {doc_status_sap}\n"
+            f"• *Estado Linea SAP:* {line_status_sap}\n"
+            f"• *Cantidad pedida:* {cantidad_pedida}\n"
+            f"• *Cantidad alistada:* {cantidad_alistada}\n"           
+            f"• *Fecha Despacho:* {fecha_despacho}\n"
+            f"• *Id Operario Asignado:* {id_operario}\n"
+            f"• *Nombre Operario Asignado:* {nombre_operario}\n"
+            f"• *Estado del Pedido:* {estado_pedido}\n"
+            f"• *Observacion Adicional:* {observacion_adicional}\n"
+        )
+
+        keyboard = [[InlineKeyboardButton("🔙 Volver a colores", callback_data="volver_colores")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await query.edit_message_text(text=mensaje, reply_markup=reply_markup, parse_mode="Markdown")
+        return SELECCIONANDO_COLOR
+
+    except Exception as e:
+        logger.error(f"Error en seleccionar_color: {e}")
+        await query.edit_message_text(text=f"⚠️ Ocurrió un error al procesar el color: `{e}`", parse_mode="Markdown")
+        return ConversationHandler.END
+
+async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text("❌ Búsqueda cancelada.")
+    return ConversationHandler.END
