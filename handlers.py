@@ -3,10 +3,15 @@ import io
 import requests
 import pandas as pd
 import concurrent.futures
+import urllib3
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
+from config import load_settings
 
 logger = logging.getLogger(__name__)
+
+# Desactivar advertencias de certificados autofirmados (muy común en SAP Service Layer)
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Estados para la conversación interactiva de búsqueda
 SELECCIONANDO_REFERENCIA, SELECCIONANDO_COLOR = range(2)
@@ -55,7 +60,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     name = user.first_name if user else "allí"
     await update.message.reply_text(
         f"¡Hola {name}! Bienvenido al sistema de pedidos.\n\n"
-        "Usa el comando /pedido para iniciar una nueva orden de compra o /PV [Nro_Documento]."
+        "Usa el comando /pedido para iniciar una nueva orden de compra, /PV [Nro_Documento] o /stock [Codigo_Articulo]."
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -64,6 +69,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/start - Iniciar el bot\n"
         "/pedido - Registrar un pedido\n"
         "/PV [Nro_Documento] - Consultar estatus en Google Sheets\n"
+        "/stock [Codigo_Articulo] - Consultar inventario en tiempo real desde SAP\n"
         "/reiniciar - Reiniciar servicio de Render (Solo autorizado)\n"
         "/actualizar - Limpiar caché y desplegar en Render (Solo autorizado)"
     )
@@ -74,6 +80,110 @@ async def order_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "Por favor, escribe el **nombre del producto** que necesitas:",
         parse_mode="Markdown"
     )
+
+# --- FUNCIONES DE SAP SERVICE LAYER ---
+
+def sap_login(settings):
+    """Inicia sesión en SAP Service Layer y retorna la sesión activa."""
+    login_payload = {
+        "CompanyDB": settings.sap_company_db,
+        "UserName": settings.sap_user,
+        "Password": settings.sap_password
+    }
+    session = requests.Session()
+    try:
+        response = session.post(f"{settings.sap_url}/Login", json=login_payload, verify=False, timeout=15)
+        if response.status_code == 200:
+            return session
+        else:
+            logger.error(f"❌ Error de autenticación en SAP: {response.text}")
+            return None
+    except Exception as e:
+        logger.error(f"⚠️ Excepción conectando a SAP Service Layer: {e}")
+        return None
+
+async def consultar_inventario_sap_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Comando para consultar el inventario de un artículo en SAP en tiempo real."""
+    if not context.args:
+        await update.message.reply_text(
+            "⚠️ Por favor, ingresa el código del artículo.\nEjemplo: `/stock A0001`", 
+            parse_mode="Markdown"
+        )
+        return
+
+    item_code = context.args[0].strip()
+    settings = load_settings()
+
+    msg = await update.message.reply_text("🔄 Conectando a SAP Service Layer...", parse_mode="Markdown")
+
+    session = sap_login(settings)
+    if not session:
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=msg.message_id,
+            text="⚠️ No se pudo establecer conexión con SAP Service Layer (Verifica credenciales).",
+            parse_mode="Markdown"
+        )
+        return
+
+    try:
+        endpoint = f"{settings.sap_url}/Items('{item_code}')"
+        response = session.get(endpoint, verify=False, timeout=15)
+        
+        # Cerrar sesión en SAP para liberar licencias
+        session.post(f"{settings.sap_url}/Logout", verify=False)
+
+        if response.status_code == 200:
+            data = response.json()
+            codigo = data.get("ItemCode", item_code)
+            nombre = data.get("ItemName", "Sin descripción")
+            stock_total = data.get("InventoryOnStock", 0)
+            
+            almacenes = data.get("ItemWarehouseInfoCollection", [])
+            detalle_almacenes = [
+                f"• Almacén `{almc.get('WarehouseCode')}`: {almc.get('InStock', 0)} unidades"
+                for almc in almacenes if float(almc.get('InStock', 0)) > 0
+            ]
+            
+            texto_almacenes = "\n".join(detalle_almacenes) if detalle_almacenes else "Sin stock registrado en almacenes."
+
+            mensaje_final = (
+                f"🟢 *Inventario SAP en Tiempo Real*\n\n"
+                f"• *Código:* `{codigo}`\n"
+                f"• *Artículo:* {escapar_markdown(nombre)}\n"
+                f"• *Stock Total:* {stock_total}\n\n"
+                f"*Desglose por Almacén:*\n{texto_almacenes}"
+            )
+            
+            await context.bot.edit_message_text(
+                chat_id=update.effective_chat.id,
+                message_id=msg.message_id,
+                text=mensaje_final,
+                parse_mode="Markdown"
+            )
+        elif response.status_code == 404:
+            await context.bot.edit_message_text(
+                chat_id=update.effective_chat.id,
+                message_id=msg.message_id,
+                text=f"❌ El artículo `{item_code}` no fue encontrado en SAP.",
+                parse_mode="Markdown"
+            )
+        else:
+            await context.bot.edit_message_text(
+                chat_id=update.effective_chat.id,
+                message_id=msg.message_id,
+                text=f"⚠️ Error al consultar SAP (Código HTTP: {response.status_code})",
+                parse_mode="Markdown"
+            )
+            
+    except Exception as e:
+        logger.error(f"Error consultando item en SAP: {e}")
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=msg.message_id,
+            text=f"⚠️ Ocurrió un error inesperado al consultar SAP: `{e}`",
+            parse_mode="Markdown"
+        )
 
 # --- FUNCIONES DE ADMINISTRACIÓN REMOTA DE RENDER ---
 
@@ -128,7 +238,6 @@ async def mostrar_ver_todo_referencia(query, context) -> int:
         await query.edit_message_text(text="⚠️ La sesión ha expirado o se reinició. Por favor, realiza la búsqueda de nuevo con `/PV [número]`.", parse_mode="Markdown")
         return ConversationHandler.END
 
-    # Reemplazos solicitados
     resultado = resultado.replace('bost_Open', 'Abierto')
     resultado = resultado.replace('bost_Close', 'Cerrado')
 
@@ -167,7 +276,6 @@ async def mostrar_ver_todo_referencia(query, context) -> int:
             f"• *Observacion Adicional:* {observacion_adicional}\n"
         )
 
-    # Botón para volver a la selección de colores de esta referencia
     keyboard = [[InlineKeyboardButton("🔙 Volver a colores", callback_data="volver_colores")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -190,7 +298,6 @@ async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             return ConversationHandler.END
 
         doc_buscado = context.args[0].strip()
-
         catalogo_df = cargar_catalogo()
 
         if isinstance(catalogo_df, str):
@@ -206,7 +313,6 @@ async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             return ConversationHandler.END
 
         columna_doc = 'Documento Pd'
-
         if columna_doc not in catalogo_df.columns:
             await update.message.reply_text(f"⚠️ No se encontró la columna '{columna_doc}' en la hoja.")
             return ConversationHandler.END
@@ -221,7 +327,6 @@ async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         context.user_data['doc_buscado'] = doc_buscado
 
         referencias = resultado['Id Refer'].unique()
-
         keyboard = []
         for ref in referencias:
             keyboard.append([InlineKeyboardButton(str(ref), callback_data=f"ref_{ref}")])
@@ -256,7 +361,6 @@ async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_T
             return ConversationHandler.END
 
         referencias = resultado['Id Refer'].unique()
-        
         keyboard = []
         for ref in referencias:
             keyboard.append([InlineKeyboardButton(str(ref), callback_data=f"ref_{ref}")])
@@ -295,7 +399,6 @@ async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_T
         keyboard.append([InlineKeyboardButton(str(color), callback_data=cb_data)])
 
     keyboard.append([InlineKeyboardButton("🔙 Volver", callback_data="volver_referencias")])
-
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     await query.edit_message_text(
@@ -355,7 +458,6 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             await query.edit_message_text(text="⚠️ La sesión ha expirado o se reinició. Por favor, realiza la búsqueda de nuevo con `/PV [número]`.", parse_mode="Markdown")
             return ConversationHandler.END
 
-        # Reemplazos solicitados
         resultado = resultado.replace('bost_Open', 'Abierto')
         resultado = resultado.replace('bost_Close', 'Cerrado')
 
