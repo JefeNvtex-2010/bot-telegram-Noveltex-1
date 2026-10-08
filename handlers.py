@@ -1,28 +1,18 @@
 import logging
 import io
-import time
 import requests
 import pandas as pd
 import concurrent.futures
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
-from config import load_settings
 
 logger = logging.getLogger(__name__)
 
-# --- CACHÉ DE INVENTARIO DRIVE ---
-inventario_cache = {}
-CACHE_TTL = 1800  # 1800 segundos = 30 minutos
-
-# Estados para la conversación interactiva de búsqueda de pedidos (/PV)
+# Estados para la conversación interactiva de búsqueda
 SELECCIONANDO_REFERENCIA, SELECCIONANDO_COLOR = range(2)
 
-# Estados para la conversación interactiva de inventario (/in)
-SELECCIONANDO_REF_SAP = 0
-
-# Enlaces de Google Sheets / Drive adaptados
+# Nuevo enlace de Google Sheets adaptado a exportación CSV
 GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1EOGz7ix9Z1AufTJ-79TWHgiM9iN65LAf/export?format=csv"
-INVENTARIO_DRIVE_URL = "https://docs.google.com/uc?export=download&id=1FJdfaNhxcFFDVD_AV2lTITHw0f-mB0Y2"
 
 def escapar_markdown(texto: str) -> str:
     """Escapa caracteres especiales de Telegram para evitar errores de parseo."""
@@ -33,67 +23,39 @@ def escapar_markdown(texto: str) -> str:
         texto = texto.replace(c, '')
     return texto.strip()
 
-def _descargar_csv(url):
-    """Función auxiliar robusta usando requests para descargar CSVs de Google con detección automática de separador."""
-    response = requests.get(url, timeout=25)
+def _descargar_csv():
+    """Función auxiliar robusta usando requests para manejar redirecciones de Google Sheets."""
+    response = requests.get(GOOGLE_SHEET_URL, timeout=25)
     response.raise_for_status()
     
-    try:
-        # sep=None junto con engine='python' detecta automáticamente si usa comas, puntos y comas o tabuladores
-        df = pd.read_csv(
-            io.StringIO(response.text), 
-            dtype=str, 
-            keep_default_na=False, 
-            sep=None, 
-            engine='python',
-            on_bad_lines='skip'
-        )
-    except Exception:
-        df = pd.read_csv(
-            io.StringIO(response.text), 
-            dtype=str, 
-            keep_default_na=False, 
-            on_bad_lines='skip'
-        )
-        
+    df = pd.read_csv(io.StringIO(response.text), dtype=str, keep_default_na=False)
     df.columns = df.columns.str.strip()
+    
+    if 'Documento Pd' in df.columns:
+        df['Documento Pd'] = df['Documento Pd'].astype(str).str.split('.').str[0].str.strip()
     return df
 
 def cargar_catalogo():
-    """Carga el catálogo de pedidos con un límite de 30 segundos de timeout."""
+    """Carga el catálogo con un límite de 30 segundos de timeout para evitar bloqueos."""
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(_descargar_csv, GOOGLE_SHEET_URL)
+        future = executor.submit(_descargar_csv)
         try:
             df = future.result(timeout=30.0)
-            if 'Documento Pd' in df.columns:
-                df['Documento Pd'] = df['Documento Pd'].astype(str).str.split('.').str[0].str.strip()
+            logger.info(f"✅ ¡Catálogo de Google Sheets leído con éxito! ({len(df)} filas)")
             return df
+        except concurrent.futures.TimeoutError:
+            logger.error("⚠️ Timeout: La conexión tardó más de 30 segundos en responder.")
+            return "TIMEOUT"
         except Exception as e:
-            logger.error(f"⚠️ Error al leer Google Sheets de pedidos: {e}")
-            return f"ERROR: {e}"
-
-def cargar_inventario_drive():
-    """Carga el archivo de inventario desde el nuevo enlace de Google Drive."""
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(_descargar_csv, INVENTARIO_DRIVE_URL)
-        try:
-            df = future.result(timeout=30.0)
-            logger.info(f"✅ ¡Inventario de Drive leído con éxito! ({len(df)} filas)")
-            return df
-        except Exception as e:
-            logger.error(f"⚠️ Error al leer el inventario de Google Drive: {e}")
+            logger.error(f"⚠️ Error al leer Google Sheets: {e}")
             return f"ERROR: {e}"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     name = user.first_name if user else "allí"
     await update.message.reply_text(
-        f"¡Hola {name}! Bienvenido al sistema de pedidos e inventario.\n\n"
-        "Usa los comandos:\n"
-        "• /pedido - Registrar o consultar pedidos\n"
-        "• /PV [Nro_Documento] - Búsqueda de pedidos\n"
-        "• /in [Nombre_o_Descripcion] - Consultar inventario desde Drive\n"
-        "• /help - Ayuda"
+        f"¡Hola {name}! Bienvenido al sistema de pedidos.\n\n"
+        "Usa el comando /pedido para iniciar una nueva orden de compra o /PV [Nro_Documento]."
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -102,252 +64,352 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/start - Iniciar el bot\n"
         "/pedido - Registrar un pedido\n"
         "/PV [Nro_Documento] - Consultar estatus en Google Sheets\n"
-        "/in [Descripcion] - Consultar inventario desde Google Drive"
+        "/reiniciar - Reiniciar servicio de Render (Solo autorizado)\n"
+        "/actualizar - Limpiar caché y desplegar en Render (Solo autorizado)"
     )
 
 async def order_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
-        "📦 ¡Perfecto! Vamos a gestionar tu pedido.\n\n"
-        "Usa /PV seguido del número de documento para consultar el estatus.",
+        "📦 ¡Perfecto! Vamos a registrar tu pedido.\n\n"
+        "Por favor, escribe el **nombre del producto** que necesitas:",
         parse_mode="Markdown"
     )
 
+# --- FUNCIONES DE ADMINISTRACIÓN REMOTA DE RENDER ---
 
-# ==========================================
-# FLUJO 1: BÚSQUEDA /PV (Google Sheets Pedidos)
-# ==========================================
+async def reiniciar_render(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    MI_TELEGRAM_ID = 5655537446
+    
+    if update.effective_user.id != MI_TELEGRAM_ID:
+        await update.message.reply_text("⛔ No tienes permisos para ejecutar este comando.")
+        return
 
-async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Punto de entrada para la búsqueda interactiva de pedidos con /PV."""
-    if not context.args:
-        await update.message.reply_text(
-            "⚠️ Por favor, indica el número de documento o término a buscar.\nEjemplo: `/PV 12345`",
-            parse_mode="Markdown"
-        )
-        return ConversationHandler.END
-
-    termino = " ".join(context.args).strip()
-    msg = await update.message.reply_text("🔄 Buscando pedido en Google Sheets...", parse_mode="Markdown")
-
-    df = cargar_catalogo()
-    if isinstance(df, str):
-        await context.bot.edit_message_text(
-            chat_id=update.effective_chat.id,
-            message_id=msg.message_id,
-            text=f"⚠️ Error al acceder al archivo de pedidos: `{df}`",
-            parse_mode="Markdown"
-        )
-        return ConversationHandler.END
+    RENDER_DEPLOY_HOOK_URL = "https://api.render.com/deploy/srv-db2ktt7avr4c73eet090?key=gstG3k654R4"
 
     try:
-        col_doc = next((c for c in df.columns if 'documento' in c.lower() or 'doc' in c.lower()), df.columns[0])
-        df_filtrado = df[df[col_doc].astype(str).str.contains(termino, case=False, na=False)]
+        response = requests.post(RENDER_DEPLOY_HOOK_URL)
+        if response.status_code == 200:
+            await update.message.reply_text("🔄 ¡Orden enviada con éxito! Reiniciando el servicio en Render...")
+        else:
+            await update.message.reply_text(f"⚠️ Error al conectar con Render. Código HTTP: {response.status_code}")
+    except Exception as e:
+        logger.error(f"Error al reiniciar Render: {e}")
+        await update.message.reply_text(f"⚠️ Ocurrió un error inesperado: `{e}`", parse_mode="Markdown")
 
-        if df_filtrado.empty:
-            await context.bot.edit_message_text(
-                chat_id=update.effective_chat.id,
-                message_id=msg.message_id,
-                text=f"❌ No se encontraron registros para: *{termino}*.",
-                parse_mode="Markdown"
+
+async def limpiar_cache_y_deploy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    MI_TELEGRAM_ID = 5655537446
+    
+    if update.effective_user.id != MI_TELEGRAM_ID:
+        await update.message.reply_text("⛔ No tienes permisos para ejecutar este comando.")
+        return
+
+    RENDER_CACHE_HOOK_URL = "https://api.render.com/deploy/srv-db2ktt7avr4c73eet090?key=gstG3k654R4&clearCache=true"
+
+    try:
+        response = requests.post(RENDER_CACHE_HOOK_URL)
+        if response.status_code == 200:
+            await update.message.reply_text("🧹 ¡Orden enviada! Limpiando caché y desplegando nueva versión en Render...")
+        else:
+            await update.message.reply_text(f"⚠️ Error al conectar con Render. Código HTTP: {response.status_code}")
+    except Exception as e:
+        logger.error(f"Error al limpiar caché en Render: {e}")
+        await update.message.reply_text(f"⚠️ Ocurrió un error inesperado: `{e}`", parse_mode="Markdown")
+
+# --- FLUJO INTERACTIVO DE BÚSQUEDA ---
+
+async def mostrar_ver_todo_referencia(query, context) -> int:
+    """Muestra todos los colores/ítems de la referencia actualmente seleccionada."""
+    resultado = context.user_data.get('df_pedido')
+    doc_buscado = context.user_data.get('doc_buscado', 'Desconocido')
+    ref_elegida = context.user_data.get('ref_elegida')
+
+    if resultado is None or ref_elegida is None:
+        await query.edit_message_text(text="⚠️ La sesión ha expirado o se reinició. Por favor, realiza la búsqueda de nuevo con `/PV [número]`.", parse_mode="Markdown")
+        return ConversationHandler.END
+
+    # Reemplazos solicitados
+    resultado = resultado.replace('bost_Open', 'Abierto')
+    resultado = resultado.replace('bost_Close', 'Cerrado')
+
+    resultado['Id Refer'] = resultado['Id Refer'].astype(str).str.strip()
+    df_ref = resultado[resultado['Id Refer'] == ref_elegida]
+
+    mensaje = f"🔍 *Detalle Completo - Referencia {ref_elegida}* (Documento {doc_buscado}, Total ítems: {len(df_ref)}):\n"
+
+    for index, fila in df_ref.iterrows():
+        id_referencia = escapar_markdown(fila.get('Id Refer', 'N/A'))
+        color = escapar_markdown(fila.get('Color', 'N/A'))
+        ubicacion = escapar_markdown(fila.get('Ubicación del Pedido', 'N/A'))
+        doc_status_sap = escapar_markdown(fila.get('Document Status SAP', 'N/A'))
+        line_status_sap = escapar_markdown(fila.get('Line Status Sap', 'N/A'))
+        cantidad_pedida = escapar_markdown(fila.get('Cantidad Ped', 'N/A'))
+        cantidad_alistada = escapar_markdown(fila.get('Cantidad Alistada', 'N/A'))
+        estado_factura = escapar_markdown(fila.get('Estado Factura', 'N/A'))
+        fecha_despacho = escapar_markdown(fila.get('Fecha Factura', 'N/A')) 
+        nombre_operario = escapar_markdown(fila.get('Nombre Operario Asignado', 'N/A'))
+        estado_pedido = escapar_markdown(fila.get('Clasificacion Pedido', 'N/A'))
+        observacion_adicional = escapar_markdown(fila.get('Observacion Adicional', 'N/A'))
+
+        mensaje += (
+            f"\n-----------------------------------\n"
+            f"• *Estado factura:* {estado_factura}\n"
+            f"• *Ubicación:* {ubicacion}\n"
+            f"• *Id referencia:* {id_referencia}\n"
+            f"• *Color:* {color}\n"                    
+            f"• *Estado Pedido:* {doc_status_sap}\n"
+            f"• *Estado Item:* {line_status_sap}\n"
+            f"• *Cantidad pedida:* {cantidad_pedida}\n"
+            f"• *Cantidad alistada:* {cantidad_alistada}\n"           
+            f"• *Fecha Despacho:* {fecha_despacho}\n"
+            f"• *Nombre Operario Asignado:* {nombre_operario}\n"
+            f"• *Estado del Pedido:* {estado_pedido}\n"
+            f"• *Observacion Adicional:* {observacion_adicional}\n"
+        )
+
+    # Botón para volver a la selección de colores de esta referencia
+    keyboard = [[InlineKeyboardButton("🔙 Volver a colores", callback_data="volver_colores")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    if len(mensaje) > 4000:
+        for i in range(0, len(mensaje), 4000):
+            await query.message.reply_text(mensaje[i:i+4000], parse_mode="Markdown")
+        await query.edit_message_text(text="📌 Fin del detalle completo.", reply_markup=reply_markup, parse_mode="Markdown")
+    else:
+        await query.edit_message_text(text=mensaje, reply_markup=reply_markup, parse_mode="Markdown")
+    
+    return SELECCIONANDO_COLOR
+
+async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    try:
+        if not context.args:
+            await update.message.reply_text(
+                "⚠️ Por favor, ingresa el número de documento a buscar.\n"
+                "Ejemplo: `/PV 5270`", parse_mode="Markdown"
             )
             return ConversationHandler.END
 
-        resultados = df_filtrado.head(10).to_dict(orient="records")
+        doc_buscado = context.args[0].strip()
+
+        catalogo_df = cargar_catalogo()
+
+        if isinstance(catalogo_df, str):
+            if catalogo_df == "TIMEOUT":
+                await update.message.reply_text("⏱️ La consulta a Google Sheets tardó demasiado (más de 30s). Por favor, intenta de nuevo con `/PV [número]`.", parse_mode="Markdown")
+                return ConversationHandler.END
+            elif catalogo_df.startswith("ERROR"):
+                await update.message.reply_text(f"⚠️ Error al conectar con Google Sheets:\n`{catalogo_df}`", parse_mode="Markdown")
+                return ConversationHandler.END
+
+        if catalogo_df is None or (isinstance(catalogo_df, pd.DataFrame) and catalogo_df.empty):
+            await update.message.reply_text("⚠️ El catálogo de Google Sheets no está disponible o está vacío.")
+            return ConversationHandler.END
+
+        columna_doc = 'Documento Pd'
+
+        if columna_doc not in catalogo_df.columns:
+            await update.message.reply_text(f"⚠️ No se encontró la columna '{columna_doc}' en la hoja.")
+            return ConversationHandler.END
+
+        resultado = catalogo_df[catalogo_df[columna_doc] == doc_buscado]
+
+        if resultado.empty:
+            await update.message.reply_text(f"❌ No se encontró ningún registro con el documento: *{doc_buscado}*.", parse_mode="Markdown")
+            return ConversationHandler.END
+
+        context.user_data['df_pedido'] = resultado
+        context.user_data['doc_buscado'] = doc_buscado
+
+        referencias = resultado['Id Refer'].unique()
+
         keyboard = []
-        for idx, row in enumerate(resultados):
-            doc_val = str(row.get(col_doc, f"Opción {idx}"))
-            keyboard.append([InlineKeyboardButton(f"Doc: {doc_val}", callback_data=f"ref_{doc_val}")])
-
-        context.user_data['df_pedidos'] = df
-        context.user_data['col_doc'] = col_doc
-
+        for ref in referencias:
+            keyboard.append([InlineKeyboardButton(str(ref), callback_data=f"ref_{ref}")])
+        
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await context.bot.edit_message_text(
-            chat_id=update.effective_chat.id,
-            message_id=msg.message_id,
-            text=f"🔍 Se encontraron {len(df_filtrado)} registros. Selecciona uno:",
+
+        await update.message.reply_text(
+            f"🔍 Documento *{doc_buscado}*.\n\n"
+            f"Selecciona una referencia:",
             reply_markup=reply_markup,
             parse_mode="Markdown"
         )
         return SELECCIONANDO_REFERENCIA
 
     except Exception as e:
-        logger.error(f"Error en búsqueda de pedidos: {e}")
-        await context.bot.edit_message_text(
-            chat_id=update.effective_chat.id,
-            message_id=msg.message_id,
-            text=f"⚠️ Ocurrió un error procesando la consulta: `{e}`",
-            parse_mode="Markdown"
-        )
+        logger.error(f"Excepción no controlada en iniciar_busqueda: {e}")
+        await update.message.reply_text(f"⚠️ Ocurrió un error inesperado al procesar tu búsqueda: `{e}`", parse_mode="Markdown")
         return ConversationHandler.END
 
 async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    data = query.data
 
-    if data.startswith("ref_"):
-        seleccion = data.replace("ref_", "").strip()
-        df = context.user_data.get('df_pedidos')
-        col_doc = context.user_data.get('col_doc', 'Documento Pd')
+    data_callback = query.data
 
-        if df is None:
-            await query.edit_message_text(text="⚠️ La sesión ha expirado. Realiza la búsqueda de nuevo con `/PV`.", parse_mode="Markdown")
+    if data_callback == "volver_referencias":
+        resultado = context.user_data.get('df_pedido')
+        doc_buscado = context.user_data.get('doc_buscado', 'Desconocido')
+
+        if resultado is None:
+            await query.edit_message_text(text="⚠️ La sesión ha expirado o se reinició. Por favor, realiza la búsqueda de nuevo con `/PV [número]`.", parse_mode="Markdown")
             return ConversationHandler.END
 
-        fila_match = df[df[col_doc].astype(str).str.strip() == seleccion]
-        if fila_match.empty:
-            await query.edit_message_text(text="❌ No se encontró la información detallada.", parse_mode="Markdown")
-            return ConversationHandler.END
+        referencias = resultado['Id Refer'].unique()
+        
+        keyboard = []
+        for ref in referencias:
+            keyboard.append([InlineKeyboardButton(str(ref), callback_data=f"ref_{ref}")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            text=f"🔍 Documento *{doc_buscado}*.\n\n"
+                 f"Selecciona una referencia:",
+            reply_markup=reply_markup,
+            parse_mode="Markdown"
+        )
+        return SELECCIONANDO_REFERENCIA
 
-        fila = fila_match.iloc[0]
-        texto_res = f"📄 *Detalle del Pedido*\n\n"
-        for col, val in fila.items():
-            if val and str(val).strip() != "":
-                texto_res += f"• *{escapar_markdown(col)}:* `{escapar_markdown(val)}`\n"
+    referencia_elegida = data_callback.replace("ref_", "").strip()
+    resultado = context.user_data.get('df_pedido')
+    doc_buscado = context.user_data.get('doc_buscado', 'Desconocido')
 
-        if len(texto_res) > 4000:
-            texto_res = texto_res[:4000]
+    if resultado is None:
+        await query.edit_message_text(text="⚠️ La sesión ha expirado o se reinició. Por favor, realiza la búsqueda de nuevo con `/PV [número]`.", parse_mode="Markdown")
+        return ConversationHandler.END
 
-        await query.edit_message_text(text=texto_res, parse_mode="Markdown")
+    context.user_data['ref_elegida'] = referencia_elegida
+    
+    resultado['Id Refer'] = resultado['Id Refer'].astype(str).str.strip()
+    df_ref = resultado[resultado['Id Refer'] == referencia_elegida]
+    
+    colores = df_ref['Color'].astype(str).str.strip().unique()
 
-    return ConversationHandler.END
+    keyboard = []
+    keyboard.append([InlineKeyboardButton("📄 Ver todo", callback_data="ref_ver_todo")])
+
+    for color in colores:
+        cb_data = f"col_{color}"
+        if len(cb_data.encode('utf-8')) > 64:
+            cb_data = cb_data[:64]
+        keyboard.append([InlineKeyboardButton(str(color), callback_data=cb_data)])
+
+    keyboard.append([InlineKeyboardButton("🔙 Volver", callback_data="volver_referencias")])
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await query.edit_message_text(
+        text=f"Referencia seleccionada: *{referencia_elegida}*.\nAhora selecciona el color:",
+        reply_markup=reply_markup,
+        parse_mode="Markdown"
+    )
+    return SELECCIONANDO_COLOR
 
 async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    await query.edit_message_text(text="Proceso completado.")
-    return ConversationHandler.END
-
-
-# ==========================================
-# FLUJO 2: BÚSQUEDA /in (Inventario Google Drive)
-# ==========================================
-
-async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Busca artículos en el inventario de Google Drive por coincidencia parcial en la descripción."""
-    if not context.args:
-        await update.message.reply_text(
-            "⚠️ Por favor, ingresa el nombre o descripción a buscar.\nEjemplo: `/in CAPRI`", 
-            parse_mode="Markdown"
-        )
-        return ConversationHandler.END
-
-    termino_busqueda = " ".join(context.args).strip().upper()
-    msg = await update.message.reply_text("🔄 Buscando en el archivo de inventario...", parse_mode="Markdown")
-
-    df_inv = cargar_inventario_drive()
-    if isinstance(df_inv, str):
-        await context.bot.edit_message_text(
-            chat_id=update.effective_chat.id,
-            message_id=msg.message_id,
-            text=f"⚠️ No se pudo acceder al archivo de inventario en Drive: `{df_inv}`",
-            parse_mode="Markdown"
-        )
-        return ConversationHandler.END
 
     try:
-        # Selección segura de columnas
-        if len(df_inv.columns) > 1:
-            col_nombre = next((col for col in df_inv.columns if 'name' in col.lower() or 'desc' in col.lower() or 'articulo' in col.lower()), df_inv.columns[1])
-        else:
-            col_nombre = df_inv.columns[0]
-            
-        col_codigo = next((col for col in df_inv.columns if 'code' in col.lower() or 'ref' in col.lower() or 'codigo' in col.lower()), df_inv.columns[0])
+        data_callback = query.data
 
-        df_filtrado = df_inv[df_inv[col_nombre].astype(str).str.upper().str.contains(termino_busqueda, na=False)]
+        if data_callback == "ref_ver_todo":
+            return await mostrar_ver_todo_referencia(query, context)
 
-        if df_filtrado.empty:
-            await context.bot.edit_message_text(
-                chat_id=update.effective_chat.id,
-                message_id=msg.message_id,
-                text=f"❌ No se encontraron artículos con la descripción: *{termino_busqueda}*.",
+        if data_callback == "volver_referencias":
+            return await seleccionar_referencia(update, context)
+
+        if data_callback == "volver_colores":
+            ref_elegida = context.user_data.get('ref_elegida')
+            resultado = context.user_data.get('df_pedido')
+            if resultado is None or ref_elegida is None:
+                await query.edit_message_text(text="⚠️ La sesión ha expirado o se reinició. Por favor, realiza la búsqueda de nuevo con `/PV [número]`.", parse_mode="Markdown")
+                return ConversationHandler.END
+
+            resultado['Id Refer'] = resultado['Id Refer'].astype(str).str.strip()
+            df_ref = resultado[resultado['Id Refer'] == ref_elegida]
+            colores = df_ref['Color'].astype(str).str.strip().unique()
+
+            keyboard = []
+            keyboard.append([InlineKeyboardButton("📄 Ver todo", callback_data="ref_ver_todo")])
+            for color in colores:
+                cb_data = f"col_{color}"
+                if len(cb_data.encode('utf-8')) > 64:
+                    cb_data = cb_data[:64]
+                keyboard.append([InlineKeyboardButton(str(color), callback_data=cb_data)])
+            keyboard.append([InlineKeyboardButton("🔙 Volver", callback_data="volver_referencias")])
+
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(
+                text=f"Referencia seleccionada: *{ref_elegida}*.\nAhora selecciona el color:",
+                reply_markup=reply_markup,
                 parse_mode="Markdown"
             )
+            return SELECCIONANDO_COLOR
+
+        color_elegido = data_callback.replace("col_", "").strip()
+        doc_buscado = context.user_data.get('doc_buscado', 'Desconocido')
+        ref_elegida = context.user_data.get('ref_elegida')
+        resultado = context.user_data.get('df_pedido')
+
+        if resultado is None or ref_elegida is None:
+            await query.edit_message_text(text="⚠️ La sesión ha expirado o se reinició. Por favor, realiza la búsqueda de nuevo con `/PV [número]`.", parse_mode="Markdown")
             return ConversationHandler.END
 
-        resultados = df_filtrado.head(15).to_dict(orient="records")
-        keyboard = []
-        for row in resultados:
-            codigo = str(row.get(col_codigo, 'N/A'))
-            nombre = str(row.get(col_nombre, 'N/A'))
-            keyboard.append([InlineKeyboardButton(f"{codigo} - {nombre[:35]}", callback_data=f"sapref_{codigo}")])
+        # Reemplazos solicitados
+        resultado = resultado.replace('bost_Open', 'Abierto')
+        resultado = resultado.replace('bost_Close', 'Cerrado')
 
-        context.user_data['df_inventario_drive'] = df_inv
-        context.user_data['col_codigo'] = col_codigo
-        context.user_data['col_nombre'] = col_nombre
+        resultado['Id Refer'] = resultado['Id Refer'].astype(str).str.strip()
+        resultado['Color'] = resultado['Color'].astype(str).str.strip()
 
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await context.bot.edit_message_text(
-            chat_id=update.effective_chat.id,
-            message_id=msg.message_id,
-            text=f"🔍 Se encontraron {len(df_filtrado)} coincidencias para *{termino_busqueda}*.\nSelecciona una referencia:",
-            reply_markup=reply_markup,
-            parse_mode="Markdown"
-        )
-        return SELECCIONANDO_REF_SAP
-
-    except Exception as e:
-        logger.error(f"Error procesando inventario de Drive: {e}")
-        await context.bot.edit_message_text(
-            chat_id=update.effective_chat.id,
-            message_id=msg.message_id,
-            text=f"⚠️ Ocurrió un error procesando el archivo: `{e}`",
-            parse_mode="Markdown"
-        )
-        return ConversationHandler.END
-
-async def seleccionar_ref_sap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-
-    if data.startswith("sapref_"):
-        codigo_elegido = data.replace("sapref_", "").strip()
-        df_inv = context.user_data.get('df_inventario_drive')
-        col_codigo = context.user_data.get('col_codigo', 'ItemCode')
-
-        if df_inv is None:
-            await query.edit_message_text(text="⚠️ La sesión ha expirado. Realiza la búsqueda de nuevo con `/in [nombre]`.", parse_mode="Markdown")
-            return ConversationHandler.END
-
-        fila_match = df_inv[df_inv[col_codigo].astype(str).str.strip() == codigo_elegido]
+        fila_match = resultado[(resultado['Id Refer'] == ref_elegida) & (resultado['Color'] == color_elegido)]
 
         if fila_match.empty:
-            await query.edit_message_text(text="❌ No se encontró información detallada para este artículo.", parse_mode="Markdown")
+            await query.edit_message_text(text=f"❌ No se encontró información para la referencia *{ref_elegida}* y color *{color_elegido}*.", parse_mode="Markdown")
             return ConversationHandler.END
 
         fila = fila_match.iloc[0]
-        detalle_texto = f"🟢 *Detalle de Inventario (Drive)*\n\n"
-        for col, val in fila.items():
-            if val and str(val).strip() != "":
-                detalle_texto += f"• *{escapar_markdown(col)}:* `{escapar_markdown(val)}`\n"
+        
+        id_referencia = escapar_markdown(fila.get('Id Refer', 'N/A'))
+        color = escapar_markdown(fila.get('Color', 'N/A'))
+        ubicacion = escapar_markdown(fila.get('Ubicación del Pedido', 'N/A'))
+        doc_status_sap = escapar_markdown(fila.get('Document Status SAP', 'N/A'))
+        line_status_sap = escapar_markdown(fila.get('Line Status Sap', 'N/A'))
+        cantidad_pedida = escapar_markdown(fila.get('Cantidad Ped', 'N/A'))
+        cantidad_alistada = escapar_markdown(fila.get('Cantidad Alistada', 'N/A'))
+        estado_factura = escapar_markdown(fila.get('Estado Factura', 'N/A'))
+        fecha_despacho = escapar_markdown(fila.get('Fecha Factura', 'N/A')) 
+        nombre_operario = escapar_markdown(fila.get('Nombre Operario Asignado', 'N/A'))
+        estado_pedido = escapar_markdown(fila.get('Clasificacion Pedido', 'N/A'))
+        observacion_adicional = escapar_markdown(fila.get('Observacion Adicional', 'N/A'))
 
-        if len(detalle_texto) > 4000:
-            detalle_texto = detalle_texto[:4000]
+        mensaje = (
+            f"🔍 *Detalle del Documento {doc_buscado}*:\n\n"
+            f"• *Estado factura:* {estado_factura}\n"
+            f"• *Ubicación:* {ubicacion}\n"
+            f"• *Id referencia:* {id_referencia}\n"
+            f"• *Color:* {color}\n"                    
+            f"• *Estado Pedido:* {doc_status_sap}\n"
+            f"• *Estado Item:* {line_status_sap}\n"
+            f"• *Cantidad pedida:* {cantidad_pedida}\n"
+            f"• *Cantidad alistada:* {cantidad_alistada}\n"           
+            f"• *Fecha Despacho:* {fecha_despacho}\n"
+            f"• *Nombre Operario Asignado:* {nombre_operario}\n"
+            f"• *Estado del Pedido:* {estado_pedido}\n"
+            f"• *Observacion Adicional:* {observacion_adicional}\n"
+        )
 
-        await query.edit_message_text(text=detalle_texto, parse_mode="Markdown")
-    
-    return ConversationHandler.END
+        keyboard = [[InlineKeyboardButton("🔙 Volver a colores", callback_data="volver_colores")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
 
+        await query.edit_message_text(text=mensaje, reply_markup=reply_markup, parse_mode="Markdown")
+        return SELECCIONANDO_COLOR
 
-# ==========================================
-# UTILIDADES Y COMANDOS DE CONTROL
-# ==========================================
+    except Exception as e:
+        logger.error(f"Error en seleccionar_color: {e}")
+        await query.edit_message_text(text=f"⚠️ Ocurrió un error al procesar el color: `{e}`", parse_mode="Markdown")
+        return ConversationHandler.END
 
 async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Cancela la conversación actual."""
-    if update.message:
-        await update.message.reply_text("Operación cancelada.")
-    elif update.callback_query:
-        await update.callback_query.answer()
-        await update.callback_query.edit_message_text(text="Operación cancelada.")
+    await update.message.reply_text("❌ Búsqueda cancelada.")
     return ConversationHandler.END
-
-async def reiniciar_render(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Comando para reiniciar."""
-    await update.message.reply_text("Reiniciando servicio...")
-
-async def limpiar_cache_y_deploy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Comando para limpiar caché."""
-    await update.message.reply_text("Limpiando caché y actualizando...")
