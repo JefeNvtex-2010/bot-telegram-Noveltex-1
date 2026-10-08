@@ -26,10 +26,10 @@ def load_settings() -> Settings:
         )
 
     # 2. Configuración de SAP Service Layer
-    sap_url = os.getenv("https://sap-noveltex-sl.skyinone.net:50000/b1s/v1", "").strip()
-    sap_company_db = os.getenv("SBO_NOVELTEX_PROD", "").strip()
-    sap_user = os.getenv("Addon", "").strip()
-    sap_password = os.getenv("NVT3x2010*", "").strip()
+    sap_url = os.getenv("SAP_URL", "").strip()
+    sap_company_db = os.getenv("SAP_COMPANY_DB", "").strip()
+    sap_user = os.getenv("SAP_USER", "").strip()
+    sap_password = os.getenv("SAP_PASSWORD", "").strip()
 
     # Opcional: Validar si falta alguna credencial clave de SAP para que avise en los logs
     if not all([sap_url, sap_company_db, sap_user, sap_password]):
