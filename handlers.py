@@ -15,7 +15,7 @@ SELECCIONANDO_REFERENCIA, SELECCIONANDO_COLOR = range(2)
 GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1vw8Vvane83LnGi8kLLznefY-9T3EZCJ6G8lI_wBdWK0/export?format=csv"
 
 def escapar_markdown(texto: str) -> str:
-    """Escapa caracteres especiales de Telegram en Telegram para evitar errores de parseo."""
+    """Escapa caracteres especiales de Telegram para evitar errores de parseo."""
     if not isinstance(texto, str):
         texto = str(texto)
     caracteres = ['_', '*', '`', '[']
@@ -161,7 +161,6 @@ async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         referencias = resultado['Id Refer'].unique()
 
         keyboard = []
-        # Quitamos el botón "Ver todo" de aquí y dejamos solo las referencias
         for ref in referencias:
             keyboard.append([InlineKeyboardButton(str(ref), callback_data=f"ref_{ref}")])
         
@@ -185,7 +184,7 @@ async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_T
 
     data_callback = query.data
 
-    # Manejar el botón de "Volver" a la lista de referencias desde la pantalla de color
+    # Manejar el botón de "Volver" a la lista de referencias desde la pantalla de color o "Ver todo"
     if data_callback == "volver_referencias":
         resultado = context.user_data.get('df_pedido')
         doc_buscado = context.user_data.get('doc_buscado', 'Desconocido')
@@ -253,7 +252,6 @@ async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_T
                 f"• *Observacion Adicional:* {observacion_adicional}\n"
             )
 
-        # Botón para volver al menú de referencias en la vista de "Ver todo"
         keyboard = [[InlineKeyboardButton("🔙 Volver a referencias", callback_data="volver_referencias")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -274,7 +272,7 @@ async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_T
     colores = df_ref['Color'].astype(str).str.strip().unique()
 
     keyboard = []
-    # Añadimos el botón "Ver todo" aquí en la selección de color
+    # Añadimos el botón "Ver todo" para que actúe correctamente
     keyboard.append([InlineKeyboardButton("📄 Ver todo", callback_data="ref_ver_todo")])
 
     for color in colores:
@@ -283,7 +281,7 @@ async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_T
             cb_data = cb_data[:64]
         keyboard.append([InlineKeyboardButton(str(color), callback_data=cb_data)])
 
-    # Añadimos el botón "Volver" para regresar a las referencias
+    # Botón Volver para regresar a las referencias
     keyboard.append([InlineKeyboardButton("🔙 Volver", callback_data="volver_referencias")])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -302,7 +300,16 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     try:
         data_callback = query.data
 
-        # Si el usuario presiona "Volver" desde el detalle, regresamos a la selección de colores de esa referencia
+        # Si desde la selección de color presionan "Ver todo", delegamos la acción a seleccionar_referencia con ref_ver_todo
+        if data_callback == "ref_ver_todo":
+            query.data = "ref_ver_todo"
+            return await seleccionar_referencia(update, context)
+
+        # Si presionan "Volver" a referencias desde el color
+        if data_callback == "volver_referencias":
+            return await seleccionar_referencia(update, context)
+
+        # Si el usuario presiona "Volver" desde el detalle de un color, regresamos a la selección de colores de esa referencia
         if data_callback == "volver_colores":
             ref_elegida = context.user_data.get('ref_elegida')
             resultado = context.user_data.get('df_pedido')
@@ -385,7 +392,6 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             f"• *Observacion Adicional:* {observacion_adicional}\n"
         )
 
-        # Botón para volver a la lista de colores
         keyboard = [[InlineKeyboardButton("🔙 Volver a colores", callback_data="volver_colores")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
