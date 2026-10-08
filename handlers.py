@@ -132,11 +132,10 @@ async def mostrar_ver_todo_referencia(query, context) -> int:
     resultado['Id Refer'] = resultado['Id Refer'].astype(str).str.strip()
     df_ref = resultado[resultado['Id Refer'] == ref_elegida]
 
-    # Obtener el operario general del primer registro de la referencia o del documento
     operario_general = "N/A"
     if 'Nombre Operario Asignado' in df_ref.columns and not df_ref.empty:
         val_op = df_ref.iloc[0].get('Nombre Operario Asignado')
-        if val_op:
+        if val_op and str(val_op).strip() != "":
             operario_general = escapar_markdown(str(val_op))
 
     mensaje = (
@@ -235,7 +234,7 @@ async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         operario_general = "N/A"
         if 'Nombre Operario Asignado' in resultado.columns and not resultado.empty:
             val_op = resultado.iloc[0].get('Nombre Operario Asignado')
-            if val_op:
+            if val_op and str(val_op).strip() != "":
                 operario_general = escapar_markdown(str(val_op))
 
         keyboard = []
@@ -284,7 +283,7 @@ async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_T
         operario_general = "N/A"
         if 'Nombre Operario Asignado' in resultado.columns and not resultado.empty:
             val_op = resultado.iloc[0].get('Nombre Operario Asignado')
-            if val_op:
+            if val_op and str(val_op).strip() != "":
                 operario_general = escapar_markdown(str(val_op))
 
         keyboard = []
@@ -409,21 +408,19 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         cantidad_alistada = escapar_markdown(fila.get('Cantidad Alistada', 'N/A'))
         estado_factura = escapar_markdown(fila.get('Estado Factura', 'N/A'))
         fecha_despacho = escapar_markdown(fila.get('Fecha Factura', 'N/A')) 
-        operario = escapar_markdown(fila.get('Nombre Operario Asignado', 'N/A'))
         clasificacion = escapar_markdown(fila.get('Clasificacion Pedido', 'N/A'))
         observacion_adicional = escapar_markdown(fila.get('Observacion Adicional', 'N/A'))
 
         mensaje = (
-            f"🔍 *Detalle del Documento {doc_buscado}*:\n"
-            f"• *Operario:* {operario}\n\n"
+            f"🔍 *Detalle del Documento {doc_buscado}*:\n\n"
             f"• *Estado factura:* {estado_factura}\n"
             f"• *Ubicación:* {ubicacion}\n"
             f"• *Id referencia:* {id_referencia}\n"
-            f"• *Color:* {color}                    \n"
+            f"• *Color:* {color}\n"                    
             f"• *Estado de Pedido:* {estado_de_pedido}\n"
             f"• *Estado Linea SAP:* {line_status_sap}\n"
             f"• *Cantidad pedida:* {cantidad_pedida}\n"
-            f"• *Cantidad alistada:* {cantidad_alistada}           \n"
+            f"• *Cantidad alistada:* {cantidad_alistada}\n"           
             f"• *Fecha Despacho:* {fecha_despacho}\n"
             f"• *Clasificación:* {clasificacion}\n"
             f"• *Observacion Adicional:* {observacion_adicional}\n"
