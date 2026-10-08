@@ -40,7 +40,7 @@ def _descargar_csv():
     return df
 
 def _descargar_inventario_csv():
-    """Función auxiliar robusta con tolerancia a errores para el inventario de Google Drive."""
+    """Función auxiliar robusta para el inventario de Google Drive."""
     response = requests.get(INVENTARIO_DRIVE_URL, timeout=25)
     response.raise_for_status()
     
@@ -103,7 +103,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Usa los comandos:\n"
         "• /pedido - Registrar una nueva orden de compra\n"
         "• /PV [Nro_Documento] - Consultar estatus de pedidos\n"
-        "• /in [Nombre_o_Descripcion] - Consultar inventario desde Drive"
+        "• /in [Descripcion] - Consultar inventario por descripción (tipo filtro Excel)"
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -112,9 +112,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/start - Iniciar el bot\n"
         "/pedido - Registrar un pedido\n"
         "/PV [Nro_Documento] - Consultar estatus en Google Sheets\n"
-        "/in [Descripcion] - Consultar inventario desde Google Drive\n"
-        "/reiniciar - Reiniciar servicio de Render (Solo autorizado)\n"
-        "/actualizar - Limpiar caché y desplegar en Render (Solo autorizado)"
+        "/in [Descripcion] - Filtrar inventario por descripción\n"
+        "/reiniciar - Reiniciar servicio de Render\n"
+        "/actualizar - Limpiar caché y desplegar en Render"
     )
 
 async def order_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -124,17 +124,15 @@ async def order_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         parse_mode="Markdown"
     )
 
-# --- FUNCIONES DE ADMINISTRACIÓN REMOTA DE RENDER ---
+# --- ADMINISTRACIÓN REMOTA DE RENDER ---
 
 async def reiniciar_render(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     MI_TELEGRAM_ID = 5655537446
-    
     if update.effective_user.id != MI_TELEGRAM_ID:
         await update.message.reply_text("⛔ No tienes permisos para ejecutar este comando.")
         return
 
     RENDER_DEPLOY_HOOK_URL = "https://api.render.com/deploy/srv-db2ktt7avr4c73eet090?key=gstG3k654R4"
-
     try:
         response = requests.post(RENDER_DEPLOY_HOOK_URL)
         if response.status_code == 200:
@@ -147,13 +145,11 @@ async def reiniciar_render(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 async def limpiar_cache_y_deploy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     MI_TELEGRAM_ID = 5655537446
-    
     if update.effective_user.id != MI_TELEGRAM_ID:
         await update.message.reply_text("⛔ No tienes permisos para ejecutar este comando.")
         return
 
     RENDER_CACHE_HOOK_URL = "https://api.render.com/deploy/srv-db2ktt7avr4c73eet090?key=gstG3k654R4&clearCache=true"
-
     try:
         response = requests.post(RENDER_CACHE_HOOK_URL)
         if response.status_code == 200:
@@ -164,7 +160,10 @@ async def limpiar_cache_y_deploy(update: Update, context: ContextTypes.DEFAULT_T
         logger.error(f"Error al limpiar caché en Render: {e}")
         await update.message.reply_text(f"⚠️ Ocurrió un error inesperado: `{e}`", parse_mode="Markdown")
 
-# --- FLUJO INTERACTIVO DE BÚSQUEDA DE PEDIDOS (/PV) ---
+
+# ==========================================
+# FLUJO 1: BÚSQUEDA DE PEDIDOS (/PV)
+# ==========================================
 
 async def mostrar_ver_todo_referencia(query, context) -> int:
     resultado = context.user_data.get('df_pedido')
@@ -172,7 +171,7 @@ async def mostrar_ver_todo_referencia(query, context) -> int:
     ref_elegida = context.user_data.get('ref_elegida')
 
     if resultado is None or ref_elegida is None:
-        await query.edit_message_text(text="⚠️ La sesión ha expirado o se reinició. Por favor, realiza la búsqueda de nuevo con `/PV [número]`.", parse_mode="Markdown")
+        await query.edit_message_text(text="⚠️ La sesión ha expirado. Realiza la búsqueda de nuevo con `/PV [número]`.", parse_mode="Markdown")
         return ConversationHandler.END
 
     resultado = resultado.replace('bost_Open', 'Abierto')
@@ -239,19 +238,19 @@ async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
         if isinstance(catalogo_df, str):
             if catalogo_df == "TIMEOUT":
-                await update.message.reply_text("⏱️ La consulta a Google Sheets tardó demasiado (más de 30s). Por favor, intenta de nuevo con `/PV [número]`.", parse_mode="Markdown")
+                await update.message.reply_text("⏱️ La consulta tardó demasiado. Intenta de nuevo.", parse_mode="Markdown")
                 return ConversationHandler.END
             elif catalogo_df.startswith("ERROR"):
                 await update.message.reply_text(f"⚠️ Error al conectar con Google Sheets:\n`{catalogo_df}`", parse_mode="Markdown")
                 return ConversationHandler.END
 
         if catalogo_df is None or (isinstance(catalogo_df, pd.DataFrame) and catalogo_df.empty):
-            await update.message.reply_text("⚠️ El catálogo de Google Sheets no está disponible o está vacío.")
+            await update.message.reply_text("⚠️ El catálogo está vacío.")
             return ConversationHandler.END
 
         columna_doc = 'Documento Pd'
         if columna_doc not in catalogo_df.columns:
-            await update.message.reply_text(f"⚠️ No se encontró la columna '{columna_doc}' en la hoja.")
+            await update.message.reply_text(f"⚠️ No se encontró la columna '{columna_doc}'.")
             return ConversationHandler.END
 
         resultado = catalogo_df[catalogo_df[columna_doc].astype(str).str.strip() == doc_buscado]
@@ -264,22 +263,19 @@ async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         context.user_data['doc_buscado'] = doc_buscado
 
         referencias = resultado['Id Refer'].unique()
-        keyboard = []
-        for ref in referencias:
-            keyboard.append([InlineKeyboardButton(str(ref), callback_data=f"ref_{ref}")])
-        
+        keyboard = [[InlineKeyboardButton(str(ref), callback_data=f"ref_{ref}")] for ref in referencias]
         reply_markup = InlineKeyboardMarkup(keyboard)
+
         await update.message.reply_text(
-            f"🔍 Documento *{doc_buscado}*.\n\n"
-            f"Selecciona una referencia:",
+            f"🔍 Documento *{doc_buscado}*.\n\nSelecciona una referencia:",
             reply_markup=reply_markup,
             parse_mode="Markdown"
         )
         return SELECCIONANDO_REFERENCIA
 
     except Exception as e:
-        logger.error(f"Excepción no controlada en iniciar_busqueda: {e}")
-        await update.message.reply_text(f"⚠️ Ocurrió un error inesperado al procesar tu búsqueda: `{e}`", parse_mode="Markdown")
+        logger.error(f"Error en iniciar_busqueda: {e}")
+        await update.message.reply_text(f"⚠️ Error inesperado: `{e}`", parse_mode="Markdown")
         return ConversationHandler.END
 
 async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -290,20 +286,15 @@ async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_T
     if data_callback == "volver_referencias":
         resultado = context.user_data.get('df_pedido')
         doc_buscado = context.user_data.get('doc_buscado', 'Desconocido')
-
         if resultado is None:
-            await query.edit_message_text(text="⚠️ La sesión ha expirado o se reinició. Por favor, realiza la búsqueda de nuevo con `/PV [número]`.", parse_mode="Markdown")
+            await query.edit_message_text(text="⚠️ La sesión ha expirado.", parse_mode="Markdown")
             return ConversationHandler.END
 
         referencias = resultado['Id Refer'].unique()
-        keyboard = []
-        for ref in referencias:
-            keyboard.append([InlineKeyboardButton(str(ref), callback_data=f"ref_{ref}")])
-        
+        keyboard = [[InlineKeyboardButton(str(ref), callback_data=f"ref_{ref}")] for ref in referencias]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(
-            text=f"🔍 Documento *{doc_buscado}*.\n\n"
-                 f"Selecciona una referencia:",
+            text=f"🔍 Documento *{doc_buscado}*.\n\nSelecciona una referencia:",
             reply_markup=reply_markup,
             parse_mode="Markdown"
         )
@@ -311,30 +302,24 @@ async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_T
 
     referencia_elegida = data_callback.replace("ref_", "").strip()
     resultado = context.user_data.get('df_pedido')
-    doc_buscado = context.user_data.get('doc_buscado', 'Desconocido')
-
     if resultado is None:
-        await query.edit_message_text(text="⚠️ La sesión ha expirado o se reinició. Por favor, realiza la búsqueda de nuevo con `/PV [número]`.", parse_mode="Markdown")
+        await query.edit_message_text(text="⚠️ La sesión ha expirado.", parse_mode="Markdown")
         return ConversationHandler.END
 
     context.user_data['ref_elegida'] = referencia_elegida
-    
     resultado['Id Refer'] = resultado['Id Refer'].astype(str).str.strip()
     df_ref = resultado[resultado['Id Refer'] == referencia_elegida]
     colores = df_ref['Color'].astype(str).str.strip().unique()
 
-    keyboard = []
-    keyboard.append([InlineKeyboardButton("📄 Ver todo", callback_data="ref_ver_todo")])
-
+    keyboard = [[InlineKeyboardButton("📄 Ver todo", callback_data="ref_ver_todo")]]
     for color in colores:
         cb_data = f"col_{color}"
         if len(cb_data.encode('utf-8')) > 64:
             cb_data = cb_data[:64]
         keyboard.append([InlineKeyboardButton(str(color), callback_data=cb_data)])
-
     keyboard.append([InlineKeyboardButton("🔙 Volver", callback_data="volver_referencias")])
-    reply_markup = InlineKeyboardMarkup(keyboard)
 
+    reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(
         text=f"Referencia seleccionada: *{referencia_elegida}*.\nAhora selecciona el color:",
         reply_markup=reply_markup,
@@ -359,15 +344,14 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             ref_elegida = context.user_data.get('ref_elegida')
             resultado = context.user_data.get('df_pedido')
             if resultado is None or ref_elegida is None:
-                await query.edit_message_text(text="⚠️ La sesión ha expirado o se reinició. Por favor, realiza la búsqueda de nuevo con `/PV [número]`.", parse_mode="Markdown")
+                await query.edit_message_text(text="⚠️ La sesión ha expirado.", parse_mode="Markdown")
                 return ConversationHandler.END
 
             resultado['Id Refer'] = resultado['Id Refer'].astype(str).str.strip()
             df_ref = resultado[resultado['Id Refer'] == ref_elegida]
             colores = df_ref['Color'].astype(str).str.strip().unique()
 
-            keyboard = []
-            keyboard.append([InlineKeyboardButton("📄 Ver todo", callback_data="ref_ver_todo")])
+            keyboard = [[InlineKeyboardButton("📄 Ver todo", callback_data="ref_ver_todo")]]
             for color in colores:
                 cb_data = f"col_{color}"
                 if len(cb_data.encode('utf-8')) > 64:
@@ -389,12 +373,10 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         resultado = context.user_data.get('df_pedido')
 
         if resultado is None or ref_elegida is None:
-            await query.edit_message_text(text="⚠️ La sesión ha expirado o se reinició. Por favor, realiza la búsqueda de nuevo con `/PV [número]`.", parse_mode="Markdown")
+            await query.edit_message_text(text="⚠️ La sesión ha expirado.", parse_mode="Markdown")
             return ConversationHandler.END
 
-        resultado = resultado.replace('bost_Open', 'Abierto')
-        resultado = resultado.replace('bost_Close', 'Cerrado')
-
+        resultado = resultado.replace('bost_Open', 'Abierto').replace('bost_Close', 'Cerrado')
         resultado['Id Refer'] = resultado['Id Refer'].astype(str).str.strip()
         resultado['Color'] = resultado['Color'].astype(str).str.strip()
 
@@ -405,34 +387,20 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             return ConversationHandler.END
 
         fila = fila_match.iloc[0]
-        
-        id_referencia = escapar_markdown(fila.get('Id Refer', 'N/A'))
-        color = escapar_markdown(fila.get('Color', 'N/A'))
-        ubicacion = escapar_markdown(fila.get('Ubicación del Pedido', 'N/A'))
-        doc_status_sap = escapar_markdown(fila.get('Document Status SAP', 'N/A'))
-        line_status_sap = escapar_markdown(fila.get('Line Status Sap', 'N/A'))
-        cantidad_pedida = escapar_markdown(fila.get('Cantidad Ped', 'N/A'))
-        cantidad_alistada = escapar_markdown(fila.get('Cantidad Alistada', 'N/A'))
-        estado_factura = escapar_markdown(fila.get('Estado Factura', 'N/A'))
-        fecha_despacho = escapar_markdown(fila.get('Fecha Factura', 'N/A')) 
-        nombre_operario = escapar_markdown(fila.get('Nombre Operario Asignado', 'N/A'))
-        estado_pedido = escapar_markdown(fila.get('Clasificacion Pedido', 'N/A'))
-        observacion_adicional = escapar_markdown(fila.get('Observacion Adicional', 'N/A'))
-
         mensaje = (
             f"🔍 *Detalle del Documento {doc_buscado}*:\n\n"
-            f"• *Estado factura:* {estado_factura}\n"
-            f"• *Ubicación:* {ubicacion}\n"
-            f"• *Id referencia:* {id_referencia}\n"
-            f"• *Color:* {color}\n"                    
-            f"• *Estado Pedido:* {doc_status_sap}\n"
-            f"• *Estado Item:* {line_status_sap}\n"
-            f"• *Cantidad pedida:* {cantidad_pedida}\n"
-            f"• *Cantidad alistada:* {cantidad_alistada}\n"           
-            f"• *Fecha Despacho:* {fecha_despacho}\n"
-            f"• *Nombre Operario Asignado:* {nombre_operario}\n"
-            f"• *Estado del Pedido:* {estado_pedido}\n"
-            f"• *Observacion Adicional:* {observacion_adicional}\n"
+            f"• *Estado factura:* {escapar_markdown(fila.get('Estado Factura', 'N/A'))}\n"
+            f"• *Ubicación:* {escapar_markdown(fila.get('Ubicación del Pedido', 'N/A'))}\n"
+            f"• *Id referencia:* {escapar_markdown(fila.get('Id Refer', 'N/A'))}\n"
+            f"• *Color:* {escapar_markdown(fila.get('Color', 'N/A'))}\n"                    
+            f"• *Estado Pedido:* {escapar_markdown(fila.get('Document Status SAP', 'N/A'))}\n"
+            f"• *Estado Item:* {escapar_markdown(fila.get('Line Status Sap', 'N/A'))}\n"
+            f"• *Cantidad pedida:* {escapar_markdown(fila.get('Cantidad Ped', 'N/A'))}\n"
+            f"• *Cantidad alistada:* {escapar_markdown(fila.get('Cantidad Alistada', 'N/A'))}\n"           
+            f"• *Fecha Despacho:* {escapar_markdown(fila.get('Fecha Factura', 'N/A'))}\n"
+            f"• *Nombre Operario Asignado:* {escapar_markdown(fila.get('Nombre Operario Asignado', 'N/A'))}\n"
+            f"• *Estado del Pedido:* {escapar_markdown(fila.get('Clasificacion Pedido', 'N/A'))}\n"
+            f"• *Observacion Adicional:* {escapar_markdown(fila.get('Observacion Adicional', 'N/A'))}\n"
         )
 
         keyboard = [[InlineKeyboardButton("🔙 Volver a colores", callback_data="volver_colores")]]
@@ -443,25 +411,25 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     except Exception as e:
         logger.error(f"Error en seleccionar_color: {e}")
-        await query.edit_message_text(text=f"⚠️ Ocurrió un error al procesar el color: `{e}`", parse_mode="Markdown")
+        await query.edit_message_text(text=f"⚠️ Error al procesar el color: `{e}`", parse_mode="Markdown")
         return ConversationHandler.END
 
 
 # ==========================================
-# FLUJO 2: BÚSQUEDA DE INVENTARIO DESDE GOOGLE DRIVE (/in)
+# FLUJO 2: BÚSQUEDA DE INVENTARIO DESDE DRIVE (/in) - FILTRO ESTILO EXCEL
 # ==========================================
 
 async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Busca artículos en el inventario de Google Drive por coincidencia parcial en la descripción."""
+    """Busca y filtra artículos exclusivamente por coincidencia parcial en la columna Descripción."""
     if not context.args:
         await update.message.reply_text(
-            "⚠️ Por favor, ingresa el nombre o descripción a buscar.\nEjemplo: `/in CAPRI`", 
+            "⚠️ Por favor, ingresa el texto a buscar en la descripción.\nEjemplo: `/in CAPRI`", 
             parse_mode="Markdown"
         )
         return ConversationHandler.END
 
     termino_busqueda = " ".join(context.args).strip().upper()
-    msg = await update.message.reply_text("🔄 Buscando en el archivo de inventario...", parse_mode="Markdown")
+    msg = await update.message.reply_text("🔄 Filtrando inventario...", parse_mode="Markdown")
 
     df_inv = cargar_inventario_drive()
     if isinstance(df_inv, str):
@@ -474,39 +442,46 @@ async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYP
         return ConversationHandler.END
 
     try:
-        if len(df_inv.columns) > 1:
-            col_nombre = next((col for col in df_inv.columns if 'name' in col.lower() or 'desc' in col.lower() or 'articulo' in col.lower()), df_inv.columns[1])
-        else:
-            col_nombre = df_inv.columns[0]
-            
-        col_codigo = next((col for col in df_inv.columns if 'code' in col.lower() or 'ref' in col.lower() or 'codigo' in col.lower()), df_inv.columns[0])
+        col_codigo = 'Artículo' if 'Artículo' in df_inv.columns else df_inv.columns[0]
+        col_nombre = 'Descripción' if 'Descripción' in df_inv.columns else df_inv.columns[1]
 
+        # FILTRAR ESTILO EXCEL: Buscar exclusivamente en la columna Descripción
         df_filtrado = df_inv[df_inv[col_nombre].astype(str).str.upper().str.contains(termino_busqueda, na=False)]
 
         if df_filtrado.empty:
             await context.bot.edit_message_text(
                 chat_id=update.effective_chat.id,
                 message_id=msg.message_id,
-                text=f"❌ No se encontraron artículos con la descripción: *{termino_busqueda}*.",
+                text=f"❌ No se encontraron coincidencias en la descripción para: *{termino_busqueda}*.",
                 parse_mode="Markdown"
             )
             return ConversationHandler.END
 
-        resultados = df_filtrado.head(15).to_dict(orient="records")
+        # Tomamos hasta 20 resultados para mostrar en los botones estilo lista de Excel
+        resultados = df_filtrado.head(20).to_dict(orient="records")
         keyboard = []
         for row in resultados:
             codigo = str(row.get(col_codigo, 'N/A'))
             nombre = str(row.get(col_nombre, 'N/A'))
-            keyboard.append([InlineKeyboardButton(f"{codigo} - {nombre[:35]}", callback_data=f"sapref_{codigo}")])
+            almacen = str(row.get('Código de Almacén', ''))
+            
+            # Texto visible en cada botón estilo filtro
+            texto_boton = f"{nombre} (Alm {almacen})"
+            if len(texto_boton.encode('utf-8')) > 64:
+                texto_boton = texto_boton[:61] + "..."
+
+            # Creamos un identificador único usando índice interno o combinación
+            row_idx = df_filtrado[df_filtrado[col_codigo].astype(str).str.strip() == codigo].index[0]
+            cb_data = f"sapidx_{row_idx}"
+            keyboard.append([InlineKeyboardButton(texto_boton, callback_data=cb_data)])
 
         context.user_data['df_inventario_drive'] = df_inv
-        context.user_data['col_codigo'] = col_codigo
 
         reply_markup = InlineKeyboardMarkup(keyboard)
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id,
             message_id=msg.message_id,
-            text=f"🔍 Se encontraron {len(df_filtrado)} coincidencias para *{termino_busqueda}*.\nSelecciona una referencia:",
+            text=f"🔍 Se encontraron *{len(df_filtrado)}* resultados para *{termino_busqueda}* (Filtro de Descripción):\nSelecciona una opción:",
             reply_markup=reply_markup,
             parse_mode="Markdown"
         )
@@ -527,25 +502,20 @@ async def seleccionar_ref_sap(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.answer()
     data = query.data
 
-    if data.startswith("sapref_"):
-        codigo_elegido = data.replace("sapref_", "").strip()
+    if data.startswith("sapidx_"):
+        row_idx = int(data.replace("sapidx_", "").strip())
         df_inv = context.user_data.get('df_inventario_drive')
-        col_codigo = context.user_data.get('col_codigo', 'ItemCode')
 
-        if df_inv is None:
-            await query.edit_message_text(text="⚠️ La sesión ha expirado. Realiza la búsqueda de nuevo con `/in [nombre]`.", parse_mode="Markdown")
+        if df_inv is None or row_idx not in df_inv.index:
+            await query.edit_message_text(text="⚠️ La sesión ha expirado. Busca de nuevo con `/in [descripcion]`.", parse_mode="Markdown")
             return ConversationHandler.END
 
-        fila_match = df_inv[df_inv[col_codigo].astype(str).str.strip() == codigo_elegido]
-
-        if fila_match.empty:
-            await query.edit_message_text(text="❌ No se encontró información detallada para este artículo.", parse_mode="Markdown")
-            return ConversationHandler.END
-
-        fila = fila_match.iloc[0]
-        detalle_texto = f"🟢 *Detalle de Inventario (Drive)*\n\n"
+        fila = df_inv.loc[row_idx]
+        
+        # Muestra todas las columnas y valores de esa fila exacta seleccionada
+        detalle_texto = f"🟢 *Detalle de Inventario (Filtro)*\n\n"
         for col, val in fila.items():
-            if val and str(val).strip() != "":
+            if val is not None and str(val).strip() != "":
                 detalle_texto += f"• *{escapar_markdown(col)}:* `{escapar_markdown(val)}`\n"
 
         if len(detalle_texto) > 4000:
