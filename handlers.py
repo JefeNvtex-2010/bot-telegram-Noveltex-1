@@ -11,9 +11,8 @@ logger = logging.getLogger(__name__)
 # Estados para la conversación interactiva de búsqueda
 SELECCIONANDO_REFERENCIA, SELECCIONANDO_COLOR = range(2)
 
-# Enlace de tu Google Sheets adaptado a exportación CSV
+# Nuevo enlace de Google Sheets adaptado a exportación CSV
 GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1EOGz7ix9Z1AufTJ-79TWHgiM9iN65LAf/export?format=csv"
-
 
 def escapar_markdown(texto: str) -> str:
     """Escapa caracteres especiales de Telegram para evitar errores de parseo."""
@@ -129,7 +128,10 @@ async def mostrar_ver_todo_referencia(query, context) -> int:
         await query.edit_message_text(text="⚠️ La sesión ha expirado o se reinició. Por favor, realiza la búsqueda de nuevo con `/PV [número]`.", parse_mode="Markdown")
         return ConversationHandler.END
 
-    resultado = resultado.replace('bost_Open', 'abierto')
+    # Reemplazos solicitados
+    resultado = resultado.replace('bost_Open', 'Abierto')
+    resultado = resultado.replace('bost_Close', 'Cerrado')
+
     resultado['Id Refer'] = resultado['Id Refer'].astype(str).str.strip()
     df_ref = resultado[resultado['Id Refer'] == ref_elegida]
 
@@ -353,9 +355,9 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             await query.edit_message_text(text="⚠️ La sesión ha expirado o se reinició. Por favor, realiza la búsqueda de nuevo con `/PV [número]`.", parse_mode="Markdown")
             return ConversationHandler.END
 
-        # Reemplazar bost_Open por abierto
+        # Reemplazos solicitados
         resultado = resultado.replace('bost_Open', 'Abierto')
-         resultado = resultado.replace('bost_Close', 'Cerrado')
+        resultado = resultado.replace('bost_Close', 'Cerrado')
 
         resultado['Id Refer'] = resultado['Id Refer'].astype(str).str.strip()
         resultado['Color'] = resultado['Color'].astype(str).str.strip()
