@@ -16,7 +16,6 @@ SELECCIONANDO_REF_SAP = 2
 
 # Enlaces de Google Sheets / Drive
 GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1EOGz7ix9Z1AufTJ-79TWHgiM9iN65LAf/export?format=csv"
-# Nuevo enlace ajustado con confirmación para descarga directa de Drive
 INVENTARIO_DRIVE_URL = "https://docs.google.com/uc?export=download&id=1FJdfaNhxcFFDVD_AV2lTITHw0f-mB0Y2&confirm=t"
 
 def escapar_markdown(texto: str) -> str:
@@ -41,20 +40,14 @@ def _descargar_csv():
     return df
 
 def _descargar_inventario_csv():
-    """Función auxiliar robusta para leer el inventario de Google Drive evitando páginas de advertencia HTML."""
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-    }
+    """Función auxiliar robusta para leer el inventario de Google Drive."""
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     response = requests.get(INVENTARIO_DRIVE_URL, headers=headers, timeout=25)
     response.raise_for_status()
     
     contenido = response.text
-    
-    # Validar si Google devolvió HTML por advertencia de archivo grande
     if "<html" in contenido.lower() or "<body" in contenido.lower():
-        # Intentar extraer el enlace de descarga directa alternativo si existe en el HTML o usar exportación genérica
-        logger.warning("⚠️ Google Drive devolvió una página HTML en lugar del CSV. Intentando método alternativo...")
-        alt_url = f"https://docs.google.com/spreadsheets/d/1FJdfaNhxcFFDVD_AV2lTITHw0f-mB0Y2/export?format=csv"
+        alt_url = "https://docs.google.com/spreadsheets/d/1FJdfaNhxcFFDVD_AV2lTITHw0f-mB0Y2/export?format=csv"
         resp_alt = requests.get(alt_url, headers=headers, timeout=25)
         if resp_alt.status_code == 200 and "<html" not in resp_alt.text.lower():
             contenido = resp_alt.text
@@ -66,22 +59,18 @@ def _descargar_inventario_csv():
         engine='python',
         on_bad_lines='skip'
     )
-        
+    
     df.columns = df.columns.str.strip()
-    logger.info(f"📋 Columnas detectadas en Inventario Drive: {list(df.columns)}")
     return df
 
 def cargar_catalogo():
-    """Carga el catálogo con un límite de 30 segundos de timeout para evitar bloqueos."""
+    """Carga el catálogo con un límite de 30 segundos de timeout."""
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(_descargar_csv)
         try:
             df = future.result(timeout=30.0)
             logger.info(f"✅ ¡Catálogo de Google Sheets leído con éxito! ({len(df)} filas)")
             return df
-        except concurrent.futures.TimeoutError:
-            logger.error("⚠️ Timeout: La conexión tardó más de 30 segundos en responder.")
-            return "TIMEOUT"
         except Exception as e:
             logger.error(f"⚠️ Error al leer Google Sheets: {e}")
             return f"ERROR: {e}"
@@ -94,9 +83,6 @@ def cargar_inventario_drive():
             df = future.result(timeout=30.0)
             logger.info(f"✅ ¡Inventario de Drive leído con éxito! ({len(df)} filas)")
             return df
-        except concurrent.futures.TimeoutError:
-            logger.error("⚠️ Timeout en inventario Drive.")
-            return "TIMEOUT"
         except Exception as e:
             logger.error(f"⚠️ Error al leer inventario de Google Drive: {e}")
             return f"ERROR: {e}"
@@ -109,7 +95,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Usa los comandos:\n"
         "• /pedido - Registrar una nueva orden de compra\n"
         "• /PV [Nro_Documento] - Consultar estatus de pedidos\n"
-        "• /in [Descripcion] - Consultar inventario por descripción (tipo filtro Excel)"
+        "• /in [Referencia] - Consultar inventario por referencia"
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -118,7 +104,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/start - Iniciar el bot\n"
         "/pedido - Registrar un pedido\n"
         "/PV [Nro_Documento] - Consultar estatus en Google Sheets\n"
-        "/in [Descripcion] - Filtrar inventario por descripción\n"
+        "/in [Referencia] - Consultar inventario por referencia\n"
         "/reiniciar - Reiniciar servicio de Render\n"
         "/actualizar - Limpiar caché y desplegar en Render"
     )
@@ -407,20 +393,20 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 
 # ==========================================
-# FLUJO 2: BÚSQUEDA DE INVENTARIO DESDE DRIVE (/in) - FILTRO ESTILO EXCEL
+# FLUJO 2: BÚSQUEDA DE INVENTARIO DESDE DRIVE (/in) - USANDO COLUMNAS REFERENCIA Y COLOR
 # ==========================================
 
 async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Busca y filtra artículos por coincidencia parcial en la columna Descripción."""
+    """Busca en la columna REFERENCIA y muestra los colores disponibles para seleccionar."""
     if not context.args:
         await update.message.reply_text(
-            "⚠️ Por favor, ingresa el texto a buscar en la descripción.\nEjemplo: `/in CAPRI`", 
+            "⚠️ Por favor, ingresa la referencia a buscar.\nEjemplo: `/in FRESBURA`", 
             parse_mode="Markdown"
         )
         return ConversationHandler.END
 
     termino_busqueda = " ".join(context.args).strip().upper()
-    msg = await update.message.reply_text("🔄 Filtrando inventario...", parse_mode="Markdown")
+    msg = await update.message.reply_text("🔄 Buscando referencia en inventario...", parse_mode="Markdown")
 
     df_inv = cargar_inventario_drive()
     if isinstance(df_inv, str):
@@ -433,49 +419,56 @@ async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYP
         return ConversationHandler.END
 
     try:
+        # Verificar que existan las columnas REFERENCIA y COLOR
         cols = [c.strip() for c in df_inv.columns]
-        
-        # Buscar la columna que coincida con 'Descripción' (o contener 'desc'), si no, usar la columna 1
-        col_nombre = next((c for c in cols if 'desc' in c.lower()), cols[1] if len(cols) > 1 else cols[0])
-        # Buscar la columna que coincida con 'Artículo' / código
-        col_codigo = next((c for c in cols if 'art' in c.lower() or 'cod' in c.lower() or 'ref' in c.lower()), cols[0])
+        col_ref = next((c for c in cols if c.upper() == 'REFERENCIA'), None)
+        col_color = next((c for c in cols if c.upper() == 'COLOR'), None)
+        col_codigo = next((c for c in cols if 'ART' in c.upper() or 'COD' in c.upper()), cols[0])
 
-        # FILTRAR ESTILO EXCEL: Buscar exclusivamente en la columna Descripción
-        df_filtrado = df_inv[df_inv[col_nombre].astype(str).str.upper().str.contains(termino_busqueda, na=False)]
+        if not col_ref or not col_color:
+            await context.bot.edit_message_text(
+                chat_id=update.effective_chat.id,
+                message_id=msg.message_id,
+                text="⚠️ El archivo de inventario de Drive no contiene las columnas `REFERENCIA` o `COLOR`.",
+                parse_mode="Markdown"
+            )
+            return ConversationHandler.END
+
+        # Filtrar por la columna REFERENCIA
+        df_filtrado = df_inv[df_inv[col_ref].astype(str).str.upper().str.contains(termino_busqueda, na=False)]
 
         if df_filtrado.empty:
             await context.bot.edit_message_text(
                 chat_id=update.effective_chat.id,
                 message_id=msg.message_id,
-                text=f"❌ No se encontraron coincidencias en la descripción para: *{termino_busqueda}*.",
+                text=f"❌ No se encontraron referencias coincidentes para: *{termino_busqueda}*.",
                 parse_mode="Markdown"
             )
             return ConversationHandler.END
 
-        resultados = df_filtrado.head(20).to_dict(orient="records")
-        keyboard = []
-        for row in resultados:
-            codigo = str(row.get(col_codigo, 'N/A'))
-            nombre = str(row.get(col_nombre, 'N/A'))
-            
-            col_alm = next((c for c in cols if 'almacen' in c.lower() or 'alm' in c.lower()), None)
-            almacen = str(row.get(col_alm, '')) if col_alm else ''
-            
-            texto_boton = f"{nombre}" + (f" (Alm {almacen})" if almacen else "")
-            if len(texto_boton.encode('utf-8')) > 64:
-                texto_boton = texto_boton[:61] + "..."
+        # Tomar referencias únicas coincidentes o mostrar los colores directamente si hay una coincidencia exacta o cercana
+        # Vamos a listar los colores únicos encontrados para esa referencia
+        colores_unicos = df_filtrado[[col_color]].drop_duplicates().head(20).values
 
-            row_idx = df_filtrado[df_filtrado[col_codigo].astype(str).str.strip() == codigo].index[0]
-            cb_data = f"sapidx_{row_idx}"
-            keyboard.append([InlineKeyboardButton(texto_boton, callback_data=cb_data)])
+        keyboard = []
+        for row_c in colores_unicos:
+            color_val = str(row_c[0])
+            cb_data = f"invcol_{color_val}"
+            if len(cb_data.encode('utf-8')) > 64:
+                cb_data = cb_data[:64]
+            keyboard.append([InlineKeyboardButton(color_val, callback_data=cb_data)])
 
         context.user_data['df_inventario_drive'] = df_inv
+        context.user_data['ref_buscada_inv'] = termino_busqueda
+        context.user_data['col_ref'] = col_ref
+        context.user_data['col_color'] = col_color
+        context.user_data['col_codigo'] = col_codigo
 
         reply_markup = InlineKeyboardMarkup(keyboard)
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id,
             message_id=msg.message_id,
-            text=f"🔍 Se encontraron *{len(df_filtrado)}* resultados para *{termino_busqueda}*:\nSelecciona una opción:",
+            text=f"🔍 Referencia encontrada: *{termino_busquedaa if 'termino_busquedaa' in locals() else termino_busqueda}*.\nSelecciona un color:",
             reply_markup=reply_markup,
             parse_mode="Markdown"
         )
@@ -496,20 +489,35 @@ async def seleccionar_ref_sap(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.answer()
     data = query.data
 
-    if data.startswith("sapidx_"):
-        row_idx = int(data.replace("sapidx_", "").strip())
+    if data.startswith("invcol_"):
+        color_elegido = data.replace("invcol_", "").strip()
         df_inv = context.user_data.get('df_inventario_drive')
+        ref_buscada = context.user_data.get('ref_buscada_inv')
+        col_ref = context.user_data.get('col_ref', 'REFERENCIA')
+        col_color = context.user_data.get('col_color', 'COLOR')
 
-        if df_inv is None or row_idx not in df_inv.index:
-            await query.edit_message_text(text="⚠️ La sesión ha expirado. Busca de nuevo con `/in [descripcion]`.", parse_mode="Markdown")
+        if df_inv is None:
+            await query.edit_message_text(text="⚠️ La sesión ha expirado. Busca de nuevo con `/in [referencia]`.", parse_mode="Markdown")
             return ConversationHandler.END
 
-        fila = df_inv.loc[row_idx]
+        # Filtrar filas que coincidan con la referencia y el color seleccionado (puede haber varios almacenes)
+        filas_match = df_inv[
+            (df_inv[col_ref].astype(str).str.upper().str.contains(ref_buscada, na=False)) & 
+            (df_inv[col_color].astype(str).str.strip() == color_elegido)
+        ]
+
+        if filas_match.empty:
+            await query.edit_message_text(text="❌ No se encontró información detallada para este color.", parse_mode="Markdown")
+            return ConversationHandler.END
+
+        # Construir el detalle mostrando stock por almacén si hay múltiples o la información completa
+        detalle_texto = f"🟢 *Inventario - {ref_buscada}* / *{color_elegido}*\n"
         
-        detalle_texto = f"🟢 *Detalle de Inventario*\n\n"
-        for col, val in fila.items():
-            if val is not None and str(val).strip() != "":
-                detalle_texto += f"• *{escapar_markdown(col)}:* `{escapar_markdown(val)}`\n"
+        for idx, fila in filas_match.iterrows():
+            detalle_texto += f"\n-----------------------------------\n"
+            for col, val in fila.items():
+                if val is not None and str(val).strip() != "":
+                    detalle_texto += f"• *{escapar_markdown(col)}:* `{escapar_markdown(val)}`\n"
 
         if len(detalle_texto) > 4000:
             detalle_texto = detalle_texto[:4000]
