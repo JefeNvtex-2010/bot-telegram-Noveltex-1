@@ -16,7 +16,8 @@ SELECCIONANDO_REF_SAP = 2
 
 # Enlaces de Google Sheets / Drive
 GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1EOGz7ix9Z1AufTJ-79TWHgiM9iN65LAf/export?format=csv"
-INVENTARIO_DRIVE_URL = "https://docs.google.com/uc?export=download&id=1FJdfaNhxcFFDVD_AV2lTITHw0f-mB0Y2"
+# Nuevo enlace ajustado con confirmación para descarga directa de Drive
+INVENTARIO_DRIVE_URL = "https://docs.google.com/uc?export=download&id=1FJdfaNhxcFFDVD_AV2lTITHw0f-mB0Y2&confirm=t"
 
 def escapar_markdown(texto: str) -> str:
     """Escapa caracteres especiales de Telegram para evitar errores de parseo."""
@@ -40,32 +41,34 @@ def _descargar_csv():
     return df
 
 def _descargar_inventario_csv():
-    """Función auxiliar 100% tolerante a fallos para el inventario de Google Drive."""
-    response = requests.get(INVENTARIO_DRIVE_URL, timeout=25)
+    """Función auxiliar robusta para leer el inventario de Google Drive evitando páginas de advertencia HTML."""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    }
+    response = requests.get(INVENTARIO_DRIVE_URL, headers=headers, timeout=25)
     response.raise_for_status()
     
-    try:
-        # Usamos estrictamente el motor de python y ignoramos líneas defectuosas para evitar el Buffer Overflow
-        df = pd.read_csv(
-            io.StringIO(response.text), 
-            dtype=str, 
-            keep_default_na=False, 
-            engine='python',
-            on_bad_lines='skip'
-        )
-    except Exception as e:
-        logger.error(f"Error alternativo leyendo CSV de Drive: {e}")
-        # Intento de respaldo con delimitador genérico
-        df = pd.read_csv(
-            io.StringIO(response.text), 
-            dtype=str, 
-            keep_default_na=False, 
-            sep=',',
-            engine='python',
-            on_bad_lines='skip'
-        )
+    contenido = response.text
+    
+    # Validar si Google devolvió HTML por advertencia de archivo grande
+    if "<html" in contenido.lower() or "<body" in contenido.lower():
+        # Intentar extraer el enlace de descarga directa alternativo si existe en el HTML o usar exportación genérica
+        logger.warning("⚠️ Google Drive devolvió una página HTML en lugar del CSV. Intentando método alternativo...")
+        alt_url = f"https://docs.google.com/spreadsheets/d/1FJdfaNhxcFFDVD_AV2lTITHw0f-mB0Y2/export?format=csv"
+        resp_alt = requests.get(alt_url, headers=headers, timeout=25)
+        if resp_alt.status_code == 200 and "<html" not in resp_alt.text.lower():
+            contenido = resp_alt.text
+
+    df = pd.read_csv(
+        io.StringIO(contenido), 
+        dtype=str, 
+        keep_default_na=False, 
+        engine='python',
+        on_bad_lines='skip'
+    )
         
     df.columns = df.columns.str.strip()
+    logger.info(f"📋 Columnas detectadas en Inventario Drive: {list(df.columns)}")
     return df
 
 def cargar_catalogo():
@@ -432,8 +435,9 @@ async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYP
     try:
         cols = [c.strip() for c in df_inv.columns]
         
-        # Identificar dinámicamente las columnas Descripción y Artículo
+        # Buscar la columna que coincida con 'Descripción' (o contener 'desc'), si no, usar la columna 1
         col_nombre = next((c for c in cols if 'desc' in c.lower()), cols[1] if len(cols) > 1 else cols[0])
+        # Buscar la columna que coincida con 'Artículo' / código
         col_codigo = next((c for c in cols if 'art' in c.lower() or 'cod' in c.lower() or 'ref' in c.lower()), cols[0])
 
         # FILTRAR ESTILO EXCEL: Buscar exclusivamente en la columna Descripción
