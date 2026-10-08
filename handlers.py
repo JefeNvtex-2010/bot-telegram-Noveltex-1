@@ -166,6 +166,7 @@ async def mostrar_ver_todo_referencia(query, context) -> int:
             f"• *Observacion Adicional:* {observacion_adicional}\n"
         )
 
+    # Botón para volver a la selección de colores de esta referencia
     keyboard = [[InlineKeyboardButton("🔙 Volver a colores", callback_data="volver_colores")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -220,12 +221,12 @@ async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
         referencias = resultado['Id Refer'].unique()
 
-        # Usar la clasificación general pero con la etiqueta solicitada: Estado del Pedido
-        estado_pedido_general = "N/A"
+        # Extraer la clasificación general para mostrarla en el encabezado
+        clasificacion_general = "N/A"
         if 'Clasificacion Pedido' in resultado.columns and not resultado.empty:
             val_estado = resultado.iloc[0].get('Clasificacion Pedido')
             if val_estado:
-                estado_pedido_general = escapar_markdown(str(val_estado))
+                clasificacion_general = escapar_markdown(str(val_estado))
 
         keyboard = []
         for ref in referencias:
@@ -235,7 +236,7 @@ async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
         await update.message.reply_text(
             f"🔍 Documento *{doc_buscado}*.\n"
-            f"• *Estado del Pedido:* {estado_pedido_general}\n\n"
+            f"• *Clasificación:* {clasificacion_general}\n\n"
             f"Selecciona una referencia:",
             reply_markup=reply_markup,
             parse_mode="Markdown"
@@ -263,11 +264,11 @@ async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_T
 
         referencias = resultado['Id Refer'].unique()
         
-        estado_pedido_general = "N/A"
+        clasificacion_general = "N/A"
         if 'Clasificacion Pedido' in resultado.columns and not resultado.empty:
             val_estado = resultado.iloc[0].get('Clasificacion Pedido')
             if val_estado:
-                estado_pedido_general = escapar_markdown(str(val_estado))
+                clasificacion_general = escapar_markdown(str(val_estado))
 
         keyboard = []
         for ref in referencias:
@@ -276,7 +277,7 @@ async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_T
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(
             text=f"🔍 Documento *{doc_buscado}*.\n"
-                 f"• *Estado del Pedido:* {estado_pedido_general}\n\n"
+                 f"• *Clasificación:* {clasificacion_general}\n\n"
                  f"Selecciona una referencia:",
             reply_markup=reply_markup,
             parse_mode="Markdown"
@@ -368,6 +369,7 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             await query.edit_message_text(text="⚠️ La sesión ha expirado o se reinició. Por favor, realiza la búsqueda de nuevo con `/PV [número]`.", parse_mode="Markdown")
             return ConversationHandler.END
 
+        # Reemplazar bost_Open por abierto
         resultado = resultado.replace('bost_Open', 'abierto')
 
         resultado['Id Refer'] = resultado['Id Refer'].astype(str).str.strip()
