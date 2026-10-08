@@ -141,7 +141,7 @@ async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYP
             )
             return SELECCIONANDO_REF_SAP
 
-    # 2. Si no hay caché o expiró, consultamos el API de SAP
+    # 2. Si no hay caché o expiró, consultamos el API de SAP de forma segura
     settings = load_settings()
     msg = await update.message.reply_text("🔄 Conectando a SAP y buscando artículos...", parse_mode="Markdown")
 
@@ -156,17 +156,19 @@ async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYP
         return ConversationHandler.END
 
     try:
+        # Petición limpia sin filtros OData complejos propensos a errores 400
         endpoint = f"{settings.sap_url}/Items?$select=ItemCode,ItemName,InventoryOnStock,ItemWarehouseInfoCollection"
-        response = session.get(endpoint, verify=False, timeout=20)
+        response = session.get(endpoint, verify=False, timeout=25)
         
         session.post(f"{settings.sap_url}/Logout", verify=False)
 
         if response.status_code == 200:
             data = response.json().get("value", [])
             
+            # Filtro local robusto en Python (evita errores 400 de sintaxis en SAP)
             matches = [
                 item for item in data 
-                if termino_busqueda in item.get("ItemName", "").upper() or termino_busqueda in item.get("ItemCode", "").upper()
+                if termino_busqueda in str(item.get("ItemName", "")).upper() or termino_busqueda in str(item.get("ItemCode", "")).upper()
             ]
 
             if not matches:
