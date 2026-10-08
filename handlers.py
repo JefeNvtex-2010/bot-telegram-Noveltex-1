@@ -1,5 +1,6 @@
 import logging
 import io
+import time
 import requests
 import pandas as pd
 import concurrent.futures
@@ -13,11 +14,15 @@ logger = logging.getLogger(__name__)
 # Desactivar advertencias de certificados autofirmados (muy común en SAP Service Layer)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+# --- CACHÉ DE SAP (Guarda los datos por 30 minutos para no saturar la API) ---
+sap_cache = {}
+CACHE_TTL = 1800  # 1800 segundos = 30 minutos
+
 # Estados para la conversación interactiva de búsqueda (Google Sheets y SAP)
 SELECCIONANDO_REFERENCIA, SELECCIONANDO_COLOR = range(2)
 SELECCIONANDO_REF_SAP = 2
 
-# Nuevo enlace de Google Sheets adaptado a exportación CSV
+# Enlace de Google Sheets adaptado a exportación CSV
 GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1EOGz7ix9Z1AufTJ-79TWHgiM9iN65LAf/export?format=csv"
 
 def escapar_markdown(texto: str) -> str:
@@ -70,7 +75,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/start - Iniciar el bot\n"
         "/pedido - Registrar un pedido\n"
         "/PV [Nro_Documento] - Consultar estatus en Google Sheets\n"
-        "/in [Nombre_Articulo] - Consultar inventario en tiempo real desde SAP\n"
+        "/in [Nombre_Articulo] - Consultar inventario en tiempo real desde SAP (con caché de 30 min)\n"
         "/reiniciar - Reiniciar servicio de Render (Solo autorizado)\n"
         "/actualizar - Limpiar caché y desplegar en Render (Solo autorizado)"
     )
@@ -104,7 +109,7 @@ def sap_login(settings):
         return None
 
 async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Inicia la búsqueda interactiva en SAP por nombre coincidente."""
+    """Inicia la búsqueda interactiva en SAP por nombre coincidente usando caché de 30 minutos."""
     if not context.args:
         await update.message.reply_text(
             "⚠️ Por favor, ingresa el nombre o referencia a buscar.\nEjemplo: `/in MARBELLA`", 
@@ -113,8 +118,31 @@ async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYP
         return ConversationHandler.END
 
     termino_busqueda = " ".join(context.args).strip().upper()
-    settings = load_settings()
+    tiempo_actual = time.time()
 
+    # 1. Verificar si tenemos caché válida de menos de 30 minutos
+    if termino_busqueda in sap_cache:
+        cached_data, timestamp = sap_cache[termino_busqueda]
+        if tiempo_actual - timestamp < CACHE_TTL:
+            logger.info(f"⚡ Usando caché de SAP para el término: {termino_busqueda}")
+            context.user_data['sap_items'] = cached_data
+
+            keyboard = []
+            for item in cached_data[:15]:
+                codigo = item.get("ItemCode")
+                nombre = item.get("ItemName")
+                keyboard.append([InlineKeyboardButton(f"{codigo} - {nombre[:35]}", callback_data=f"sapref_{codigo}")])
+
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await update.message.reply_text(
+                f"🔍 *(Caché activa)* Se encontraron {len(cached_data)} coincidencias para *{termino_busqueda}*.\nSelecciona una referencia:",
+                reply_markup=reply_markup,
+                parse_mode="Markdown"
+            )
+            return SELECCIONANDO_REF_SAP
+
+    # 2. Si no hay caché o expiró, consultamos el API de SAP
+    settings = load_settings()
     msg = await update.message.reply_text("🔄 Conectando a SAP y buscando artículos...", parse_mode="Markdown")
 
     session = sap_login(settings)
@@ -136,7 +164,6 @@ async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYP
         if response.status_code == 200:
             data = response.json().get("value", [])
             
-            # Filtro por coincidencia en el nombre o en el código
             matches = [
                 item for item in data 
                 if termino_busqueda in item.get("ItemName", "").upper() or termino_busqueda in item.get("ItemCode", "").upper()
@@ -151,10 +178,12 @@ async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYP
                 )
                 return ConversationHandler.END
 
+            # Guardar en la caché global por 30 minutos
+            sap_cache[termino_busqueda] = (matches, tiempo_actual)
             context.user_data['sap_items'] = matches
 
             keyboard = []
-            for item in matches[:15]:  # Límite de 15 botones para Telegram
+            for item in matches[:15]:
                 codigo = item.get("ItemCode")
                 nombre = item.get("ItemName")
                 keyboard.append([InlineKeyboardButton(f"{codigo} - {nombre[:35]}", callback_data=f"sapref_{codigo}")])
@@ -394,7 +423,7 @@ async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 return ConversationHandler.END
 
         if catalogo_df is None or (isinstance(catalogo_df, pd.DataFrame) and catalogo_df.empty):
-            await update.message.reply_text("⚠️ El catálogo de Google Sheets não está disponible o está vacío.")
+            await update.message.reply_text("⚠️ El catálogo de Google Sheets no está disponible o está vacío.")
             return ConversationHandler.END
 
         columna_doc = 'Documento Pd'
