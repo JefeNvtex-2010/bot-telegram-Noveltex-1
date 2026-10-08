@@ -40,25 +40,28 @@ def _descargar_csv():
     return df
 
 def _descargar_inventario_csv():
-    """Función auxiliar robusta con detección automática de separador para el inventario de Google Drive."""
+    """Función auxiliar 100% tolerante a fallos para el inventario de Google Drive."""
     response = requests.get(INVENTARIO_DRIVE_URL, timeout=25)
     response.raise_for_status()
     
     try:
-        # sep=None con engine='python' detecta automáticamente si el CSV usa comas, puntos y comas o tabuladores
+        # Usamos estrictamente el motor de python y ignoramos líneas defectuosas para evitar el Buffer Overflow
         df = pd.read_csv(
             io.StringIO(response.text), 
             dtype=str, 
             keep_default_na=False, 
-            sep=None, 
             engine='python',
             on_bad_lines='skip'
         )
-    except Exception:
+    except Exception as e:
+        logger.error(f"Error alternativo leyendo CSV de Drive: {e}")
+        # Intento de respaldo con delimitador genérico
         df = pd.read_csv(
             io.StringIO(response.text), 
             dtype=str, 
             keep_default_na=False, 
+            sep=',',
+            engine='python',
             on_bad_lines='skip'
         )
         
@@ -86,7 +89,7 @@ def cargar_inventario_drive():
         future = executor.submit(_descargar_inventario_csv)
         try:
             df = future.result(timeout=30.0)
-            logger.info(f"✅ ¡Inventario de Drive leído con éxito! ({len(df)} filas - Columnas: {list(df.columns)})")
+            logger.info(f"✅ ¡Inventario de Drive leído con éxito! ({len(df)} filas)")
             return df
         except concurrent.futures.TimeoutError:
             logger.error("⚠️ Timeout en inventario Drive.")
@@ -174,42 +177,27 @@ async def mostrar_ver_todo_referencia(query, context) -> int:
         await query.edit_message_text(text="⚠️ La sesión ha expirado. Realiza la búsqueda de nuevo con `/PV [número]`.", parse_mode="Markdown")
         return ConversationHandler.END
 
-    resultado = resultado.replace('bost_Open', 'Abierto')
-    resultado = resultado.replace('bost_Close', 'Cerrado')
-
+    resultado = resultado.replace('bost_Open', 'Abierto').replace('bost_Close', 'Cerrado')
     resultado['Id Refer'] = resultado['Id Refer'].astype(str).str.strip()
     df_ref = resultado[resultado['Id Refer'] == ref_elegida]
 
     mensaje = f"🔍 *Detalle Completo - Referencia {ref_elegida}* (Documento {doc_buscado}, Total ítems: {len(df_ref)}):\n"
 
     for index, fila in df_ref.iterrows():
-        id_referencia = escapar_markdown(fila.get('Id Refer', 'N/A'))
-        color = escapar_markdown(fila.get('Color', 'N/A'))
-        ubicacion = escapar_markdown(fila.get('Ubicación del Pedido', 'N/A'))
-        doc_status_sap = escapar_markdown(fila.get('Document Status SAP', 'N/A'))
-        line_status_sap = escapar_markdown(fila.get('Line Status Sap', 'N/A'))
-        cantidad_pedida = escapar_markdown(fila.get('Cantidad Ped', 'N/A'))
-        cantidad_alistada = escapar_markdown(fila.get('Cantidad Alistada', 'N/A'))
-        estado_factura = escapar_markdown(fila.get('Estado Factura', 'N/A'))
-        fecha_despacho = escapar_markdown(fila.get('Fecha Factura', 'N/A')) 
-        nombre_operario = escapar_markdown(fila.get('Nombre Operario Asignado', 'N/A'))
-        estado_pedido = escapar_markdown(fila.get('Clasificacion Pedido', 'N/A'))
-        observacion_adicional = escapar_markdown(fila.get('Observacion Adicional', 'N/A'))
-
         mensaje += (
             f"\n-----------------------------------\n"
-            f"• *Estado factura:* {estado_factura}\n"
-            f"• *Ubicación:* {ubicacion}\n"
-            f"• *Id referencia:* {id_referencia}\n"
-            f"• *Color:* {color}\n"                    
-            f"• *Estado Pedido:* {doc_status_sap}\n"
-            f"• *Estado Item:* {line_status_sap}\n"
-            f"• *Cantidad pedida:* {cantidad_pedida}\n"
-            f"• *Cantidad alistada:* {cantidad_alistada}\n"           
-            f"• *Fecha Despacho:* {fecha_despacho}\n"
-            f"• *Nombre Operario Asignado:* {nombre_operario}\n"
-            f"• *Estado del Pedido:* {estado_pedido}\n"
-            f"• *Observacion Adicional:* {observacion_adicional}\n"
+            f"• *Estado factura:* {escapar_markdown(fila.get('Estado Factura', 'N/A'))}\n"
+            f"• *Ubicación:* {escapar_markdown(fila.get('Ubicación del Pedido', 'N/A'))}\n"
+            f"• *Id referencia:* {escapar_markdown(fila.get('Id Refer', 'N/A'))}\n"
+            f"• *Color:* {escapar_markdown(fila.get('Color', 'N/A'))}\n"                    
+            f"• *Estado Pedido:* {escapar_markdown(fila.get('Document Status SAP', 'N/A'))}\n"
+            f"• *Estado Item:* {escapar_markdown(fila.get('Line Status Sap', 'N/A'))}\n"
+            f"• *Cantidad pedida:* {escapar_markdown(fila.get('Cantidad Ped', 'N/A'))}\n"
+            f"• *Cantidad alistada:* {escapar_markdown(fila.get('Cantidad Alistada', 'N/A'))}\n"           
+            f"• *Fecha Despacho:* {escapar_markdown(fila.get('Fecha Factura', 'N/A'))}\n"
+            f"• *Nombre Operario Asignado:* {escapar_markdown(fila.get('Nombre Operario Asignado', 'N/A'))}\n"
+            f"• *Estado del Pedido:* {escapar_markdown(fila.get('Clasificacion Pedido', 'N/A'))}\n"
+            f"• *Observacion Adicional:* {escapar_markdown(fila.get('Observacion Adicional', 'N/A'))}\n"
         )
 
     keyboard = [[InlineKeyboardButton("🔙 Volver a colores", callback_data="volver_colores")]]
@@ -442,15 +430,13 @@ async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYP
         return ConversationHandler.END
 
     try:
-        # Detección segura de columnas basadas en las columnas reales del archivo
         cols = [c.strip() for c in df_inv.columns]
         
-        # Buscar columna de descripción (contiene 'desc' o es la segunda columna)
+        # Identificar dinámicamente las columnas Descripción y Artículo
         col_nombre = next((c for c in cols if 'desc' in c.lower()), cols[1] if len(cols) > 1 else cols[0])
-        # Buscar columna de artículo/código (contiene 'art' o 'cod' o 'ref' o es la primera)
         col_codigo = next((c for c in cols if 'art' in c.lower() or 'cod' in c.lower() or 'ref' in c.lower()), cols[0])
 
-        # FILTRAR ESTILO EXCEL: Buscar exclusivamente en la columna Descripción de forma tolerante a mayúsculas
+        # FILTRAR ESTILO EXCEL: Buscar exclusivamente en la columna Descripción
         df_filtrado = df_inv[df_inv[col_nombre].astype(str).str.upper().str.contains(termino_busqueda, na=False)]
 
         if df_filtrado.empty:
@@ -462,23 +448,19 @@ async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYP
             )
             return ConversationHandler.END
 
-        # Tomamos hasta 20 resultados para mostrar en los botones estilo lista de Excel
         resultados = df_filtrado.head(20).to_dict(orient="records")
         keyboard = []
         for row in resultados:
             codigo = str(row.get(col_codigo, 'N/A'))
             nombre = str(row.get(col_nombre, 'N/A'))
             
-            # Buscar columna de almacén de forma flexible
             col_alm = next((c for c in cols if 'almacen' in c.lower() or 'alm' in c.lower()), None)
             almacen = str(row.get(col_alm, '')) if col_alm else ''
             
-            # Texto visible en cada botón estilo filtro
             texto_boton = f"{nombre}" + (f" (Alm {almacen})" if almacen else "")
             if len(texto_boton.encode('utf-8')) > 64:
                 texto_boton = texto_boton[:61] + "..."
 
-            # Usamos el índice de la fila filtrada original
             row_idx = df_filtrado[df_filtrado[col_codigo].astype(str).str.strip() == codigo].index[0]
             cb_data = f"sapidx_{row_idx}"
             keyboard.append([InlineKeyboardButton(texto_boton, callback_data=cb_data)])
@@ -520,7 +502,6 @@ async def seleccionar_ref_sap(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         fila = df_inv.loc[row_idx]
         
-        # Muestra todas las columnas y valores de esa fila exacta seleccionada
         detalle_texto = f"🟢 *Detalle de Inventario*\n\n"
         for col, val in fila.items():
             if val is not None and str(val).strip() != "":
