@@ -8,11 +8,15 @@ from telegram.ext import ContextTypes, ConversationHandler
 
 logger = logging.getLogger(__name__)
 
-# Estados para la conversación interactiva de búsqueda
+# Estados para la conversación interactiva de búsqueda de pedidos (/PV)
 SELECCIONANDO_REFERENCIA, SELECCIONANDO_COLOR = range(2)
 
-# Nuevo enlace de Google Sheets adaptado a exportación CSV
+# Estados para la conversación de inventario (/in)
+SELECCIONANDO_REF_SAP = 2
+
+# Enlaces de Google Sheets / Drive
 GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1EOGz7ix9Z1AufTJ-79TWHgiM9iN65LAf/export?format=csv"
+INVENTARIO_DRIVE_URL = "https://docs.google.com/uc?export=download&id=1FJdfaNhxcFFDVD_AV2lTITHw0f-mB0Y2"
 
 def escapar_markdown(texto: str) -> str:
     """Escapa caracteres especiales de Telegram para evitar errores de parseo."""
@@ -24,7 +28,7 @@ def escapar_markdown(texto: str) -> str:
     return texto.strip()
 
 def _descargar_csv():
-    """Función auxiliar robusta usando requests para manejar redirecciones de Google Sheets."""
+    """Función auxiliar robusta usando requests para manejar redirecciones de Google Sheets (Pedidos)."""
     response = requests.get(GOOGLE_SHEET_URL, timeout=25)
     response.raise_for_status()
     
@@ -33,6 +37,32 @@ def _descargar_csv():
     
     if 'Documento Pd' in df.columns:
         df['Documento Pd'] = df['Documento Pd'].astype(str).str.split('.').str[0].str.strip()
+    return df
+
+def _descargar_inventario_csv():
+    """Función auxiliar robusta con tolerancia a errores para el inventario de Google Drive."""
+    response = requests.get(INVENTARIO_DRIVE_URL, timeout=25)
+    response.raise_for_status()
+    
+    try:
+        df = pd.read_csv(
+            io.StringIO(response.text), 
+            dtype=str, 
+            keep_default_na=False, 
+            sep=None, 
+            engine='python',
+            on_bad_lines='skip'
+        )
+    except Exception:
+        df = pd.read_csv(
+            io.StringIO(response.text), 
+            dtype=str, 
+            keep_default_na=False, 
+            engine='python',
+            on_bad_lines='skip'
+        )
+        
+    df.columns = df.columns.str.strip()
     return df
 
 def cargar_catalogo():
@@ -50,12 +80,30 @@ def cargar_catalogo():
             logger.error(f"⚠️ Error al leer Google Sheets: {e}")
             return f"ERROR: {e}"
 
+def cargar_inventario_drive():
+    """Carga el inventario desde Google Drive con un límite de 30 segundos de timeout."""
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(_descargar_inventario_csv)
+        try:
+            df = future.result(timeout=30.0)
+            logger.info(f"✅ ¡Inventario de Drive leído con éxito! ({len(df)} filas)")
+            return df
+        except concurrent.futures.TimeoutError:
+            logger.error("⚠️ Timeout en inventario Drive.")
+            return "TIMEOUT"
+        except Exception as e:
+            logger.error(f"⚠️ Error al leer inventario de Google Drive: {e}")
+            return f"ERROR: {e}"
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     name = user.first_name if user else "allí"
     await update.message.reply_text(
         f"¡Hola {name}! Bienvenido al sistema de pedidos.\n\n"
-        "Usa el comando /pedido para iniciar una nueva orden de compra o /PV [Nro_Documento]."
+        "Usa los comandos:\n"
+        "• /pedido - Registrar una nueva orden de compra\n"
+        "• /PV [Nro_Documento] - Consultar estatus de pedidos\n"
+        "• /in [Nombre_o_Descripcion] - Consultar inventario desde Drive"
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -64,6 +112,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/start - Iniciar el bot\n"
         "/pedido - Registrar un pedido\n"
         "/PV [Nro_Documento] - Consultar estatus en Google Sheets\n"
+        "/in [Descripcion] - Consultar inventario desde Google Drive\n"
         "/reiniciar - Reiniciar servicio de Render (Solo autorizado)\n"
         "/actualizar - Limpiar caché y desplegar en Render (Solo autorizado)"
     )
@@ -96,7 +145,6 @@ async def reiniciar_render(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         logger.error(f"Error al reiniciar Render: {e}")
         await update.message.reply_text(f"⚠️ Ocurrió un error inesperado: `{e}`", parse_mode="Markdown")
 
-
 async def limpiar_cache_y_deploy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     MI_TELEGRAM_ID = 5655537446
     
@@ -116,10 +164,9 @@ async def limpiar_cache_y_deploy(update: Update, context: ContextTypes.DEFAULT_T
         logger.error(f"Error al limpiar caché en Render: {e}")
         await update.message.reply_text(f"⚠️ Ocurrió un error inesperado: `{e}`", parse_mode="Markdown")
 
-# --- FLUJO INTERACTIVO DE BÚSQUEDA ---
+# --- FLUJO INTERACTIVO DE BÚSQUEDA DE PEDIDOS (/PV) ---
 
 async def mostrar_ver_todo_referencia(query, context) -> int:
-    """Muestra todos los colores/ítems de la referencia actualmente seleccionada."""
     resultado = context.user_data.get('df_pedido')
     doc_buscado = context.user_data.get('doc_buscado', 'Desconocido')
     ref_elegida = context.user_data.get('ref_elegida')
@@ -128,7 +175,6 @@ async def mostrar_ver_todo_referencia(query, context) -> int:
         await query.edit_message_text(text="⚠️ La sesión ha expirado o se reinició. Por favor, realiza la búsqueda de nuevo con `/PV [número]`.", parse_mode="Markdown")
         return ConversationHandler.END
 
-    # Reemplazos solicitados
     resultado = resultado.replace('bost_Open', 'Abierto')
     resultado = resultado.replace('bost_Close', 'Cerrado')
 
@@ -167,7 +213,6 @@ async def mostrar_ver_todo_referencia(query, context) -> int:
             f"• *Observacion Adicional:* {observacion_adicional}\n"
         )
 
-    # Botón para volver a la selección de colores de esta referencia
     keyboard = [[InlineKeyboardButton("🔙 Volver a colores", callback_data="volver_colores")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -190,7 +235,6 @@ async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             return ConversationHandler.END
 
         doc_buscado = context.args[0].strip()
-
         catalogo_df = cargar_catalogo()
 
         if isinstance(catalogo_df, str):
@@ -206,12 +250,11 @@ async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             return ConversationHandler.END
 
         columna_doc = 'Documento Pd'
-
         if columna_doc not in catalogo_df.columns:
             await update.message.reply_text(f"⚠️ No se encontró la columna '{columna_doc}' en la hoja.")
             return ConversationHandler.END
 
-        resultado = catalogo_df[catalogo_df[columna_doc] == doc_buscado]
+        resultado = catalogo_df[catalogo_df[columna_doc].astype(str).str.strip() == doc_buscado]
 
         if resultado.empty:
             await update.message.reply_text(f"❌ No se encontró ningún registro con el documento: *{doc_buscado}*.", parse_mode="Markdown")
@@ -221,13 +264,11 @@ async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         context.user_data['doc_buscado'] = doc_buscado
 
         referencias = resultado['Id Refer'].unique()
-
         keyboard = []
         for ref in referencias:
             keyboard.append([InlineKeyboardButton(str(ref), callback_data=f"ref_{ref}")])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
-
         await update.message.reply_text(
             f"🔍 Documento *{doc_buscado}*.\n\n"
             f"Selecciona una referencia:",
@@ -244,7 +285,6 @@ async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-
     data_callback = query.data
 
     if data_callback == "volver_referencias":
@@ -256,7 +296,6 @@ async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_T
             return ConversationHandler.END
 
         referencias = resultado['Id Refer'].unique()
-        
         keyboard = []
         for ref in referencias:
             keyboard.append([InlineKeyboardButton(str(ref), callback_data=f"ref_{ref}")])
@@ -282,7 +321,6 @@ async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_T
     
     resultado['Id Refer'] = resultado['Id Refer'].astype(str).str.strip()
     df_ref = resultado[resultado['Id Refer'] == referencia_elegida]
-    
     colores = df_ref['Color'].astype(str).str.strip().unique()
 
     keyboard = []
@@ -295,7 +333,6 @@ async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_T
         keyboard.append([InlineKeyboardButton(str(color), callback_data=cb_data)])
 
     keyboard.append([InlineKeyboardButton("🔙 Volver", callback_data="volver_referencias")])
-
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     await query.edit_message_text(
@@ -355,7 +392,6 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             await query.edit_message_text(text="⚠️ La sesión ha expirado o se reinició. Por favor, realiza la búsqueda de nuevo con `/PV [número]`.", parse_mode="Markdown")
             return ConversationHandler.END
 
-        # Reemplazos solicitados
         resultado = resultado.replace('bost_Open', 'Abierto')
         resultado = resultado.replace('bost_Close', 'Cerrado')
 
@@ -409,6 +445,116 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         logger.error(f"Error en seleccionar_color: {e}")
         await query.edit_message_text(text=f"⚠️ Ocurrió un error al procesar el color: `{e}`", parse_mode="Markdown")
         return ConversationHandler.END
+
+
+# ==========================================
+# FLUJO 2: BÚSQUEDA DE INVENTARIO DESDE GOOGLE DRIVE (/in)
+# ==========================================
+
+async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Busca artículos en el inventario de Google Drive por coincidencia parcial en la descripción."""
+    if not context.args:
+        await update.message.reply_text(
+            "⚠️ Por favor, ingresa el nombre o descripción a buscar.\nEjemplo: `/in CAPRI`", 
+            parse_mode="Markdown"
+        )
+        return ConversationHandler.END
+
+    termino_busqueda = " ".join(context.args).strip().upper()
+    msg = await update.message.reply_text("🔄 Buscando en el archivo de inventario...", parse_mode="Markdown")
+
+    df_inv = cargar_inventario_drive()
+    if isinstance(df_inv, str):
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=msg.message_id,
+            text=f"⚠️ No se pudo acceder al archivo de inventario en Drive: `{df_inv}`",
+            parse_mode="Markdown"
+        )
+        return ConversationHandler.END
+
+    try:
+        if len(df_inv.columns) > 1:
+            col_nombre = next((col for col in df_inv.columns if 'name' in col.lower() or 'desc' in col.lower() or 'articulo' in col.lower()), df_inv.columns[1])
+        else:
+            col_nombre = df_inv.columns[0]
+            
+        col_codigo = next((col for col in df_inv.columns if 'code' in col.lower() or 'ref' in col.lower() or 'codigo' in col.lower()), df_inv.columns[0])
+
+        df_filtrado = df_inv[df_inv[col_nombre].astype(str).str.upper().str.contains(termino_busqueda, na=False)]
+
+        if df_filtrado.empty:
+            await context.bot.edit_message_text(
+                chat_id=update.effective_chat.id,
+                message_id=msg.message_id,
+                text=f"❌ No se encontraron artículos con la descripción: *{termino_busqueda}*.",
+                parse_mode="Markdown"
+            )
+            return ConversationHandler.END
+
+        resultados = df_filtrado.head(15).to_dict(orient="records")
+        keyboard = []
+        for row in resultados:
+            codigo = str(row.get(col_codigo, 'N/A'))
+            nombre = str(row.get(col_nombre, 'N/A'))
+            keyboard.append([InlineKeyboardButton(f"{codigo} - {nombre[:35]}", callback_data=f"sapref_{codigo}")])
+
+        context.user_data['df_inventario_drive'] = df_inv
+        context.user_data['col_codigo'] = col_codigo
+
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=msg.message_id,
+            text=f"🔍 Se encontraron {len(df_filtrado)} coincidencias para *{termino_busqueda}*.\nSelecciona una referencia:",
+            reply_markup=reply_markup,
+            parse_mode="Markdown"
+        )
+        return SELECCIONANDO_REF_SAP
+
+    except Exception as e:
+        logger.error(f"Error procesando inventario de Drive: {e}")
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=msg.message_id,
+            text=f"⚠️ Ocurrió un error procesando el archivo: `{e}`",
+            parse_mode="Markdown"
+        )
+        return ConversationHandler.END
+
+async def seleccionar_ref_sap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+
+    if data.startswith("sapref_"):
+        codigo_elegido = data.replace("sapref_", "").strip()
+        df_inv = context.user_data.get('df_inventario_drive')
+        col_codigo = context.user_data.get('col_codigo', 'ItemCode')
+
+        if df_inv is None:
+            await query.edit_message_text(text="⚠️ La sesión ha expirado. Realiza la búsqueda de nuevo con `/in [nombre]`.", parse_mode="Markdown")
+            return ConversationHandler.END
+
+        fila_match = df_inv[df_inv[col_codigo].astype(str).str.strip() == codigo_elegido]
+
+        if fila_match.empty:
+            await query.edit_message_text(text="❌ No se encontró información detallada para este artículo.", parse_mode="Markdown")
+            return ConversationHandler.END
+
+        fila = fila_match.iloc[0]
+        detalle_texto = f"🟢 *Detalle de Inventario (Drive)*\n\n"
+        for col, val in fila.items():
+            if val and str(val).strip() != "":
+                detalle_texto += f"• *{escapar_markdown(col)}:* `{escapar_markdown(val)}`\n"
+
+        if len(detalle_texto) > 4000:
+            detalle_texto = detalle_texto[:4000]
+
+        await query.edit_message_text(text=detalle_texto, parse_mode="Markdown")
+    
+    return ConversationHandler.END
+
 
 async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("❌ Búsqueda cancelada.")
