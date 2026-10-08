@@ -144,7 +144,6 @@ async def mostrar_ver_todo_referencia(query, context) -> int:
         cantidad_alistada = escapar_markdown(fila.get('Cantidad Alistada', 'N/A'))
         estado_factura = escapar_markdown(fila.get('Estado Factura', 'N/A'))
         fecha_despacho = escapar_markdown(fila.get('Fecha Factura', 'N/A')) 
-        id_operario = escapar_markdown(fila.get('Id Operario Asignado', 'N/A')) 
         operario = escapar_markdown(fila.get('Nombre Operario Asignado', 'N/A'))
         clasificacion = escapar_markdown(fila.get('Clasificacion Pedido', 'N/A'))
         observacion_adicional = escapar_markdown(fila.get('Observacion Adicional', 'N/A'))
@@ -160,13 +159,11 @@ async def mostrar_ver_todo_referencia(query, context) -> int:
             f"• *Cantidad pedida:* {cantidad_pedida}\n"
             f"• *Cantidad alistada:* {cantidad_alistada}\n"           
             f"• *Fecha Despacho:* {fecha_despacho}\n"
-            f"• *Id Operario Asignado:* {id_operario}\n"
             f"• *Operario:* {operario}\n"
             f"• *Clasificación:* {clasificacion}\n"
             f"• *Observacion Adicional:* {observacion_adicional}\n"
         )
 
-    # Botón para volver a la selección de colores de esta referencia
     keyboard = [[InlineKeyboardButton("🔙 Volver a colores", callback_data="volver_colores")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -221,12 +218,12 @@ async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
         referencias = resultado['Id Refer'].unique()
 
-        # Extraer la clasificación general para mostrarla en el encabezado
-        clasificacion_general = "N/A"
+        # Usar la clasificación general pero con la etiqueta solicitada: Estado del Pedido
+        estado_pedido_general = "N/A"
         if 'Clasificacion Pedido' in resultado.columns and not resultado.empty:
             val_estado = resultado.iloc[0].get('Clasificacion Pedido')
             if val_estado:
-                clasificacion_general = escapar_markdown(str(val_estado))
+                estado_pedido_general = escapar_markdown(str(val_estado))
 
         keyboard = []
         for ref in referencias:
@@ -236,7 +233,7 @@ async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
         await update.message.reply_text(
             f"🔍 Documento *{doc_buscado}*.\n"
-            f"• *Clasificación:* {clasificacion_general}\n\n"
+            f"• *Estado del Pedido:* {estado_pedido_general}\n\n"
             f"Selecciona una referencia:",
             reply_markup=reply_markup,
             parse_mode="Markdown"
@@ -264,11 +261,11 @@ async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_T
 
         referencias = resultado['Id Refer'].unique()
         
-        clasificacion_general = "N/A"
+        estado_pedido_general = "N/A"
         if 'Clasificacion Pedido' in resultado.columns and not resultado.empty:
             val_estado = resultado.iloc[0].get('Clasificacion Pedido')
             if val_estado:
-                clasificacion_general = escapar_markdown(str(val_estado))
+                estado_pedido_general = escapar_markdown(str(val_estado))
 
         keyboard = []
         for ref in referencias:
@@ -277,7 +274,7 @@ async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_T
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(
             text=f"🔍 Documento *{doc_buscado}*.\n"
-                 f"• *Clasificación:* {clasificacion_general}\n\n"
+                 f"• *Estado del Pedido:* {estado_pedido_general}\n\n"
                  f"Selecciona una referencia:",
             reply_markup=reply_markup,
             parse_mode="Markdown"
@@ -369,7 +366,6 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             await query.edit_message_text(text="⚠️ La sesión ha expirado o se reinició. Por favor, realiza la búsqueda de nuevo con `/PV [número]`.", parse_mode="Markdown")
             return ConversationHandler.END
 
-        # Reemplazar bost_Open por abierto
         resultado = resultado.replace('bost_Open', 'abierto')
 
         resultado['Id Refer'] = resultado['Id Refer'].astype(str).str.strip()
@@ -392,7 +388,6 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         cantidad_alistada = escapar_markdown(fila.get('Cantidad Alistada', 'N/A'))
         estado_factura = escapar_markdown(fila.get('Estado Factura', 'N/A'))
         fecha_despacho = escapar_markdown(fila.get('Fecha Factura', 'N/A')) 
-        id_operario = escapar_markdown(fila.get('Id Operario Asignado', 'N/A')) 
         operario = escapar_markdown(fila.get('Nombre Operario Asignado', 'N/A'))
         clasificacion = escapar_markdown(fila.get('Clasificacion Pedido', 'N/A'))
         observacion_adicional = escapar_markdown(fila.get('Observacion Adicional', 'N/A'))
@@ -408,7 +403,6 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             f"• *Cantidad pedida:* {cantidad_pedida}\n"
             f"• *Cantidad alistada:* {cantidad_alistada}\n"           
             f"• *Fecha Despacho:* {fecha_despacho}\n"
-            f"• *Id Operario Asignado:* {id_operario}\n"
             f"• *Operario:* {operario}\n"
             f"• *Clasificación:* {clasificacion}\n"
             f"• *Observacion Adicional:* {observacion_adicional}\n"
