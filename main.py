@@ -54,7 +54,7 @@ def main() -> None:
         },
         fallbacks=[
             CommandHandler("cancelar", cancelar),
-            CommandHandler("PV", iniciar_busqueda),  # Permite reiniciar si se vuelve a enviar /PV
+            CommandHandler("PV", iniciar_busqueda),
             CommandHandler("pv", iniciar_busqueda)
         ],
     )
