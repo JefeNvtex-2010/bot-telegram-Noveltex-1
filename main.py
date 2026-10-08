@@ -8,7 +8,8 @@ from logging_config import configure_logging
 from handlers import (
     start, help_command, order_command, 
     iniciar_busqueda, seleccionar_referencia, seleccionar_color, 
-    cancelar, reiniciar_render, limpiar_cache_y_deploy, 
+    cancelar, reiniciar_render, limpiar_cache_y_deploy,
+    consultar_inventario_sap_handler, # <--- 1. Importado aquí
     SELECCIONANDO_REFERENCIA, SELECCIONANDO_COLOR
 )
 
@@ -65,6 +66,7 @@ def main() -> None:
     application.add_handler(CommandHandler("pedido", order_command))
     application.add_handler(CommandHandler("reiniciar", reiniciar_render))
     application.add_handler(CommandHandler("actualizar", limpiar_cache_y_deploy))
+    application.add_handler(CommandHandler("stock", consultar_inventario_sap_handler)) # <--- 2. Comando registrado aquí
     
     application.run_polling()
 
