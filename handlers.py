@@ -38,7 +38,24 @@ def _descargar_csv(url):
     response = requests.get(url, timeout=25)
     response.raise_for_status()
     
-    df = pd.read_csv(io.StringIO(response.text), dtype=str, keep_default_na=False)
+    try:
+        # Intentamos leer de forma estándar pero tolerante a filas con errores de columnas
+        df = pd.read_csv(
+            io.StringIO(response.text), 
+            dtype=str, 
+            keep_default_na=False, 
+            on_bad_lines='skip'
+        )
+    except Exception:
+        # Si falla el motor C, usamos el motor de python que es más flexible con archivos irregulares
+        df = pd.read_csv(
+            io.StringIO(response.text), 
+            dtype=str, 
+            keep_default_na=False, 
+            engine='python',
+            on_bad_lines='skip'
+        )
+        
     df.columns = df.columns.str.strip()
     return df
 
