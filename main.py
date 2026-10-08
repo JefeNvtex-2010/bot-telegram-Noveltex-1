@@ -9,8 +9,8 @@ from handlers import (
     start, help_command, order_command, 
     iniciar_busqueda, seleccionar_referencia, seleccionar_color, 
     cancelar, reiniciar_render, limpiar_cache_y_deploy,
-    consultar_inventario_sap_handler, # <--- 1. Importado aquí
-    SELECCIONANDO_REFERENCIA, SELECCIONANDO_COLOR
+    iniciar_busqueda_sap, seleccionar_ref_sap,
+    SELECCIONANDO_REFERENCIA, SELECCIONANDO_COLOR, SELECCIONANDO_REF_SAP
 )
 
 logger = logging.getLogger(__name__)
@@ -59,14 +59,32 @@ def main() -> None:
         ],
     )
 
+    # Configurar el ConversationHandler para la búsqueda interactiva de inventario SAP usando /in
+    sap_conv_handler = ConversationHandler(
+        entry_points=[
+            CommandHandler("in", iniciar_busqueda_sap),
+            CommandHandler("IN", iniciar_busqueda_sap)
+        ],
+        states={
+            SELECCIONANDO_REF_SAP: [
+                CallbackQueryHandler(seleccionar_ref_sap, pattern="^(sapref_|volver_sap_refs)")
+            ],
+        },
+        fallbacks=[
+            CommandHandler("cancelar", cancelar),
+            CommandHandler("in", iniciar_busqueda_sap),
+            CommandHandler("IN", iniciar_busqueda_sap)
+        ],
+    )
+
     # Registrar manejadores
     application.add_handler(conv_handler)
+    application.add_handler(sap_conv_handler)
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("pedido", order_command))
     application.add_handler(CommandHandler("reiniciar", reiniciar_render))
     application.add_handler(CommandHandler("actualizar", limpiar_cache_y_deploy))
-    application.add_handler(CommandHandler("stock", consultar_inventario_sap_handler)) # <--- 2. Comando registrado aquí
     
     application.run_polling()
 
