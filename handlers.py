@@ -144,6 +144,7 @@ async def mostrar_ver_todo_referencia(query, context) -> int:
         cantidad_alistada = escapar_markdown(fila.get('Cantidad Alistada', 'N/A'))
         estado_factura = escapar_markdown(fila.get('Estado Factura', 'N/A'))
         fecha_despacho = escapar_markdown(fila.get('Fecha Factura', 'N/A')) 
+        id_operario = escapar_markdown(fila.get('Id Operario Asignado', 'N/A')) 
         operario = escapar_markdown(fila.get('Nombre Operario Asignado', 'N/A'))
         clasificacion = escapar_markdown(fila.get('Clasificacion Pedido', 'N/A'))
         observacion_adicional = escapar_markdown(fila.get('Observacion Adicional', 'N/A'))
@@ -159,6 +160,7 @@ async def mostrar_ver_todo_referencia(query, context) -> int:
             f"• *Cantidad pedida:* {cantidad_pedida}\n"
             f"• *Cantidad alistada:* {cantidad_alistada}\n"           
             f"• *Fecha Despacho:* {fecha_despacho}\n"
+            f"• *Id Operario Asignado:* {id_operario}\n"
             f"• *Operario:* {operario}\n"
             f"• *Clasificación:* {clasificacion}\n"
             f"• *Observacion Adicional:* {observacion_adicional}\n"
@@ -218,6 +220,7 @@ async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
         referencias = resultado['Id Refer'].unique()
 
+        # Usar la clasificación general pero con la etiqueta solicitada: Estado del Pedido
         estado_pedido_general = "N/A"
         if 'Clasificacion Pedido' in resultado.columns and not resultado.empty:
             val_estado = resultado.iloc[0].get('Clasificacion Pedido')
@@ -387,6 +390,7 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         cantidad_alistada = escapar_markdown(fila.get('Cantidad Alistada', 'N/A'))
         estado_factura = escapar_markdown(fila.get('Estado Factura', 'N/A'))
         fecha_despacho = escapar_markdown(fila.get('Fecha Factura', 'N/A')) 
+        id_operario = escapar_markdown(fila.get('Id Operario Asignado', 'N/A')) 
         operario = escapar_markdown(fila.get('Nombre Operario Asignado', 'N/A'))
         clasificacion = escapar_markdown(fila.get('Clasificacion Pedido', 'N/A'))
         observacion_adicional = escapar_markdown(fila.get('Observacion Adicional', 'N/A'))
@@ -402,6 +406,7 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             f"• *Cantidad pedida:* {cantidad_pedida}\n"
             f"• *Cantidad alistada:* {cantidad_alistada}\n"           
             f"• *Fecha Despacho:* {fecha_despacho}\n"
+            f"• *Id Operario Asignado:* {id_operario}\n"
             f"• *Operario:* {operario}\n"
             f"• *Clasificación:* {clasificacion}\n"
             f"• *Observacion Adicional:* {observacion_adicional}\n"
