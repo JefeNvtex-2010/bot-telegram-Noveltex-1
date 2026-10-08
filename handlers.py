@@ -11,11 +11,12 @@ from config import load_settings
 
 logger = logging.getLogger(__name__)
 
-# Desactivar advertencias de certificados autofirmados (muy común en SAP Service Layer)
+# Desactivar advertencias de certificados autofirmados
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# --- CACHÉ DE SAP (Guarda los datos por 30 minutos para no saturar la API) ---
-sap_cache = {}
+# --- CACHÉ GLOBAL DE ARTÍCULOS DE SAP (Se actualiza cada 30 minutos) ---
+sap_items_cache = None
+sap_cache_timestamp = 0
 CACHE_TTL = 1800  # 1800 segundos = 30 minutos
 
 # Estados para la conversación interactiva de búsqueda (Google Sheets y SAP)
@@ -66,7 +67,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     name = user.first_name if user else "allí"
     await update.message.reply_text(
         f"¡Hola {name}! Bienvenido al sistema de pedidos.\n\n"
-        "Usa el comando /pedido para iniciar una nueva orden de compra, /PV [Nro_Documento] o /in [Codigo_Articulo]."
+        "Usa el comando /pedido para iniciar una nueva orden de compra, /PV [Nro_Documento] o /in [Nombre_o_Codigo]."
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -75,7 +76,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/start - Iniciar el bot\n"
         "/pedido - Registrar un pedido\n"
         "/PV [Nro_Documento] - Consultar estatus en Google Sheets\n"
-        "/in [Codigo_Articulo] - Consultar inventario en tiempo real desde SAP (con caché de 30 min)\n"
+        "/in [Nombre_o_Codigo] - Consultar inventario SAP (con caché masiva de 30 min)\n"
         "/reiniciar - Reiniciar servicio de Render (Solo autorizado)\n"
         "/actualizar - Limpiar caché y desplegar en Render (Solo autorizado)"
     )
@@ -87,7 +88,7 @@ async def order_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         parse_mode="Markdown"
     )
 
-# --- FUNCIONES DE SAP SERVICE LAYER ---
+# --- FUNCIONES DE SAP SERVICE LAYER CON CACHÉ MASIVA ---
 
 def sap_login(settings):
     """Inicia sesión en SAP Service Layer y retorna la sesión activa."""
@@ -108,131 +109,179 @@ def sap_login(settings):
         logger.error(f"⚠️ Excepción conectando a SAP Service Layer: {e}")
         return None
 
-async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Consulta el inventario de un artículo en SAP en tiempo real usando caché de 30 minutos."""
-    if not context.args:
-        await update.message.reply_text(
-            "⚠️ Por favor, ingresa el código del artículo.\nEjemplo: `/in 1554-21`", 
-            parse_mode="Markdown"
-        )
-        return ConversationHandler.END
-
-    item_code = context.args[0].strip()
+def obtener_todos_los_articulos_sap():
+    """Obtiene todos los artículos de SAP y los almacena en memoria por 30 minutos."""
+    global sap_items_cache, sap_cache_timestamp
     tiempo_actual = time.time()
 
-    # 1. Verificar si tenemos caché válida de menos de 30 minutos para este artículo
-    if item_code in sap_cache:
-        cached_data, timestamp = sap_cache[item_code]
-        if tiempo_actual - timestamp < CACHE_TTL:
-            logger.info(f"⚡ Usando caché de SAP para el artículo: {item_code}")
-            await update.message.reply_text(cached_data, parse_mode="Markdown")
-            return ConversationHandler.END
+    # Si la caché aún es válida (menos de 30 minutos), la retornamos directamente
+    if sap_items_cache is not None and (tiempo_actual - sap_cache_timestamp < CACHE_TTL):
+        logger.info("⚡ Usando caché masiva en memoria de SAP.")
+        return sap_items_cache
 
-    # 2. Si no hay caché o expiró, consultamos el API de SAP directamente por código
     settings = load_settings()
-    msg = await update.message.reply_text("🔄 Conectando a SAP Service Layer...", parse_mode="Markdown")
-
     session = sap_login(settings)
     if not session:
-        await context.bot.edit_message_text(
-            chat_id=update.effective_chat.id,
-            message_id=msg.message_id,
-            text="⚠️ No se pudo establecer conexión con SAP Service Layer (Verifica credenciales).",
-            parse_mode="Markdown"
-        )
-        return ConversationHandler.END
+        return None
 
     try:
-        endpoint = f"{settings.sap_url}/Items('{item_code}')"
-        response = session.get(endpoint, verify=False, timeout=15)
-        
-        # Cerrar sesión en SAP para liberar licencias
+        # Consultar todos los artículos con sus almacenes y stocks
+        endpoint = f"{settings.sap_url}/Items?$select=ItemCode,ItemName,InventoryOnStock,ItemWarehouseInfoCollection"
+        response = session.get(endpoint, verify=False, timeout=30)
         session.post(f"{settings.sap_url}/Logout", verify=False)
 
         if response.status_code == 200:
-            data = response.json()
-            codigo = data.get("ItemCode", item_code)
-            nombre = data.get("ItemName", "Sin descripción")
-            
-            almacenes = data.get("ItemWarehouseInfoCollection", [])
-            
-            detalle_lineas = []
-            total_stock = 0
-            total_comp = 0
-            total_ped = 0
-            total_disp = 0
-
-            for almc in almacenes:
-                wh_code = almc.get('WarehouseCode')
-                en_stock = float(almc.get('InStock', 0))
-                comprometido = float(almc.get('Committed', 0))
-                pedido = float(almc.get('Ordered', 0))
-                disponible = en_stock - comprometido + pedido
-
-                if en_stock > 0 or comprometido > 0 or pedido > 0:
-                    total_stock += en_stock
-                    total_comp += comprometido
-                    total_ped += pedido
-                    total_disp += disponible
-                    detalle_lineas.append(
-                        f"• *Almacén {wh_code}:*\n"
-                        f"  - En stock: `{en_stock:,.1f}`\n"
-                        f"  - Comprometido: `{comprometido:,.1f}`\n"
-                        f"  - Pedido: `{pedido:,.1f}`\n"
-                        f"  - Disponible: `{disponible:,.1f}`\n"
-                    )
-
-            texto_almacenes = "\n".join(detalle_lineas) if detalle_lineas else "Sin movimientos en almacenes."
-
-            mensaje_final = (
-                f"🟢 *Inventario SAP en Tiempo Real*\n\n"
-                f"• *Código:* `{codigo}`\n"
-                f"• *Artículo:* {escapar_markdown(nombre)}\n\n"
-                f"*Desglose por Almacén:*\n{texto_almacenes}\n"
-                f"-----------------------------------\n"
-                f"📊 *Totales Generales:*\n"
-                f"• Stock Total: `{total_stock:,.1f}`\n"
-                f"• Total Comprometido: `{total_comp:,.1f}`\n"
-                f"• Total Pedido: `{total_ped:,.1f}`\n"
-                f"• Total Disponible: `{total_disp:,.1f}`"
-            )
-
-            # Guardar en la caché global por 30 minutos
-            sap_cache[item_code] = (mensaje_final, tiempo_actual)
-
-            await context.bot.edit_message_text(
-                chat_id=update.effective_chat.id,
-                message_id=msg.message_id,
-                text=mensaje_final,
-                parse_mode="Markdown"
-            )
-        elif response.status_code == 404:
-            await context.bot.edit_message_text(
-                chat_id=update.effective_chat.id,
-                message_id=msg.message_id,
-                text=f"❌ El artículo `{item_code}` no fue encontrado en SAP.",
-                parse_mode="Markdown"
-            )
+            sap_items_cache = response.json().get("value", [])
+            sap_cache_timestamp = tiempo_actual
+            logger.info(f"✅ Caché masiva de SAP actualizada con éxito ({len(sap_items_cache)} artículos cargados).")
+            return sap_items_cache
         else:
-            await context.bot.edit_message_text(
-                chat_id=update.effective_chat.id,
-                message_id=msg.message_id,
-                text=f"⚠️ Error al consultar SAP (Código HTTP: {response.status_code})",
-                parse_mode="Markdown"
-            )
-            
+            logger.error(f"⚠️ Error al descargar artículos de SAP: {response.status_code}")
+            return None
     except Exception as e:
-        logger.error(f"Error consultando item en SAP: {e}")
+        logger.error(f"⚠️ Excepción al actualizar caché de SAP: {e}")
+        return None
+
+async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Busca artículos en la caché masiva de SAP por nombre o código coincidente."""
+    if not context.args:
+        await update.message.reply_text(
+            "⚠️ Por favor, ingresa el nombre o código del artículo a buscar.\nEjemplo: `/in CAPRI` o `/in 1554-21`", 
+            parse_mode="Markdown"
+        )
+        return ConversationHandler.END
+
+    termino_busqueda = " ".join(context.args).strip().upper()
+    
+    msg = await update.message.reply_text("🔄 Consultando inventario en SAP...", parse_mode="Markdown")
+
+    # Obtener el catálogo completo desde la caché o SAP
+    todos_los_items = obtener_todos_los_articulos_sap()
+
+    if todos_los_items is None:
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id,
             message_id=msg.message_id,
-            text=f"⚠️ Ocurrió un error inesperado al consultar SAP: `{e}`",
+            text="⚠️ No se pudo conectar con SAP Service Layer para actualizar el inventario.",
             parse_mode="Markdown"
         )
-    return ConversationHandler.END
+        return ConversationHandler.END
 
-# Mantener la función dummy por si el manejador la requiere
+    # Filtrar de forma local y robusta por coincidencia en Código o Descripción (ItemName)
+    matches = [
+        item for item in todos_los_items 
+        if termino_busqueda in str(item.get("ItemName", "")).upper() or termino_busqueda in str(item.get("ItemCode", "")).upper()
+    ]
+
+    if not matches:
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=msg.message_id,
+            text=f"❌ No se encontraron artículos coincidentes con: *{termino_busqueda}*.",
+            parse_mode="Markdown"
+        )
+        return ConversationHandler.END
+
+    context.user_data['sap_items'] = matches
+
+    # Si hay coincidencia exacta o múltiples, generamos los botones interactivos
+    keyboard = []
+    for item in matches[:15]:  # Límite de 15 botones
+        codigo = item.get("ItemCode")
+        nombre = item.get("ItemName")
+        keyboard.append([InlineKeyboardButton(f"{codigo} - {nombre[:35]}", callback_data=f"sapref_{codigo}")])
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await context.bot.edit_message_text(
+        chat_id=update.effective_chat.id,
+        message_id=msg.message_id,
+        text=f"🔍 Se encontraron {len(matches)} coincidencias para *{termino_busqueda}*.\nSelecciona una referencia:",
+        reply_markup=reply_markup,
+        parse_mode="Markdown"
+    )
+    return SELECCIONANDO_REF_SAP
+
 async def seleccionar_ref_sap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+
+    if data.startswith("sapref_"):
+        codigo_elegido = data.replace("sapref_", "").strip()
+        matches = context.user_data.get('sap_items', [])
+        
+        item_seleccionado = next((i for i in matches if i.get("ItemCode") == codigo_elegido), None)
+        if not item_seleccionado:
+            await query.edit_message_text(text="⚠️ La sesión ha expirado o se reinició. Realiza la búsqueda de nuevo con `/in [nombre]`.", parse_mode="Markdown")
+            return ConversationHandler.END
+
+        context.user_data['item_seleccionado'] = item_seleccionado
+
+        almacenes = item_seleccionado.get("ItemWarehouseInfoCollection", [])
+        
+        detalle_lineas = []
+        total_stock = 0
+        total_comp = 0
+        total_ped = 0
+        total_disp = 0
+
+        for almc in almacenes:
+            wh_code = almc.get('WarehouseCode')
+            en_stock = float(almc.get('InStock', 0))
+            comprometido = float(almc.get('Committed', 0))
+            pedido = float(almc.get('Ordered', 0))
+            disponible = en_stock - comprometido + pedido
+
+            if en_stock > 0 or comprometido > 0 or pedido > 0:
+                total_stock += en_stock
+                total_comp += comprometido
+                total_ped += pedido
+                total_disp += disponible
+                detalle_lineas.append(
+                    f"• *Almacén {wh_code}:*\n"
+                    f"  - En stock: `{en_stock:,.1f}`\n"
+                    f"  - Comprometido: `{comprometido:,.1f}`\n"
+                    f"  - Pedido: `{pedido:,.1f}`\n"
+                    f"  - Disponible: `{disponible:,.1f}`\n"
+                )
+
+        texto_almacenes = "\n".join(detalle_lineas) if detalle_lineas else "Sin movimientos en almacenes."
+
+        mensaje_final = (
+            f"🟢 *Inventario SAP en Tiempo Real*\n\n"
+            f"• *Código:* `{item_seleccionado.get('ItemCode')}`\n"
+            f"• *Artículo:* {escapar_markdown(item_seleccionado.get('ItemName'))}\n\n"
+            f"*Desglose por Almacén:*\n{texto_almacenes}\n"
+            f"-----------------------------------\n"
+            f"📊 *Totales Generales:*\n"
+            f"• Stock Total: `{total_stock:,.1f}`\n"
+            f"• Total Comprometido: `{total_comp:,.1f}`\n"
+            f"• Total Pedido: `{total_ped:,.1f}`\n"
+            f"• Total Disponible: `{total_disp:,.1f}`"
+        )
+
+        keyboard = [[InlineKeyboardButton("🔙 Volver a referencias", callback_data="volver_sap_refs")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await query.edit_message_text(text=mensaje_final, reply_markup=reply_markup, parse_mode="Markdown")
+        return SELECCIONANDO_REF_SAP
+
+    elif data == "volver_sap_refs":
+        matches = context.user_data.get('sap_items', [])
+        keyboard = []
+        for item in matches[:15]:
+            codigo = item.get("ItemCode")
+            nombre = item.get("ItemName")
+            keyboard.append([InlineKeyboardButton(f"{codigo} - {nombre[:35]}", callback_data=f"sapref_{codigo}")])
+
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            text="🔍 Selecciona una referencia:",
+            reply_markup=reply_markup,
+            parse_mode="Markdown"
+        )
+        return SELECCIONANDO_REF_SAP
+
     return ConversationHandler.END
 
 # --- FUNCIONES DE ADMINISTRACIÓN REMOTA DE RENDER ---
