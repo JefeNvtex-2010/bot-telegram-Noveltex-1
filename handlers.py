@@ -14,9 +14,9 @@ SELECCIONANDO_REFERENCIA, SELECCIONANDO_COLOR = range(2)
 # Estados para la conversación de inventario (/in)
 SELECCIONANDO_REF_SAP = 2
 
-# Enlaces de Google Sheets / Drive
+# Enlaces de datos
 GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1EOGz7ix9Z1AufTJ-79TWHgiM9iN65LAf/export?format=csv"
-INVENTARIO_DRIVE_URL = "https://docs.google.com/uc?export=download&id=1FJdfaNhxcFFDVD_AV2lTITHw0f-mB0Y2&confirm=t"
+INVENTARIO_DRIVE_URL = "https://docs.google.com/uc?export=download&id=1FJdfaNhxcFFDVD_AV2lTITHw0f-mB0Y2"
 
 def escapar_markdown(texto: str) -> str:
     """Escapa caracteres especiales de Telegram para evitar errores de parseo."""
@@ -27,30 +27,29 @@ def escapar_markdown(texto: str) -> str:
         texto = texto.replace(c, '')
     return texto.strip()
 
-def _descargar_csv():
-    """Función auxiliar robusta usando requests para manejar redirecciones de Google Sheets (Pedidos)."""
+def _descargar_csv_pedidos():
+    """Descarga el Google Sheets de pedidos."""
     response = requests.get(GOOGLE_SHEET_URL, timeout=25)
     response.raise_for_status()
-    
     df = pd.read_csv(io.StringIO(response.text), dtype=str, keep_default_na=False)
     df.columns = df.columns.str.strip()
-    
     if 'Documento Pd' in df.columns:
         df['Documento Pd'] = df['Documento Pd'].astype(str).str.split('.').str[0].str.strip()
     return df
 
-def _descargar_inventario_csv():
-    """Función auxiliar robusta para leer el inventario de Google Drive."""
+def _descargar_inventario_drive():
+    """Descarga el archivo CSV desde Google Drive de forma robusta."""
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     response = requests.get(INVENTARIO_DRIVE_URL, headers=headers, timeout=25)
     response.raise_for_status()
     
     contenido = response.text
+    # Si Google Drive devuelve una página HTML de advertencia por tamaño, intentamos confirmar
     if "<html" in contenido.lower() or "<body" in contenido.lower():
-        alt_url = "https://docs.google.com/spreadsheets/d/1FJdfaNhxcFFDVD_AV2lTITHw0f-mB0Y2/export?format=csv"
-        resp_alt = requests.get(alt_url, headers=headers, timeout=25)
-        if resp_alt.status_code == 200 and "<html" not in resp_alt.text.lower():
-            contenido = resp_alt.text
+        url_confirm = INVENTARIO_DRIVE_URL + "&confirm=t"
+        response = requests.get(url_confirm, headers=headers, timeout=25)
+        response.raise_for_status()
+        contenido = response.text
 
     df = pd.read_csv(
         io.StringIO(contenido), 
@@ -59,29 +58,25 @@ def _descargar_inventario_csv():
         engine='python',
         on_bad_lines='skip'
     )
-    
     df.columns = df.columns.str.strip()
     return df
 
 def cargar_catalogo():
-    """Carga el catálogo con un límite de 30 segundos de timeout."""
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(_descargar_csv)
+        future = executor.submit(_descargar_csv_pedidos)
         try:
             df = future.result(timeout=30.0)
-            logger.info(f"✅ ¡Catálogo de Google Sheets leído con éxito! ({len(df)} filas)")
             return df
         except Exception as e:
-            logger.error(f"⚠️ Error al leer Google Sheets: {e}")
+            logger.error(f"⚠️ Error al leer pedidos: {e}")
             return f"ERROR: {e}"
 
 def cargar_inventario_drive():
-    """Carga el inventario desde Google Drive con un límite de 30 segundos de timeout."""
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(_descargar_inventario_csv)
         try:
             df = future.result(timeout=30.0)
-            logger.info(f"✅ ¡Inventario de Drive leído con éxito! ({len(df)} filas)")
+            logger.info(f"✅ ¡Inventario de Drive leído con éxito! ({len(df)} filas - Cols: {list(df.columns)})")
             return df
         except Exception as e:
             logger.error(f"⚠️ Error al leer inventario de Google Drive: {e}")
@@ -393,11 +388,11 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 
 # ==========================================
-# FLUJO 2: BÚSQUEDA DE INVENTARIO DESDE DRIVE (/in) - USANDO COLUMNAS REFERENCIA Y COLOR
+# FLUJO 2: BÚSQUEDA DE INVENTARIO DESDE DRIVE (/in)
 # ==========================================
 
 async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Busca en la columna REFERENCIA y muestra los colores disponibles para seleccionar."""
+    """Busca en la columna REFERENCIA y muestra los colores disponibles."""
     if not context.args:
         await update.message.reply_text(
             "⚠️ Por favor, ingresa la referencia a buscar.\nEjemplo: `/in FRESBURA`", 
@@ -413,28 +408,24 @@ async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYP
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id,
             message_id=msg.message_id,
-            text=f"⚠️ No se pudo acceder al archivo de inventario en Drive: `{df_inv}`",
+            text=f"⚠️ No se pudo acceder al archivo de inventario: `{df_inv}`",
             parse_mode="Markdown"
         )
         return ConversationHandler.END
 
     try:
-        # Verificar que existan las columnas REFERENCIA y COLOR
-        cols = [c.strip() for c in df_inv.columns]
-        col_ref = next((c for c in cols if c.upper() == 'REFERENCIA'), None)
-        col_color = next((c for c in cols if c.upper() == 'COLOR'), None)
-        col_codigo = next((c for c in cols if 'ART' in c.upper() or 'COD' in c.upper()), cols[0])
+        # Mapeo flexible de columnas para encontrar REFERENCIA y COLOR
+        cols_map = {str(c).upper().strip(): c for c in df_inv.columns}
+        
+        col_ref = cols_map.get('REFERENCIA')
+        col_color = cols_map.get('COLOR')
 
-        if not col_ref or not col_color:
-            await context.bot.edit_message_text(
-                chat_id=update.effective_chat.id,
-                message_id=msg.message_id,
-                text="⚠️ El archivo de inventario de Drive no contiene las columnas `REFERENCIA` o `COLOR`.",
-                parse_mode="Markdown"
-            )
-            return ConversationHandler.END
+        if not col_ref:
+            col_ref = next((c for c in df_inv.columns if 'ref' in c.lower()), df_inv.columns[7] if len(df_inv.columns) > 7 else df_inv.columns[0])
+        if not col_color:
+            col_color = next((c for c in df_inv.columns if 'color' in c.lower()), df_inv.columns[8] if len(df_inv.columns) > 8 else df_inv.columns[1])
 
-        # Filtrar por la columna REFERENCIA
+        # Filtrar por la columna de referencia
         df_filtrado = df_inv[df_inv[col_ref].astype(str).str.upper().str.contains(termino_busqueda, na=False)]
 
         if df_filtrado.empty:
@@ -446,8 +437,7 @@ async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYP
             )
             return ConversationHandler.END
 
-        # Tomar referencias únicas coincidentes o mostrar los colores directamente si hay una coincidencia exacta o cercana
-        # Vamos a listar los colores únicos encontrados para esa referencia
+        # Obtener colores únicos para esa referencia
         colores_unicos = df_filtrado[[col_color]].drop_duplicates().head(20).values
 
         keyboard = []
@@ -462,20 +452,19 @@ async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYP
         context.user_data['ref_buscada_inv'] = termino_busqueda
         context.user_data['col_ref'] = col_ref
         context.user_data['col_color'] = col_color
-        context.user_data['col_codigo'] = col_codigo
 
         reply_markup = InlineKeyboardMarkup(keyboard)
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id,
             message_id=msg.message_id,
-            text=f"🔍 Referencia encontrada: *{termino_busquedaa if 'termino_busquedaa' in locals() else termino_busqueda}*.\nSelecciona un color:",
+            text=f"🔍 Referencia encontrada: *{termino_busqueda}*.\nSelecciona un color:",
             reply_markup=reply_markup,
             parse_mode="Markdown"
         )
         return SELECCIONANDO_REF_SAP
 
     except Exception as e:
-        logger.error(f"Error procesando inventario de Drive: {e}")
+        logger.error(f"Error procesando inventario: {e}")
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id,
             message_id=msg.message_id,
@@ -500,7 +489,7 @@ async def seleccionar_ref_sap(update: Update, context: ContextTypes.DEFAULT_TYPE
             await query.edit_message_text(text="⚠️ La sesión ha expirado. Busca de nuevo con `/in [referencia]`.", parse_mode="Markdown")
             return ConversationHandler.END
 
-        # Filtrar filas que coincidan con la referencia y el color seleccionado (puede haber varios almacenes)
+        # Filtrar filas que coincidan con la referencia y el color seleccionado
         filas_match = df_inv[
             (df_inv[col_ref].astype(str).str.upper().str.contains(ref_buscada, na=False)) & 
             (df_inv[col_color].astype(str).str.strip() == color_elegido)
@@ -510,7 +499,6 @@ async def seleccionar_ref_sap(update: Update, context: ContextTypes.DEFAULT_TYPE
             await query.edit_message_text(text="❌ No se encontró información detallada para este color.", parse_mode="Markdown")
             return ConversationHandler.END
 
-        # Construir el detalle mostrando stock por almacén si hay múltiples o la información completa
         detalle_texto = f"🟢 *Inventario - {ref_buscada}* / *{color_elegido}*\n"
         
         for idx, fila in filas_match.iterrows():
