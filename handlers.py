@@ -15,10 +15,9 @@ SELECCIONANDO_REFERENCIA, SELECCIONANDO_COLOR = range(2)
 GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1vw8Vvane83LnGi8kLLznefY-9T3EZCJ6G8lI_wBdWK0/export?format=csv"
 
 def escapar_markdown(texto: str) -> str:
-    """Escapa caracteres especiales de Markdown en Telegram para evitar errores de parseo."""
+    """Escapa caracteres especiales de Telegram en Telegram para evitar errores de parseo."""
     if not isinstance(texto, str):
         texto = str(texto)
-    # Caracteres especiales que rompen el Markdown v1 de Telegram
     caracteres = ['_', '*', '`', '[']
     for c in caracteres:
         texto = texto.replace(c, '')
@@ -141,7 +140,7 @@ async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 return ConversationHandler.END
 
         if catalogo_df is None or (isinstance(catalogo_df, pd.DataFrame) and catalogo_df.empty):
-            await update.message.reply_text("⚠️ El catálogo de Google Sheets não está disponible o está vacío.")
+            await update.message.reply_text("⚠️ El catálogo de Google Sheets no está disponible o está vacío.")
             return ConversationHandler.END
 
         columna_doc = 'Documento Pd'
@@ -162,15 +161,14 @@ async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         referencias = resultado['Id Refer'].unique()
 
         keyboard = []
-        keyboard.append([InlineKeyboardButton("📄 Ver todo", callback_data="ref_ver_todo")])
-
+        # Quitamos el botón "Ver todo" de aquí y dejamos solo las referencias
         for ref in referencias:
             keyboard.append([InlineKeyboardButton(str(ref), callback_data=f"ref_{ref}")])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         await update.message.reply_text(
-            f"🔍 Documento *{doc_buscado}*.\nSelecciona una referencia o elige 'Ver todo':",
+            f"🔍 Documento *{doc_buscado}*.\nSelecciona una referencia:",
             reply_markup=reply_markup,
             parse_mode="Markdown"
         )
@@ -185,7 +183,31 @@ async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_T
     query = update.callback_query
     await query.answer()
 
-    referencia_elegida = query.data.replace("ref_", "").strip()
+    data_callback = query.data
+
+    # Manejar el botón de "Volver" a la lista de referencias desde la pantalla de color
+    if data_callback == "volver_referencias":
+        resultado = context.user_data.get('df_pedido')
+        doc_buscado = context.user_data.get('doc_buscado', 'Desconocido')
+
+        if resultado is None:
+            await query.edit_message_text(text="⚠️ La sesión ha expirado o se reinició. Por favor, realiza la búsqueda de nuevo con `/PV [número]`.", parse_mode="Markdown")
+            return ConversationHandler.END
+
+        referencias = resultado['Id Refer'].unique()
+        keyboard = []
+        for ref in referencias:
+            keyboard.append([InlineKeyboardButton(str(ref), callback_data=f"ref_{ref}")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            text=f"🔍 Documento *{doc_buscado}*.\nSelecciona una referencia:",
+            reply_markup=reply_markup,
+            parse_mode="Markdown"
+        )
+        return SELECCIONANDO_REFERENCIA
+
+    referencia_elegida = data_callback.replace("ref_", "").strip()
     resultado = context.user_data.get('df_pedido')
     doc_buscado = context.user_data.get('doc_buscado', 'Desconocido')
 
@@ -220,8 +242,8 @@ async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_T
                 f"• *Ubicación:* {ubicacion}\n"
                 f"• *Id referencia:* {id_referencia}\n"
                 f"• *Color:* {color}\n"                    
-                f"• *Estado del pedido:* {doc_status_sap}\n"
-                f"• *Estado del item:* {line_status_sap}\n"
+                f"• *Estado documentos SAP:* {doc_status_sap}\n"
+                f"• *Estado Linea SAP:* {line_status_sap}\n"
                 f"• *Cantidad pedida:* {cantidad_pedida}\n"
                 f"• *Cantidad alistada:* {cantidad_alistada}\n"           
                 f"• *Fecha Despacho:* {fecha_despacho}\n"
@@ -231,13 +253,18 @@ async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_T
                 f"• *Observacion Adicional:* {observacion_adicional}\n"
             )
 
+        # Botón para volver al menú de referencias en la vista de "Ver todo"
+        keyboard = [[InlineKeyboardButton("🔙 Volver a referencias", callback_data="volver_referencias")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
         if len(mensaje) > 4000:
             for i in range(0, len(mensaje), 4000):
                 await query.message.reply_text(mensaje[i:i+4000], parse_mode="Markdown")
+            await query.edit_message_text(text="📌 Fin del detalle completo.", reply_markup=reply_markup, parse_mode="Markdown")
         else:
-            await query.edit_message_text(text=mensaje, parse_mode="Markdown")
+            await query.edit_message_text(text=mensaje, reply_markup=reply_markup, parse_mode="Markdown")
         
-        return ConversationHandler.END
+        return SELECCIONANDO_REFERENCIA
 
     context.user_data['ref_elegida'] = referencia_elegida
     
@@ -247,11 +274,17 @@ async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_T
     colores = df_ref['Color'].astype(str).str.strip().unique()
 
     keyboard = []
+    # Añadimos el botón "Ver todo" aquí en la selección de color
+    keyboard.append([InlineKeyboardButton("📄 Ver todo", callback_data="ref_ver_todo")])
+
     for color in colores:
         cb_data = f"col_{color}"
         if len(cb_data.encode('utf-8')) > 64:
             cb_data = cb_data[:64]
         keyboard.append([InlineKeyboardButton(str(color), callback_data=cb_data)])
+
+    # Añadimos el botón "Volver" para regresar a las referencias
+    keyboard.append([InlineKeyboardButton("🔙 Volver", callback_data="volver_referencias")])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -267,7 +300,38 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await query.answer()
 
     try:
-        color_elegido = query.data.replace("col_", "").strip()
+        data_callback = query.data
+
+        # Si el usuario presiona "Volver" desde el detalle, regresamos a la selección de colores de esa referencia
+        if data_callback == "volver_colores":
+            ref_elegida = context.user_data.get('ref_elegida')
+            resultado = context.user_data.get('df_pedido')
+            if resultado is None or ref_elegida is None:
+                await query.edit_message_text(text="⚠️ La sesión ha expirado o se reinició. Por favor, realiza la búsqueda de nuevo con `/PV [número]`.", parse_mode="Markdown")
+                return ConversationHandler.END
+
+            resultado['Id Refer'] = resultado['Id Refer'].astype(str).str.strip()
+            df_ref = resultado[resultado['Id Refer'] == ref_elegida]
+            colores = df_ref['Color'].astype(str).str.strip().unique()
+
+            keyboard = []
+            keyboard.append([InlineKeyboardButton("📄 Ver todo", callback_data="ref_ver_todo")])
+            for color in colores:
+                cb_data = f"col_{color}"
+                if len(cb_data.encode('utf-8')) > 64:
+                    cb_data = cb_data[:64]
+                keyboard.append([InlineKeyboardButton(str(color), callback_data=cb_data)])
+            keyboard.append([InlineKeyboardButton("🔙 Volver", callback_data="volver_referencias")])
+
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(
+                text=f"Referencia seleccionada: *{ref_elegida}*.\nAhora selecciona el color:",
+                reply_markup=reply_markup,
+                parse_mode="Markdown"
+            )
+            return SELECCIONANDO_COLOR
+
+        color_elegido = data_callback.replace("col_", "").strip()
         doc_buscado = context.user_data.get('doc_buscado', 'Desconocido')
         ref_elegida = context.user_data.get('ref_elegida')
         resultado = context.user_data.get('df_pedido')
@@ -277,8 +341,7 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             return ConversationHandler.END
 
         # Reemplazar bost_Open por abierto
-        resultado = resultado.replace('bost_Open', 'Abierto')
-        resultado = resultado.replace('bost_Close', 'Cerrado')
+        resultado = resultado.replace('bost_Open', 'abierto')
 
         resultado['Id Refer'] = resultado['Id Refer'].astype(str).str.strip()
         resultado['Color'] = resultado['Color'].astype(str).str.strip()
@@ -311,8 +374,8 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             f"• *Ubicación:* {ubicacion}\n"
             f"• *Id referencia:* {id_referencia}\n"
             f"• *Color:* {color}\n"                    
-            f"• *Estado del pedido:* {doc_status_sap}\n"
-            f"• *Estado del item:* {line_status_sap}\n"
+            f"• *Estado documentos SAP:* {doc_status_sap}\n"
+            f"• *Estado Linea SAP:* {line_status_sap}\n"
             f"• *Cantidad pedida:* {cantidad_pedida}\n"
             f"• *Cantidad alistada:* {cantidad_alistada}\n"           
             f"• *Fecha Despacho:* {fecha_despacho}\n"
@@ -322,8 +385,12 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             f"• *Observacion Adicional:* {observacion_adicional}\n"
         )
 
-        await query.edit_message_text(text=mensaje, parse_mode="Markdown")
-        return ConversationHandler.END
+        # Botón para volver a la lista de colores
+        keyboard = [[InlineKeyboardButton("🔙 Volver a colores", callback_data="volver_colores")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await query.edit_message_text(text=mensaje, reply_markup=reply_markup, parse_mode="Markdown")
+        return SELECCIONANDO_COLOR
 
     except Exception as e:
         logger.error(f"Error en seleccionar_color: {e}")
