@@ -34,25 +34,25 @@ def escapar_markdown(texto: str) -> str:
     return texto.strip()
 
 def _descargar_csv(url):
-    """Función auxiliar robusta usando requests para descargar CSVs de Google."""
+    """Función auxiliar robusta usando requests para descargar CSVs de Google con detección automática de separador."""
     response = requests.get(url, timeout=25)
     response.raise_for_status()
     
     try:
-        # Intentamos leer de forma estándar pero tolerante a filas con errores de columnas
+        # sep=None junto con engine='python' detecta automáticamente si usa comas, puntos y comas o tabuladores
         df = pd.read_csv(
             io.StringIO(response.text), 
             dtype=str, 
             keep_default_na=False, 
+            sep=None, 
+            engine='python',
             on_bad_lines='skip'
         )
     except Exception:
-        # Si falla el motor C, usamos el motor de python que es más flexible con archivos irregulares
         df = pd.read_csv(
             io.StringIO(response.text), 
             dtype=str, 
             keep_default_na=False, 
-            engine='python',
             on_bad_lines='skip'
         )
         
@@ -88,7 +88,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     name = user.first_name if user else "allí"
     await update.message.reply_text(
-        f"¡Hola {name}! Bienvenido al sistema de pedidos.\n\n"
+        f"¡Hola {name}! Bienvenido al sistema de pedidos e inventario.\n\n"
         "Usa los comandos:\n"
         "• /pedido - Registrar o consultar pedidos\n"
         "• /PV [Nro_Documento] - Búsqueda de pedidos\n"
@@ -140,7 +140,6 @@ async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return ConversationHandler.END
 
     try:
-        # Filtrado rápido de ejemplo por Documento Pd
         col_doc = next((c for c in df.columns if 'documento' in c.lower() or 'doc' in c.lower()), df.columns[0])
         df_filtrado = df[df[col_doc].astype(str).str.contains(termino, case=False, na=False)]
 
@@ -153,7 +152,6 @@ async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             )
             return ConversationHandler.END
 
-        # Mostrar resultados principales con botones
         resultados = df_filtrado.head(10).to_dict(orient="records")
         keyboard = []
         for idx, row in enumerate(resultados):
@@ -216,7 +214,6 @@ async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_T
     return ConversationHandler.END
 
 async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Manejador auxiliar para estados de color si se requiere en el flujo."""
     query = update.callback_query
     await query.answer()
     await query.edit_message_text(text="Proceso completado.")
@@ -250,7 +247,12 @@ async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYP
         return ConversationHandler.END
 
     try:
-        col_nombre = next((col for col in df_inv.columns if 'name' in col.lower() or 'desc' in col.lower() or 'articulo' in col.lower()), df_inv.columns[1])
+        # Selección segura de columnas
+        if len(df_inv.columns) > 1:
+            col_nombre = next((col for col in df_inv.columns if 'name' in col.lower() or 'desc' in col.lower() or 'articulo' in col.lower()), df_inv.columns[1])
+        else:
+            col_nombre = df_inv.columns[0]
+            
         col_codigo = next((col for col in df_inv.columns if 'code' in col.lower() or 'ref' in col.lower() or 'codigo' in col.lower()), df_inv.columns[0])
 
         df_filtrado = df_inv[df_inv[col_nombre].astype(str).str.upper().str.contains(termino_busqueda, na=False)]
