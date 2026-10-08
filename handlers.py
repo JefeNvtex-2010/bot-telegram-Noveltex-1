@@ -12,7 +12,8 @@ logger = logging.getLogger(__name__)
 SELECCIONANDO_REFERENCIA, SELECCIONANDO_COLOR = range(2)
 
 # Enlace de tu Google Sheets adaptado a exportación CSV
-GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1vw8Vvane83LnGi8kLLznefY-9T3EZCJ6G8lI_wBdWK0/export?format=csv"
+GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1EOGz7ix9Z1AufTJ-79TWHgiM9iN65LAf/export?format=csv"
+
 
 def escapar_markdown(texto: str) -> str:
     """Escapa caracteres especiales de Telegram para evitar errores de parseo."""
