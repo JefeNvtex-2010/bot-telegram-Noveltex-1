@@ -40,11 +40,12 @@ def _descargar_csv():
     return df
 
 def _descargar_inventario_csv():
-    """Función auxiliar robusta para el inventario de Google Drive."""
+    """Función auxiliar robusta con detección automática de separador para el inventario de Google Drive."""
     response = requests.get(INVENTARIO_DRIVE_URL, timeout=25)
     response.raise_for_status()
     
     try:
+        # sep=None con engine='python' detecta automáticamente si el CSV usa comas, puntos y comas o tabuladores
         df = pd.read_csv(
             io.StringIO(response.text), 
             dtype=str, 
@@ -58,7 +59,6 @@ def _descargar_inventario_csv():
             io.StringIO(response.text), 
             dtype=str, 
             keep_default_na=False, 
-            engine='python',
             on_bad_lines='skip'
         )
         
@@ -86,7 +86,7 @@ def cargar_inventario_drive():
         future = executor.submit(_descargar_inventario_csv)
         try:
             df = future.result(timeout=30.0)
-            logger.info(f"✅ ¡Inventario de Drive leído con éxito! ({len(df)} filas)")
+            logger.info(f"✅ ¡Inventario de Drive leído con éxito! ({len(df)} filas - Columnas: {list(df.columns)})")
             return df
         except concurrent.futures.TimeoutError:
             logger.error("⚠️ Timeout en inventario Drive.")
@@ -420,7 +420,7 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 # ==========================================
 
 async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Busca y filtra artículos exclusivamente por coincidencia parcial en la columna Descripción."""
+    """Busca y filtra artículos por coincidencia parcial en la columna Descripción."""
     if not context.args:
         await update.message.reply_text(
             "⚠️ Por favor, ingresa el texto a buscar en la descripción.\nEjemplo: `/in CAPRI`", 
@@ -442,10 +442,15 @@ async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYP
         return ConversationHandler.END
 
     try:
-        col_codigo = 'Artículo' if 'Artículo' in df_inv.columns else df_inv.columns[0]
-        col_nombre = 'Descripción' if 'Descripción' in df_inv.columns else df_inv.columns[1]
+        # Detección segura de columnas basadas en las columnas reales del archivo
+        cols = [c.strip() for c in df_inv.columns]
+        
+        # Buscar columna de descripción (contiene 'desc' o es la segunda columna)
+        col_nombre = next((c for c in cols if 'desc' in c.lower()), cols[1] if len(cols) > 1 else cols[0])
+        # Buscar columna de artículo/código (contiene 'art' o 'cod' o 'ref' o es la primera)
+        col_codigo = next((c for c in cols if 'art' in c.lower() or 'cod' in c.lower() or 'ref' in c.lower()), cols[0])
 
-        # FILTRAR ESTILO EXCEL: Buscar exclusivamente en la columna Descripción
+        # FILTRAR ESTILO EXCEL: Buscar exclusivamente en la columna Descripción de forma tolerante a mayúsculas
         df_filtrado = df_inv[df_inv[col_nombre].astype(str).str.upper().str.contains(termino_busqueda, na=False)]
 
         if df_filtrado.empty:
@@ -463,14 +468,17 @@ async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYP
         for row in resultados:
             codigo = str(row.get(col_codigo, 'N/A'))
             nombre = str(row.get(col_nombre, 'N/A'))
-            almacen = str(row.get('Código de Almacén', ''))
+            
+            # Buscar columna de almacén de forma flexible
+            col_alm = next((c for c in cols if 'almacen' in c.lower() or 'alm' in c.lower()), None)
+            almacen = str(row.get(col_alm, '')) if col_alm else ''
             
             # Texto visible en cada botón estilo filtro
-            texto_boton = f"{nombre} (Alm {almacen})"
+            texto_boton = f"{nombre}" + (f" (Alm {almacen})" if almacen else "")
             if len(texto_boton.encode('utf-8')) > 64:
                 texto_boton = texto_boton[:61] + "..."
 
-            # Creamos un identificador único usando índice interno o combinación
+            # Usamos el índice de la fila filtrada original
             row_idx = df_filtrado[df_filtrado[col_codigo].astype(str).str.strip() == codigo].index[0]
             cb_data = f"sapidx_{row_idx}"
             keyboard.append([InlineKeyboardButton(texto_boton, callback_data=cb_data)])
@@ -481,7 +489,7 @@ async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYP
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id,
             message_id=msg.message_id,
-            text=f"🔍 Se encontraron *{len(df_filtrado)}* resultados para *{termino_busqueda}* (Filtro de Descripción):\nSelecciona una opción:",
+            text=f"🔍 Se encontraron *{len(df_filtrado)}* resultados para *{termino_busqueda}*:\nSelecciona una opción:",
             reply_markup=reply_markup,
             parse_mode="Markdown"
         )
@@ -513,7 +521,7 @@ async def seleccionar_ref_sap(update: Update, context: ContextTypes.DEFAULT_TYPE
         fila = df_inv.loc[row_idx]
         
         # Muestra todas las columnas y valores de esa fila exacta seleccionada
-        detalle_texto = f"🟢 *Detalle de Inventario (Filtro)*\n\n"
+        detalle_texto = f"🟢 *Detalle de Inventario*\n\n"
         for col, val in fila.items():
             if val is not None and str(val).strip() != "":
                 detalle_texto += f"• *{escapar_markdown(col)}:* `{escapar_markdown(val)}`\n"
