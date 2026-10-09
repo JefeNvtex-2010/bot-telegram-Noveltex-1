@@ -67,7 +67,7 @@ def main() -> None:
         ],
         states={
             SELECCIONANDO_REF_SAP: [
-                CallbackQueryHandler(seleccionar_ref_sap, pattern="^(invcol_|sapref_|volver_sap_refs)")
+                CallbackQueryHandler(seleccionar_ref_sap)
             ],
         },
         fallbacks=[
