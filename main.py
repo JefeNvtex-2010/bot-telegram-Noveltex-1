@@ -5,12 +5,19 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ConversationHandler
 from config import load_settings
 from logging_config import configure_logging
+
+# Importar flujos de pedidos desde handlers.py
 from handlers import (
     start, help_command, order_command, 
     iniciar_busqueda, seleccionar_referencia, seleccionar_color, 
     cancelar, reiniciar_render, limpiar_cache_y_deploy,
+    SELECCIONANDO_REFERENCIA, SELECCIONANDO_COLOR
+)
+
+# Importar flujos de inventario desde inventario_handlers.py
+from inventario_handlers import (
     iniciar_busqueda_sap, seleccionar_color_sap,
-    SELECCIONANDO_REFERENCIA, SELECCIONANDO_COLOR, SELECCIONANDO_REF_SAP
+    SELECCIONANDO_REF_SAP
 )
 
 logger = logging.getLogger(__name__)
@@ -37,7 +44,7 @@ def main() -> None:
     
     application = ApplicationBuilder().token(settings.telegram_bot_token).build()
     
-    # Manejador de Pedidos (/PV)
+    # 1. Manejador para Pedidos (/PV)
     conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler("PV", iniciar_busqueda),
@@ -58,7 +65,7 @@ def main() -> None:
         ],
     )
 
-    # Manejador de Inventario (/in)
+    # 2. Manejador para Inventario (/in)
     inventario_conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler("in", iniciar_busqueda_sap),
@@ -76,7 +83,7 @@ def main() -> None:
         ],
     )
 
-    # Registrar todos los manejadores
+    # Registrar todos los manejadores en la aplicación
     application.add_handler(conv_handler)
     application.add_handler(inventario_conv_handler)
     application.add_handler(CommandHandler("start", start))
