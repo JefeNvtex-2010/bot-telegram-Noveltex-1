@@ -54,7 +54,6 @@ async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYP
     try:
         df_inv.columns = [str(c).strip() for c in df_inv.columns]
         
-        # Validación estricta con los nombres exactos de tus columnas
         col_ref = 'REFERENCIA' if 'REFERENCIA' in df_inv.columns else 'Referencia'
         col_color = 'COLOR' if 'COLOR' in df_inv.columns else 'Color'
 
@@ -71,7 +70,7 @@ async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYP
         df_filtrado = df_inv[df_inv['__ref_limpia__'] == termino_busqueda]
 
         if df_filtrado.empty:
-            df_filtrado = df_inv[df_filtrado['__ref_limpia__'].str.contains(termino_busqueda, na=False)]
+            df_filtrado = df_inv[df_inv['__ref_limpia__'].str.contains(termino_busqueda, na=False)]
 
         if df_filtrado.empty:
             await context.bot.edit_message_text(
@@ -82,7 +81,6 @@ async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYP
             )
             return ConversationHandler.END
 
-        # Extraer colores únicos reales
         colores_unicos = df_filtrado[col_color].astype(str).str.strip()
         colores_unicos = colores_unicos[colores_unicos != ''].unique()
 
@@ -163,7 +161,6 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
             await query.edit_message_text(text="⚠️ La sesión ha expirado. Busca de nuevo con `/in [referencia]`.", parse_mode="Markdown")
             return ConversationHandler.END
 
-        # FILTRADO EXACTO: Referencia Y Color idénticos
         filas_match = df_inv[
             (df_inv[col_ref] == ref_buscada) & 
             (df_inv[col_color].astype(str).str.strip() == color_elegido)
@@ -173,7 +170,6 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
             await query.edit_message_text(text=f"❌ No se encontró inventario para la referencia *{ref_buscada}* y color *{color_elegido}*.", parse_mode="Markdown")
             return ConversationHandler.END
 
-        # Nombres exactos de columnas de tu Excel
         col_art = 'Artículo'
         col_desc = 'Descripción'
         col_cod_alm = 'Código de Almacén'
@@ -187,7 +183,7 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
         descripcion_articulo = escapar_markdown(str(primera_fila.get(col_desc, f"{ref_buscada} - {color_elegido}")))
 
         mensaje = (
-            f"🟢 *Inventario SAP en Tiempo Real*\n\n"
+            f"🟢 *Inventario*\n\n"
             f"• *Artículo:* `{codigo_articulo}`\n"
             f"• *Descripción:* {descripcion_articulo}\n\n"
             f"*Desglose por Almacén:*\n"
@@ -208,23 +204,29 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
             else:
                 almacen_txt = cod_almacen
 
+            # Corrección robusta para parsear números decimales correctamente sin alterar los puntos
             try:
-                stock = float(str(fila.get(col_stock, '0')).replace(',', '').strip() or '0')
+                val_stock = str(fila.get(col_stock, '0')).strip()
+                # Si viene con formato de miles con comas, las removemos
+                val_stock = val_stock.replace(',', '')
+                stock = float(val_stock) if val_stock else 0.0
             except ValueError:
                 stock = 0.0
 
             try:
-                comprometido = float(str(fila.get(col_comp, '0')).replace(',', '').strip() or '0')
+                val_comp = str(fila.get(col_comp, '0')).strip().replace(',', '')
+                comprometido = float(val_comp) if val_comp else 0.0
             except ValueError:
                 comprometido = 0.0
 
             try:
-                disponible = float(str(fila.get(col_disp, str(stock - comprometido))).replace(',', '').strip() or str(stock - comprometido))
+                val_disp = str(fila.get(col_disp, '')).strip().replace(',', '')
+                disponible = float(val_disp) if val_disp else (stock - comprometido)
             except ValueError:
                 disponible = stock - comprometido
 
             total_stock += stock
-            total_comprometido += compromised if 'compromised' in locals() else comprometido
+            total_comprometido += comprometido
             total_disponible += disponible
 
             mensaje += (
