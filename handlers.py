@@ -16,7 +16,6 @@ SELECCIONANDO_REF_SAP = 2
 
 # Enlaces de Google Sheets
 GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1EOGz7ix9Z1AufTJ-79TWHgiM9iN65LAf/export?format=csv"
-# Enlace apuntando a la pestaña de Inventario (puedes agregar &gid=ID_DE_PESTAÑA si lo requiere)
 INVENTARIO_SHEET_URL = "https://docs.google.com/spreadsheets/d/1EOGz7ix9Z1AufTJ-79TWHgiM9iN65LAf/export?format=csv"
 
 def escapar_markdown(texto: str) -> str:
@@ -33,6 +32,7 @@ def _descargar_csv(url):
     response = requests.get(url, timeout=15)
     response.raise_for_status()
     df = pd.read_csv(io.StringIO(response.text), dtype=str, keep_default_na=False)
+    # Limpiar espacios en blanco en los nombres de todas las columnas
     df.columns = df.columns.str.strip()
     return df
 
@@ -44,7 +44,6 @@ def cargar_catalogo():
             df = future.result(timeout=20.0)
             if 'Documento Pd' in df.columns:
                 df['Documento Pd'] = df['Documento Pd'].astype(str).str.split('.').str[0].str.strip()
-            logger.info(f"✅ ¡Catálogo de pedidos leído con éxito! ({len(df)} filas)")
             return df
         except Exception as e:
             logger.error(f"⚠️ Error al leer Google Sheets de pedidos: {e}")
@@ -404,7 +403,13 @@ async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYP
         if not col_color:
             col_color = next((c for c in df_inv.columns if 'color' in c.lower()), df_inv.columns[8] if len(df_inv.columns) > 8 else df_inv.columns[1])
 
-        df_filtrado = df_inv[df_inv[col_ref].astype(str).str.upper().str.contains(termino_busqueda, na=False)]
+        # Filtrar limpiando espacios y mayúsculas
+        df_inv['__ref_limpia__'] = df_inv[col_ref].astype(str).str.strip().str.upper()
+        df_filtrado = df_inv[df_inv['__ref_limpia__'] == termino_busqueda]
+
+        if df_filtrado.empty:
+            # Búsqueda parcial por si acaso
+            df_filtrado = df_inv[df_inv['__ref_limpia__'].str.contains(termino_busqueda, na=False)]
 
         if df_filtrado.empty:
             await context.bot.edit_message_text(
@@ -419,7 +424,9 @@ async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYP
 
         keyboard = []
         for row_c in colores_unicos:
-            color_val = str(row_c[0])
+            color_val = str(row_c[0]).strip()
+            if not color_val:
+                continue
             cb_data = f"invcol_{color_val}"
             if len(cb_data.encode('utf-8')) > 64:
                 cb_data = cb_data[:64]
@@ -427,7 +434,7 @@ async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYP
 
         context.user_data['df_inventario_drive'] = df_inv
         context.user_data['ref_buscada_inv'] = termino_busqueda
-        context.user_data['col_ref'] = col_ref
+        context.user_data['col_ref'] = '__ref_limpia__'
         context.user_data['col_color'] = col_color
 
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -456,29 +463,36 @@ async def seleccionar_ref_sap(update: Update, context: ContextTypes.DEFAULT_TYPE
     data = query.data
 
     if data.startswith("invcol_"):
-        color_elegido = data.replace("invcol_", "").strip()
+        color_elegido = data.replace("invcol_", "").strip().upper()
         df_inv = context.user_data.get('df_inventario_drive')
         ref_buscada = context.user_data.get('ref_buscada_inv')
-        col_ref = context.user_data.get('col_ref', 'REFERENCIA')
+        col_ref = context.user_data.get('col_ref', '__ref_limpia__')
         col_color = context.user_data.get('col_color', 'COLOR')
 
         if df_inv is None:
             await query.edit_message_text(text="⚠️ La sesión ha expirado. Busca de nuevo con `/in [referencia]`.", parse_mode="Markdown")
             return ConversationHandler.END
 
+        # Asegurar limpieza de columnas para el match exacto
+        df_inv['__color_limpio__'] = df_inv[col_color].astype(str).str.strip().str.upper()
+
         filas_match = df_inv[
-            (df_inv[col_ref].astype(str).str.upper().str.contains(ref_buscada, na=False)) & 
-            (df_inv[col_color].astype(str).str.strip().str.upper() == color_elegido.upper())
+            (df_inv[col_ref] == ref_buscada) & 
+            (df_inv['__color_limpio__'] == color_elegido)
         ]
 
         if filas_match.empty:
             await query.edit_message_text(text=f"❌ No se encontró información detallada para el color *{color_elegido}*.", parse_mode="Markdown")
             return ConversationHandler.END
 
-        # Extraer datos de la primera coincidencia
-        primera_fila = filas_match.iloc[0]
-        codigo_articulo = escapar_markdown(primera_fila.get('Artículo', 'N/A'))
-        descripcion_articulo = escapar_markdown(primera_fila.get('Descripción', f"{ref_buscada} - {color_elegido}"))
+        primera_fila = filas_match.ilocilock[0] if hasattr(filas_match, 'ilocilock') else filas_match.iloc[0]
+        
+        # Buscar dinámicamente columnas de Artículo y Descripción
+        col_articulo = next((c for c in df_inv.columns if 'art' in c.lower() or 'cod' in c.lower()), 'Artículo')
+        col_desc = next((c for c in df_inv.columns if 'desc' in c.lower()), 'Descripción')
+
+        codigo_articulo = escapar_markdown(primera_fila.get(col_articulo, 'N/A'))
+        descripcion_articulo = escapar_markdown(primera_fila.get(col_desc, f"{ref_buscada} - {color_elegido}"))
 
         mensaje = (
             f"🟢 *Inventario SAP en Tiempo Real*\n\n"
@@ -489,42 +503,37 @@ async def seleccionar_ref_sap(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         total_stock = 0.0
         total_comprometido = 0.0
-        total_pedido = 0.0
         total_disponible = 0.0
 
         for _, fila in filas_match.iterrows():
+            # Obtener nombre o código de almacén
             nombre_almacen = escapar_markdown(fila.get('Nombre de Almacén', fila.get('Código de Almacén', 'Principal')))
-            
+            if not nombre_almacen or nombre_almacen == "nan":
+                nombre_almacen = escapar_markdown(fila.get('Código de Almacén', 'Principal'))
+
             try:
-                stock = float(str(fila.get('Stock', '0')).replace(',', ''))
+                stock = float(str(fila.get('Stock', '0')).replace(',', '').strip() or '0')
             except ValueError:
                 stock = 0.0
 
             try:
-                comprometido = float(str(fila.get('Comprometido', '0')).replace(',', ''))
+                comprometido = float(str(fila.get('Comprometido', '0')).replace(',', '').strip() or '0')
             except ValueError:
                 comprometido = 0.0
 
             try:
-                pedido = float(str(fila.get('Pedido', '0')).replace(',', ''))
-            except ValueError:
-                pedido = 0.0
-
-            try:
-                disponible = float(str(fila.get('Disponible', str(stock - comprometido))).replace(',', ''))
+                disponible = float(str(fila.get('Disponible', str(stock - comprometido))).replace(',', '').strip() or str(stock - comprometido))
             except ValueError:
                 disponible = stock - comprometido
 
             total_stock += stock
             total_comprometido += comprometido
-            total_pedido += pedido
             total_disponible += disponible
 
             mensaje += (
                 f"• *Almacén {nombre_almacen}:*\n"
                 f"  - En stock: `{stock:,.2f}`\n"
                 f"  - Comprometido: `{comprometido:,.2f}`\n"
-                f"  - Pedido: `{pedido:,.2f}`\n"
                 f"  - Disponible: `{disponible:,.2f}`\n\n"
             )
 
@@ -533,7 +542,6 @@ async def seleccionar_ref_sap(update: Update, context: ContextTypes.DEFAULT_TYPE
             f"📊 *Totales Generales:*\n"
             f"• *Stock Total:* `{total_stock:,.2f}`\n"
             f"• *Total Comprometido:* `{total_comprometido:,.2f}`\n"
-            f"• *Total Pedido:* `{total_pedido:,.2f}`\n"
             f"• *Total Disponible:* `{total_disponible:,.2f}`"
         )
 
