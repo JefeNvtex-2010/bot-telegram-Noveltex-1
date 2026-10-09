@@ -52,18 +52,17 @@ async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYP
         return ConversationHandler.END
 
     try:
-        # Normalizar nombres de columnas eliminando espacios extra
         df_inv.columns = [str(c).strip() for c in df_inv.columns]
         
-        # Búsqueda flexible de columnas por palabras clave
-        col_ref = next((c for c in df_inv.columns if 'REF' in c.upper()), None)
-        col_color = next((c for c in df_inv.columns if 'COLOR' in c.upper()), None)
+        # Validación estricta con los nombres exactos de tus columnas
+        col_ref = 'REFERENCIA' if 'REFERENCIA' in df_inv.columns else 'Referencia'
+        col_color = 'COLOR' if 'COLOR' in df_inv.columns else 'Color'
 
-        if not col_ref or not col_color:
+        if col_ref not in df_inv.columns or col_color not in df_inv.columns:
             await context.bot.edit_message_text(
                 chat_id=update.effective_chat.id,
                 message_id=msg.message_id,
-                text=f"⚠️ No se encontraron las columnas REFERENCIA o COLOR. Columnas detectadas: {list(df_inv.columns)}",
+                text=f"⚠️ No se encontraron las columnas REFERENCIA o COLOR en el inventario.",
                 parse_mode="Markdown"
             )
             return ConversationHandler.END
@@ -72,7 +71,7 @@ async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYP
         df_filtrado = df_inv[df_inv['__ref_limpia__'] == termino_busqueda]
 
         if df_filtrado.empty:
-            df_filtrado = df_inv[df_inv['__ref_limpia__'].str.contains(termino_busqueda, na=False)]
+            df_filtrado = df_inv[df_filtrado['__ref_limpia__'].str.contains(termino_busqueda, na=False)]
 
         if df_filtrado.empty:
             await context.bot.edit_message_text(
@@ -83,7 +82,7 @@ async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYP
             )
             return ConversationHandler.END
 
-        # Obtener colores únicos reales de esta referencia exacta
+        # Extraer colores únicos reales
         colores_unicos = df_filtrado[col_color].astype(str).str.strip()
         colores_unicos = colores_unicos[colores_unicos != ''].unique()
 
@@ -164,7 +163,7 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
             await query.edit_message_text(text="⚠️ La sesión ha expirado. Busca de nuevo con `/in [referencia]`.", parse_mode="Markdown")
             return ConversationHandler.END
 
-        # Filtrado estricto por Referencia y Color exactos
+        # FILTRADO EXACTO: Referencia Y Color idénticos
         filas_match = df_inv[
             (df_inv[col_ref] == ref_buscada) & 
             (df_inv[col_color].astype(str).str.strip() == color_elegido)
@@ -174,14 +173,14 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
             await query.edit_message_text(text=f"❌ No se encontró inventario para la referencia *{ref_buscada}* y color *{color_elegido}*.", parse_mode="Markdown")
             return ConversationHandler.END
 
-        # Detección flexible de columnas secundarias
-        col_cod_alm = next((c for c in df_inv.columns if 'ALMAC' in c.upper() or 'ALM' in c.upper()), None)
-        col_nom_alm = next((c for c in df_inv.columns if 'NOMBRE' in c.upper() and ('ALM' in c.upper() or 'BODEGA' in c.upper())), None)
-        col_stock = next((c for c in df_inv.columns if 'STOCK' in c.upper()), 'Stock')
-        col_comp = next((c for c in df_inv.columns if 'COMPROMETIDO' in c.upper()), 'Comprometido')
-        col_disp = next((c for c in df_inv.columns if 'DISPONIBLE' in c.upper()), 'Disponible')
-        col_art = next((c for c in df_inv.columns if 'ARTICULO' in c.upper() or 'CÓDIGO' in c.upper()), 'Artículo')
-        col_desc = next((c for c in df_inv.columns if 'DESCRIPCION' in c.upper() or 'DESC' in c.upper()), 'Descripción')
+        # Nombres exactos de columnas de tu Excel
+        col_art = 'Artículo'
+        col_desc = 'Descripción'
+        col_cod_alm = 'Código de Almacén'
+        col_nom_alm = 'Nombre de Almacén'
+        col_stock = 'Stock'
+        col_comp = 'Comprometido'
+        col_disp = 'Disponible'
 
         primera_fila = filas_match.iloc[0]
         codigo_articulo = escapar_markdown(str(primera_fila.get(col_art, 'N/A')))
@@ -198,19 +197,12 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
         total_comprometido = 0.0
         total_disponible = 0.0
 
-        almacenes_vistos = set()
-
         for _, fila in filas_match.iterrows():
-            cod_almacen = str(fila.get(col_cod_alm, '1')).strip() if col_cod_alm else '1'
-            if not cod_almacen or cod_almacen == 'nan' or cod_almacen == '':
+            cod_almacen = str(fila.get(col_cod_alm, '1')).strip()
+            if not cod_almacen or cod_almacen == 'nan':
                 cod_almacen = '1'
 
-            if cod_almacen in almacenes_vistos:
-                continue
-            almacenes_vistos.add(cod_almacen)
-
-            nom_almacen = str(fila.get(col_nom_alm, '')).strip() if col_nom_alm else ''
-
+            nom_almacen = str(fila.get(col_nom_alm, '')).strip()
             if nom_almacen and nom_almacen != 'nan' and nom_almacen != '':
                 almacen_txt = f"{cod_almacen} - {nom_almacen}"
             else:
@@ -232,7 +224,7 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
                 disponible = stock - comprometido
 
             total_stock += stock
-            total_comprometido += comprometido
+            total_comprometido += compromised if 'compromised' in locals() else comprometido
             total_disponible += disponible
 
             mensaje += (
