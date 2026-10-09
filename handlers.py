@@ -8,18 +8,27 @@ from telegram.ext import ContextTypes, ConversationHandler
 
 logger = logging.getLogger(__name__)
 
+# Estados para la conversación interactiva de búsqueda de pedidos (/PV)
 SELECCIONANDO_REFERENCIA, SELECCIONANDO_COLOR = range(2)
 
+# Estado para la conversación de inventario (/in)
+SELECCIONANDO_REF_SAP = 2
+
+# Enlaces de Google Sheets
 GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1EOGz7ix9Z1AufTJ-79TWHgiM9iN65LAf/export?format=csv"
+INVENTARIO_SHEET_URL = "https://docs.google.com/spreadsheets/d/1EOGz7ix9Z1AufTJ-79TWHgiM9iN65LAf/export?format=csv"
 
 def escapar_markdown(texto: str) -> str:
+    """Escapa caracteres especiales de Telegram para evitar errores de parseo."""
     if not isinstance(texto, str):
         texto = str(texto)
-    for c in ['_', '*', '`', '[']:
+    caracteres = ['_', '*', '`', '[']
+    for c in caracteres:
         texto = texto.replace(c, '')
     return texto.strip()
 
 def _descargar_csv(url):
+    """Función auxiliar robusta usando requests para descargar pestañas de Google Sheets en CSV."""
     response = requests.get(url, timeout=15)
     response.raise_for_status()
     df = pd.read_csv(io.StringIO(response.text), dtype=str, keep_default_na=False)
@@ -27,6 +36,7 @@ def _descargar_csv(url):
     return df
 
 def cargar_catalogo():
+    """Carga el catálogo de pedidos."""
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(_descargar_csv, GOOGLE_SHEET_URL)
         try:
@@ -36,6 +46,18 @@ def cargar_catalogo():
             return df
         except Exception as e:
             logger.error(f"⚠️ Error al leer Google Sheets de pedidos: {e}")
+            return f"ERROR: {e}"
+
+def cargar_inventario_drive():
+    """Carga el inventario desde Google Sheets."""
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(_descargar_csv, INVENTARIO_SHEET_URL)
+        try:
+            df = future.result(timeout=20.0)
+            logger.info(f"✅ ¡Inventario leído con éxito! ({len(df)} filas)")
+            return df
+        except Exception as e:
+            logger.error(f"⚠️ Error al leer inventario de Google Sheets: {e}")
             return f"ERROR: {e}"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -66,6 +88,8 @@ async def order_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "Por favor, escribe el **nombre del producto** que necesitas:",
         parse_mode="Markdown"
     )
+
+# --- ADMINISTRACIÓN REMOTA DE RENDER ---
 
 async def reiniciar_render(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     MI_TELEGRAM_ID = 5655537446
@@ -100,6 +124,11 @@ async def limpiar_cache_y_deploy(update: Update, context: ContextTypes.DEFAULT_T
     except Exception as e:
         logger.error(f"Error al limpiar caché en Render: {e}")
         await update.message.reply_text(f"⚠️ Ocurrió un error inesperado: `{e}`", parse_mode="Markdown")
+
+
+# ==========================================
+# FLUJO 1: BÚSQUEDA DE PEDIDOS (/PV)
+# ==========================================
 
 async def mostrar_ver_todo_referencia(query, context) -> int:
     resultado = context.user_data.get('df_pedido')
@@ -332,52 +361,10 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await query.edit_message_text(text=f"⚠️ Error al procesar el color: `{e}`", parse_mode="Markdown")
         return ConversationHandler.END
 
-async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text("❌ Búsqueda cancelada.")
-    return ConversationHandler.END
-3. Archivo inventario_handlers.py completo (Módulo de Inventario /in sin duplicados)
-(Ya incluye el .drop_duplicates(subset=['Código de Almacén']) para que no se repitan los almacenes)
 
-Python
-import logging
-import io
-import requests
-import pandas as pd
-import concurrent.futures
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ContextTypes, ConversationHandler
-
-logger = logging.getLogger(__name__)
-
-SELECCIONANDO_REF_SAP = 2
-
-# Enlace exclusivo para la hoja o pestaña de Inventario
-INVENTARIO_SHEET_URL = "https://docs.google.com/spreadsheets/d/1EOGz7ix9Z1AufTJ-79TWHgiM9iN65LAf/export?format=csv"
-
-def escapar_markdown(texto: str) -> str:
-    if not isinstance(texto, str):
-        texto = str(texto)
-    for c in ['_', '*', '`', '[']:
-        texto = texto.replace(c, '')
-    return texto.strip()
-
-def _descargar_csv_inventario(url):
-    response = requests.get(url, timeout=15)
-    response.raise_for_status()
-    df = pd.read_csv(io.StringIO(response.text), dtype=str, keep_default_na=False)
-    df.columns = df.columns.str.strip()
-    return df
-
-def cargar_inventario_aislado():
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(_descargar_csv_inventario, INVENTARIO_SHEET_URL)
-        try:
-            df = future.result(timeout=20.0)
-            logger.info(f"✅ ¡Inventario aislado leído con éxito! ({len(df)} filas)")
-            return df
-        except Exception as e:
-            logger.error(f"⚠️ Error al leer inventario: {e}")
-            return f"ERROR: {e}"
+# ==========================================
+# FLUJO 2: BÚSQUEDA DE INVENTARIO (/in) (Sin duplicados)
+# ==========================================
 
 async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not context.args:
@@ -390,7 +377,7 @@ async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYP
     termino_busqueda = " ".join(context.args).strip().upper()
     msg = await update.message.reply_text("🔄 Buscando referencia en inventario...", parse_mode="Markdown")
 
-    df_inv = cargar_inventario_aislado()
+    df_inv = cargar_inventario_drive()
     if isinstance(df_inv, str):
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id,
@@ -525,7 +512,7 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
             await query.edit_message_text(text=f"❌ No se encontró inventario para el color *{color_elegido}*.", parse_mode="Markdown")
             return ConversationHandler.END
 
-        # EVITA DUPLICADOS DE ALMACÉN
+        # FILTRAR ÚNICAMENTE POR CÓDIGO DE ALMACÉN PARA EVITAR CUALQUIER DUPLICADO
         filas_match = filas_match.drop_duplicates(subset=['Código de Almacén'])
 
         primera_fila = filas_match.iloc[0]
@@ -599,3 +586,8 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
         logger.error(f"Error seleccionando color de inventario: {e}")
         await query.edit_message_text(text=f"⚠️ Error al procesar: `{e}`", parse_mode="Markdown")
         return ConversationHandler.END
+
+
+async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text("❌ Búsqueda cancelada.")
+    return ConversationHandler.END
