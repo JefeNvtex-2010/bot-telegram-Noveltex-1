@@ -14,9 +14,12 @@ SELECCIONANDO_REFERENCIA, SELECCIONANDO_COLOR = range(2)
 # Estados para la conversación de inventario (/in)
 SELECCIONANDO_REF_SAP = 2
 
-# Enlaces de datos
+# Enlace principal de Google Sheets (Pedidos)
 GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1EOGz7ix9Z1AufTJ-79TWHgiM9iN65LAf/export?format=csv"
-INVENTARIO_DRIVE_URL = "https://docs.google.com/uc?export=download&id=1FJdfaNhxcFFDVD_AV2lTITHw0f-mB0Y2"
+
+# Enlace del Google Sheets para Inventario (usa la misma URL base y solo agregas el gid de tu pestaña "INVENTARIO BOT")
+# Ejemplo: ".../export?format=csv&gid=TU_GID_AQUI"
+INVENTARIO_SHEET_URL = "https://docs.google.com/spreadsheets/d/1EOGz7ix9Z1AufTJ-79TWHgiM9iN65LAf/export?format=csv"
 
 def escapar_markdown(texto: str) -> str:
     """Escapa caracteres especiales de Telegram para evitar errores de parseo."""
@@ -27,59 +30,38 @@ def escapar_markdown(texto: str) -> str:
         texto = texto.replace(c, '')
     return texto.strip()
 
-def _descargar_csv_pedidos():
-    """Descarga el Google Sheets de pedidos."""
-    response = requests.get(GOOGLE_SHEET_URL, timeout=25)
+def _descargar_csv(url):
+    """Función auxiliar robusta usando requests para descargar cualquier pestaña de Google Sheets en CSV."""
+    response = requests.get(url, timeout=15)
     response.raise_for_status()
     df = pd.read_csv(io.StringIO(response.text), dtype=str, keep_default_na=False)
-    df.columns = df.columns.str.strip()
-    if 'Documento Pd' in df.columns:
-        df['Documento Pd'] = df['Documento Pd'].astype(str).str.split('.').str[0].str.strip()
-    return df
-
-def _descargar_inventario_drive():
-    """Descarga el archivo CSV desde Google Drive de forma robusta."""
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-    response = requests.get(INVENTARIO_DRIVE_URL, headers=headers, timeout=25)
-    response.raise_for_status()
-    
-    contenido = response.text
-    # Si Google Drive devuelve una página HTML de advertencia por tamaño, intentamos confirmar
-    if "<html" in contenido.lower() or "<body" in contenido.lower():
-        url_confirm = INVENTARIO_DRIVE_URL + "&confirm=t"
-        response = requests.get(url_confirm, headers=headers, timeout=25)
-        response.raise_for_status()
-        contenido = response.text
-
-    df = pd.read_csv(
-        io.StringIO(contenido), 
-        dtype=str, 
-        keep_default_na=False, 
-        engine='python',
-        on_bad_lines='skip'
-    )
     df.columns = df.columns.str.strip()
     return df
 
 def cargar_catalogo():
+    """Carga el catálogo de pedidos."""
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(_descargar_csv_pedidos)
+        future = executor.submit(_descargar_csv, GOOGLE_SHEET_URL)
         try:
-            df = future.result(timeout=30.0)
+            df = future.result(timeout=20.0)
+            if 'Documento Pd' in df.columns:
+                df['Documento Pd'] = df['Documento Pd'].astype(str).str.split('.').str[0].str.strip()
+            logger.info(f"✅ ¡Catálogo de pedidos leído con éxito! ({len(df)} filas)")
             return df
         except Exception as e:
-            logger.error(f"⚠️ Error al leer pedidos: {e}")
+            logger.error(f"⚠️ Error al leer Google Sheets de pedidos: {e}")
             return f"ERROR: {e}"
 
 def cargar_inventario_drive():
+    """Carga el inventario desde la pestaña de Google Sheets con exportación directa CSV."""
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(_descargar_inventario_csv)
+        future = executor.submit(_descargar_csv, INVENTARIO_SHEET_URL)
         try:
-            df = future.result(timeout=30.0)
-            logger.info(f"✅ ¡Inventario de Drive leído con éxito! ({len(df)} filas - Cols: {list(df.columns)})")
+            df = future.result(timeout=20.0)
+            logger.info(f"✅ ¡Inventario de Google Sheets leído con éxito! ({len(df)} filas)")
             return df
         except Exception as e:
-            logger.error(f"⚠️ Error al leer inventario de Google Drive: {e}")
+            logger.error(f"⚠️ Error al leer inventario de Google Sheets: {e}")
             return f"ERROR: {e}"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -121,7 +103,7 @@ async def reiniciar_render(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     RENDER_DEPLOY_HOOK_URL = "https://api.render.com/deploy/srv-db2ktt7avr4c73eet090?key=gstG3k654R4"
     try:
-        response = requests.post(RENDER_DEPLOY_HOOK_URL)
+        response = requests.post(RENDER_DEPLOY_HOOK_URL, timeout=10)
         if response.status_code == 200:
             await update.message.reply_text("🔄 ¡Orden enviada con éxito! Reiniciando el servicio en Render...")
         else:
@@ -138,7 +120,7 @@ async def limpiar_cache_y_deploy(update: Update, context: ContextTypes.DEFAULT_T
 
     RENDER_CACHE_HOOK_URL = "https://api.render.com/deploy/srv-db2ktt7avr4c73eet090?key=gstG3k654R4&clearCache=true"
     try:
-        response = requests.post(RENDER_CACHE_HOOK_URL)
+        response = requests.post(RENDER_CACHE_HOOK_URL, timeout=10)
         if response.status_code == 200:
             await update.message.reply_text("🧹 ¡Orden enviada! Limpiando caché y desplegando nueva versión en Render...")
         else:
@@ -388,11 +370,11 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 
 # ==========================================
-# FLUJO 2: BÚSQUEDA DE INVENTARIO DESDE DRIVE (/in)
+# FLUJO 2: BÚSQUEDA DE INVENTARIO DESDE GOOGLE SHEETS (/in)
 # ==========================================
 
 async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Busca en la columna REFERENCIA y muestra los colores disponibles."""
+    """Busca en la columna REFERENCIA de la pestaña de inventario y muestra los colores disponibles."""
     if not context.args:
         await update.message.reply_text(
             "⚠️ Por favor, ingresa la referencia a buscar.\nEjemplo: `/in FRESBURA`", 
@@ -408,13 +390,12 @@ async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYP
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id,
             message_id=msg.message_id,
-            text=f"⚠️ No se pudo acceder al archivo de inventario: `{df_inv}`",
+            text=f"⚠️ No se pudo acceder a la pestaña de inventario: `{df_inv}`",
             parse_mode="Markdown"
         )
         return ConversationHandler.END
 
     try:
-        # Mapeo flexible de columnas para encontrar REFERENCIA y COLOR
         cols_map = {str(c).upper().strip(): c for c in df_inv.columns}
         
         col_ref = cols_map.get('REFERENCIA')
@@ -425,7 +406,6 @@ async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYP
         if not col_color:
             col_color = next((c for c in df_inv.columns if 'color' in c.lower()), df_inv.columns[8] if len(df_inv.columns) > 8 else df_inv.columns[1])
 
-        # Filtrar por la columna de referencia
         df_filtrado = df_inv[df_inv[col_ref].astype(str).str.upper().str.contains(termino_busqueda, na=False)]
 
         if df_filtrado.empty:
@@ -437,7 +417,6 @@ async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYP
             )
             return ConversationHandler.END
 
-        # Obtener colores únicos para esa referencia
         colores_unicos = df_filtrado[[col_color]].drop_duplicates().head(20).values
 
         keyboard = []
@@ -468,7 +447,7 @@ async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYP
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id,
             message_id=msg.message_id,
-            text=f"⚠️ Ocurrió un error procesando el archivo: `{e}`",
+            text=f"⚠️ Ocurrió un error procesando los datos: `{e}`",
             parse_mode="Markdown"
         )
         return ConversationHandler.END
@@ -489,7 +468,6 @@ async def seleccionar_ref_sap(update: Update, context: ContextTypes.DEFAULT_TYPE
             await query.edit_message_text(text="⚠️ La sesión ha expirado. Busca de nuevo con `/in [referencia]`.", parse_mode="Markdown")
             return ConversationHandler.END
 
-        # Filtrar filas que coincidan con la referencia y el color seleccionado
         filas_match = df_inv[
             (df_inv[col_ref].astype(str).str.upper().str.contains(ref_buscada, na=False)) & 
             (df_inv[col_color].astype(str).str.strip() == color_elegido)
