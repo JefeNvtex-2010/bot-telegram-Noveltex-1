@@ -16,8 +16,8 @@ from handlers import (
 
 # Importar flujos de inventario desde inventario_handlers.py
 from inventario_handlers import (
-    iniciar_busqueda_sap, seleccionar_color_sap,
-    SELECCIONANDO_REF_SAP
+    iniciar_busqueda_sap, seleccionar_referencia_sap, seleccionar_color_sap,
+    SELECCIONANDO_REF_SAP, SELECCIONANDO_COLOR_SAP
 )
 
 logger = logging.getLogger(__name__)
@@ -44,7 +44,7 @@ def main() -> None:
     
     application = ApplicationBuilder().token(settings.telegram_bot_token).build()
     
-    # 1. Manejador para Pedidos (/PV) - Solo captura patrones que empiezan con ref_ o col_
+    # 1. Manejador para Pedidos (/PV)
     conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler("PV", iniciar_busqueda),
@@ -65,7 +65,7 @@ def main() -> None:
         ],
     )
 
-    # 2. Manejador para Inventario (/in) - Solo captura patrones que empiezan estrictamente con inv_
+    # 2. Manejador para Inventario (/in) con flujo de selección múltiple de referencias y colores
     inventario_conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler("in", iniciar_busqueda_sap),
@@ -73,6 +73,9 @@ def main() -> None:
         ],
         states={
             SELECCIONANDO_REF_SAP: [
+                CallbackQueryHandler(seleccionar_referencia_sap, pattern="^(invref_|volver_inv_refs)")
+            ],
+            SELECCIONANDO_COLOR_SAP: [
                 CallbackQueryHandler(seleccionar_color_sap, pattern="^(inv_|volver_inv_colores)")
             ],
         },
