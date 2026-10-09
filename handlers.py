@@ -16,6 +16,7 @@ SELECCIONANDO_REF_SAP = 2
 
 # Enlaces de Google Sheets
 GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1EOGz7ix9Z1AufTJ-79TWHgiM9iN65LAf/export?format=csv"
+# IMPORTANTE: Si tu pestaña de inventario tiene un gid específico, agrégalo al final (ej: ".../export?format=csv&gid=123456789")
 INVENTARIO_SHEET_URL = "https://docs.google.com/spreadsheets/d/1EOGz7ix9Z1AufTJ-79TWHgiM9iN65LAf/export?format=csv"
 
 def escapar_markdown(texto: str) -> str:
@@ -428,7 +429,8 @@ async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYP
             color_val = str(row_c[0]).strip()
             if not color_val:
                 continue
-            cb_data = f"invcol_{color_val}"
+            # Prefijo exclusivo sapcol_ para evitar conflictos con /PV
+            cb_data = f"sapcol_{color_val}"
             if len(cb_data.encode('utf-8')) > 64:
                 cb_data = cb_data[:64]
             keyboard.append([InlineKeyboardButton(color_val, callback_data=cb_data)])
@@ -442,7 +444,7 @@ async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYP
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id,
             message_id=msg.message_id,
-            text=f"🔍 Referencia encontrada: *{termino_busqueda}*.\nSelecciona un color:",
+            text=f"🔍 Referencia de Inventario encontrada: *{termino_busqueda}*.\nSelecciona un color:",
             reply_markup=reply_markup,
             parse_mode="Markdown"
         )
@@ -470,7 +472,7 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
             col_color = context.user_data.get('col_color', 'COLOR')
             
             if df_inv is None:
-                await query.edit_message_text(text="⚠️ La sesión ha expirado.", parse_mode="Markdown")
+                await query.edit_message_text(text="⚠️ La sesión ha expirado. Busca de nuevo con `/in [referencia]`.", parse_mode="Markdown")
                 return ConversationHandler.END
 
             col_ref = context.user_data.get('col_ref', '__ref_limpia__')
@@ -482,22 +484,20 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
                 color_val = str(row_c[0]).strip()
                 if not color_val:
                     continue
-                cb_data = f"invcol_{color_val}"
+                cb_data = f"sapcol_{color_val}"
                 if len(cb_data.encode('utf-8')) > 64:
                     cb_data = cb_data[:64]
                 keyboard.append([InlineKeyboardButton(color_val, callback_data=cb_data)])
 
             reply_markup = InlineKeyboardMarkup(keyboard)
             await query.edit_message_text(
-                text=f"🔍 Referencia encontrada: *{ref_buscada}*.\nSelecciona un color:",
+                text=f"🔍 Referencia de Inventario encontrada: *{ref_buscada}*.\nSelecciona un color:",
                 reply_markup=reply_markup,
                 parse_mode="Markdown"
             )
             return SELECCIONANDO_REF_SAP
 
-        color_elegido = data.replace("invcol_", "").strip().upper()
-        context.user_data['color_elegido_inv'] = color_elegido
-        
+        color_elegido = data.replace("sapcol_", "").strip().upper()
         df_inv = context.user_data.get('df_inventario_drive')
         ref_buscada = context.user_data.get('ref_buscada_inv')
         col_ref = context.user_data.get('col_ref', '__ref_limpia__')
@@ -515,13 +515,13 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
         ]
 
         if filas_match.empty:
-            await query.edit_message_text(text=f"❌ No se encontró información detallada para el color *{color_elegido}*.", parse_mode="Markdown")
+            await query.edit_message_text(text=f"❌ No se encontró inventario detallado para el color *{color_elegido}*.", parse_mode="Markdown")
             return ConversationHandler.END
 
         primera_fila = filas_match.iloc[0]
         
-        codigo_articulo = escapar_markdown(primera_fila.get('Artículo', 'N/A'))
-        descripcion_articulo = escapar_markdown(primera_fila.get('Descripción', f"{ref_buscada} - {color_elegido}"))
+        codigo_articulo = escapar_markdown(str(primera_fila.get('Artículo', 'N/A')))
+        descripcion_articulo = escapar_markdown(str(primera_fila.get('Descripción', f"{ref_buscada} - {color_elegido}")))
 
         mensaje = (
             f"🟢 *Inventario SAP en Tiempo Real*\n\n"
@@ -588,11 +588,8 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
 
     except Exception as e:
         logger.error(f"Error en seleccionar_color_sap: {e}")
-        await query.edit_message_text(text=f"⚠️ Error al procesar: `{e}`", parse_mode="Markdown")
+        await query.edit_message_text(text=f"⚠️ Error al procesar el inventario: `{e}`", parse_mode="Markdown")
         return ConversationHandler.END
-
-async def seleccionar_ref_sap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    return await seleccionar_color_sap(update, context)
 
 
 async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
