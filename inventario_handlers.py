@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 SELECCIONANDO_REF_SAP = 1
 SELECCIONANDO_COLOR_SAP = 2
 
-INVENTARIO_SHEET_URL = "https://docs.google.com/spreadsheets/d/1FJdfaNhxcFFDVD_AV2lTITHw0f-mB0Y2/export?format=csv"
+INVENTARIO_SHEET_URL = "https://docs.google.com/spreadsheets/d/1SoK0_f6YFB36cAzjG8UOvFqELx3qwtgU/export?format=csv"
 
 def _descargar_csv_inventario(url):
     response = requests.get(url, timeout=15)
@@ -35,7 +35,7 @@ def cargar_inventario_aislado():
 async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not context.args:
         await update.message.reply_text(
-            "⚠️ Por favor, ingresa la referencia a buscar.\nEjemplo: `/in AMALFI`", 
+            "⚠️ Por favor, ingresa la referencia a buscar.\nEjemplo: `/in SATIN`", 
             parse_mode="Markdown"
         )
         return ConversationHandler.END
@@ -175,28 +175,30 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
     data = query.data
 
     try:
+        # Manejo correcto del retorno a referencias desde el estado de colores
         if data == "volver_inv_refs":
-            termino = context.user_data.get('termino_busqueda_inv')
+            termino = context.user_data.get('termino_busqueda_inv', '')
             df_inv = context.user_data.get('df_inventario_aislado')
             col_ref = context.user_data.get('col_ref_inv', '__ref_limpia__')
 
-            df_filtrado = df_inv[df_inv[col_ref].str.contains(termino, na=False)]
-            referencias_unicas = df_filtrado[col_ref].unique()
+            if df_inv is not None and termino:
+                df_filtrado = df_inv[df_inv[col_ref].str.contains(termino, na=False)]
+                referencias_unicas = df_filtrado[col_ref].unique()
 
-            keyboard = []
-            for ref_val in referencias_unicas[:20]:
-                cb_data = f"invref_{ref_val}"
-                if len(cb_data.encode('utf-8')) > 64:
-                    cb_data = cb_data[:64]
-                keyboard.append([InlineKeyboardButton(ref_val, callback_data=cb_data)])
+                keyboard = []
+                for ref_val in referencias_unicas[:20]:
+                    cb_data = f"invref_{ref_val}"
+                    if len(cb_data.encode('utf-8')) > 64:
+                        cb_data = cb_data[:64]
+                    keyboard.append([InlineKeyboardButton(ref_val, callback_data=cb_data)])
 
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.edit_message_text(
-                text=f"🔍 Encontré varias referencias para *{termino}*.\nSelecciona una referencia:",
-                reply_markup=reply_markup,
-                parse_mode="Markdown"
-            )
-            return SELECCIONANDO_REF_SAP
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await query.edit_message_text(
+                    text=f"🔍 Encontré varias referencias para *{termino}*.\nSelecciona una referencia:",
+                    reply_markup=reply_markup,
+                    parse_mode="Markdown"
+                )
+                return SELECCIONANDO_REF_SAP
 
         if data == "volver_inv_colores":
             return await mostrar_colores_ref(update, context, query.message.message_id, edit=False)
