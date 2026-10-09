@@ -1,15 +1,3 @@
-¡Vamos a resolver esto de una vez por todas! El motivo por el cual el botón de "Volver a referencias" parecía no hacer nada al presionarlo es que, cuando el bot editaba el mensaje anterior para mostrar los colores, se quedaba atrapado en el ámbito visual del callback anterior y no procesaba la transición inversa hacia el estado SELECCIONANDO_REF_SAP en el ConversationHandler.
-
-Para solucionarlo de forma radical y limpia, vamos a hacer dos cosas:
-
-Asegurar que el manejador de ese botón en main.py responda al patrón exacto de callback.
-
-Hacer que la función devuelva explícitamente el estado SELECCIONANDO_REF_SAP y redibuje el menú limpio de referencias.
-
-Aquí tienes los códigos completos y corregidos de tus dos archivos:
-
-1. main.py
-Python
 import logging
 import threading
 import os
