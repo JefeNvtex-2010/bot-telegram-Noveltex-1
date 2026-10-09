@@ -9,7 +9,6 @@ from handlers import escapar_markdown
 
 logger = logging.getLogger(__name__)
 
-# Definición de estados del flujo de inventario
 SELECCIONANDO_REF_SAP = 1
 SELECCIONANDO_COLOR_SAP = 2
 
@@ -31,6 +30,30 @@ def cargar_inventario_aislado():
         except Exception as e:
             logger.error(f"⚠️ Error al leer inventario: {e}")
             return f"ERROR: {e}"
+
+async def volver_a_lista_referencias(update: Update, context: ContextTypes.DEFAULT_TYPE, query) -> int:
+    termino = context.user_data.get('termino_busqueda_inv', '')
+    df_inv = context.user_data.get('df_inventario_aislado')
+    col_ref = context.user_data.get('col_ref_inv', '__ref_limpia__')
+
+    if df_inv is not None and termino:
+        df_filtrado = df_inv[df_inv[col_ref].str.contains(termino, na=False)]
+        referencias_unicas = df_filtrado[col_ref].unique()
+
+        keyboard = []
+        for ref_val in referencias_unicas[:20]:
+            cb_data = f"invref_{ref_val}"
+            if len(cb_data.encode('utf-8')) > 64:
+                cb_data = cb_data[:64]
+            keyboard.append([InlineKeyboardButton(ref_val, callback_data=cb_data)])
+
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            text=f"🔍 Encontré varias referencias para *{termino}*.\nSelecciona una referencia:",
+            reply_markup=reply_markup,
+            parse_mode="Markdown"
+        )
+    return SELECCIONANDO_REF_SAP
 
 async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not context.args:
@@ -124,30 +147,8 @@ async def seleccionar_referencia_sap(update: Update, context: ContextTypes.DEFAU
     await query.answer()
     data = query.data
 
-    # Si por alguna razón vuelve aquí desde el botón global
     if data == "volver_inv_refs":
-        termino = context.user_data.get('termino_busqueda_inv', '')
-        df_inv = context.user_data.get('df_inventario_aislado')
-        col_ref = context.user_data.get('col_ref_inv', '__ref_limpia__')
-
-        if df_inv is not None and termino:
-            df_filtrado = df_inv[df_inv[col_ref].str.contains(termino, na=False)]
-            referencias_unicas = df_filtrado[col_ref].unique()
-
-            keyboard = []
-            for ref_val in referencias_unicas[:20]:
-                cb_data = f"invref_{ref_val}"
-                if len(cb_data.encode('utf-8')) > 64:
-                    cb_data = cb_data[:64]
-                keyboard.append([InlineKeyboardButton(ref_val, callback_data=cb_data)])
-
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.edit_message_text(
-                text=f"🔍 Encontré varias referencias para *{termino}*.\nSelecciona una referencia:",
-                reply_markup=reply_markup,
-                parse_mode="Markdown"
-            )
-            return SELECCIONANDO_REF_SAP
+        return await volver_a_lista_referencias(update, context, query)
 
     if data.startswith("invref_"):
         ref_elegida = data.replace("invref_", "").strip()
@@ -200,30 +201,8 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
     data = query.data
 
     try:
-        # Manejo directo y explícito del retorno a referencias
         if data == "volver_inv_refs":
-            termino = context.user_data.get('termino_busqueda_inv', '')
-            df_inv = context.user_data.get('df_inventario_aislado')
-            col_ref = context.user_data.get('col_ref_inv', '__ref_limpia__')
-
-            if df_inv is not None and termino:
-                df_filtrado = df_inv[df_inv[col_ref].str.contains(termino, na=False)]
-                referencias_unicas = df_filtrado[col_ref].unique()
-
-                keyboard = []
-                for ref_val in referencias_unicas[:20]:
-                    cb_data = f"invref_{ref_val}"
-                    if len(cb_data.encode('utf-8')) > 64:
-                        cb_data = cb_data[:64]
-                    keyboard.append([InlineKeyboardButton(ref_val, callback_data=cb_data)])
-
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                await query.edit_message_text(
-                    text=f"🔍 Encontré varias referencias para *{termino}*.\nSelecciona una referencia:",
-                    reply_markup=reply_markup,
-                    parse_mode="Markdown"
-                )
-                return SELECCIONANDO_REF_SAP
+            return await volver_a_lista_referencias(update, context, query)
 
         if data == "volver_inv_colores":
             return await mostrar_colores_ref(update, context, query.message.message_id, edit=False)
@@ -282,19 +261,19 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
                 almacen_txt = cod_almacen
 
             try:
-                raw_stock = str(fila.get(col_stock, '0')).strip().replace(',', '')
+                raw_stock = str(fila.get(col_stock, '0')).strip().replace(',', '.')
                 stock = float(raw_stock) if raw_stock else 0.0
             except ValueError:
                 stock = 0.0
 
             try:
-                raw_comp = str(fila.get(col_comp, '0')).strip().replace(',', '')
+                raw_comp = str(fila.get(col_comp, '0')).strip().replace(',', '.')
                 comprometido = float(raw_comp) if raw_comp else 0.0
             except ValueError:
                 comprometido = 0.0
 
             try:
-                raw_disp = str(fila.get(col_disp, '')).strip().replace(',', '')
+                raw_disp = str(fila.get(col_disp, '')).strip().replace(',', '.')
                 disponible = float(raw_disp) if raw_disp else (stock - comprometido)
             except ValueError:
                 disponible = stock - comprometido
