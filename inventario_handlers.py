@@ -5,13 +5,12 @@ import pandas as pd
 import concurrent.futures
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
-from handlers import escapar_markdown  # Reutilizamos la función de escape
+from handlers import escapar_markdown
 
 logger = logging.getLogger(__name__)
 
 SELECCIONANDO_REF_SAP = 2
 
-# Enlace exclusivo para la hoja o pestaña de Inventario
 INVENTARIO_SHEET_URL = "https://docs.google.com/spreadsheets/d/1EOGz7ix9Z1AufTJ-79TWHgiM9iN65LAf/export?format=csv"
 
 def _descargar_csv_inventario(url):
@@ -54,16 +53,17 @@ async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYP
         return ConversationHandler.END
 
     try:
-        df_inv.columns = [c.strip() for c in df_inv.columns]
+        df_inv.columns = [str(c).strip() for c in df_inv.columns]
         
-        col_ref = 'REFERENCIA' if 'REFERENCIA' in df_inv.columns else 'Referencia'
-        col_color = 'COLOR' if 'COLOR' in df_inv.columns else 'Color'
+        # Mapeo exacto basado en tu estructura visual[cite: 7]
+        col_ref = 'REFERENCIA' if 'REFERENCIA' in df_inv.columns else next((c for c in df_inv.columns if 'REF' in c.upper()), None)
+        col_color = 'COLOR' if 'COLOR' in df_inv.columns else next((c for c in df_inv.columns if 'COLOR' in c.upper()), None)
 
-        if col_ref not in df_inv.columns or col_color not in df_inv.columns:
+        if not col_ref or not col_color:
             await context.bot.edit_message_text(
                 chat_id=update.effective_chat.id,
                 message_id=msg.message_id,
-                text="⚠️ Las columnas 'REFERENCIA' o 'COLOR' no coinciden en el archivo de inventario.",
+                text="⚠️ No se encontraron las columnas REFERENCIA o COLOR en el inventario.",
                 parse_mode="Markdown"
             )
             return ConversationHandler.END
@@ -129,7 +129,7 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
         if data == "volver_inv_colores":
             ref_buscada = context.user_data.get('ref_buscada_inv')
             df_inv = context.user_data.get('df_inventario_aislado')
-            col_color = context.user_data.get('col_color_inv', 'COLOR')
+            col_color = context.user_data.get('col_color_inv')
             col_ref = context.user_data.get('col_ref_inv', '__ref_limpia__')
             
             if df_inv is None:
@@ -161,10 +161,10 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
         df_inv = context.user_data.get('df_inventario_aislado')
         ref_buscada = context.user_data.get('ref_buscada_inv')
         col_ref = context.user_data.get('col_ref_inv', '__ref_limpia__')
-        col_color = context.user_data.get('col_color_inv', 'COLOR')
+        col_color = context.user_data.get('col_color_inv')
 
         if df_inv is None:
-            await query.edit_message_text(text="⚠️ La sesión ha expirado. Busca de nuevo con `/in [referencia]`.", parse_mode="Markdown")
+            await query.edit_message_text(text="⚠️ La sesión ha expirado. Busca de novo con `/in [referencia]`.", parse_mode="Markdown")
             return ConversationHandler.END
 
         df_inv['__color_limpio__'] = df_inv[col_color].astype(str).str.strip().str.upper()
@@ -178,12 +178,21 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
             await query.edit_message_text(text=f"❌ No se encontró inventario para el color *{color_elegido}*.", parse_mode="Markdown")
             return ConversationHandler.END
 
-        # EVITA DUPLICADOS DE ALMACÉN
-        filas_match = filas_match.drop_duplicates(subset=['Código de Almacén'])
+        # Columnas exactas de tu estructura[cite: 7]
+        col_cod_alm = 'Código de Almacén' if 'Código de Almacén' in df_inv.columns else 'Codigo de Almacen'
+        col_nom_alm = 'Nombre de Almacén' if 'Nombre de Almacén' in df_inv.columns else 'Nombre de Almacen'
+        col_stock = 'Stock'
+        col_comp = 'Comprometido' if 'Comprometido' in df_inv.columns else 'Comprometido'
+        col_disp = 'Disponible'
+        col_art = 'Artículo' if 'Artículo' in df_inv.columns else 'Articulo'
+        col_desc = 'Descripción' if 'Descripción' in df_inv.columns else 'Descripcion'
+
+        if col_cod_alm in df_inv.columns:
+            filas_match = filas_match.drop_duplicates(subset=[col_cod_alm])
 
         primera_fila = filas_match.iloc[0]
-        codigo_articulo = escapar_markdown(str(primera_fila.get('Artículo', 'N/A')))
-        descripcion_articulo = escapar_markdown(str(primera_fila.get('Descripción', f"{ref_buscada} - {color_elegido}")))
+        codigo_articulo = escapar_markdown(str(primera_fila.get(col_art, 'N/A')))
+        descripcion_articulo = escapar_markdown(str(primera_fila.get(col_desc, f"{ref_buscada} - {color_elegido}")))
 
         mensaje = (
             f"🟢 *Inventario SAP en Tiempo Real*\n\n"
@@ -197,8 +206,8 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
         total_disponible = 0.0
 
         for _, fila in filas_match.iterrows():
-            cod_almacen = str(fila.get('Código de Almacén', 'Principal')).strip()
-            nom_almacen = str(fila.get('Nombre de Almacén', '')).strip()
+            cod_almacen = str(fila.get(col_cod_alm, 'Principal')).strip() if col_cod_alm in df_inv.columns else 'Principal'
+            nom_almacen = str(fila.get(col_nom_alm, '')).strip() if col_nom_alm in df_inv.columns else ''
 
             if nom_almacen and nom_almacen != 'nan' and nom_almacen != '':
                 almacen_txt = f"{cod_almacen} - {nom_almacen}"
@@ -206,17 +215,17 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
                 almacen_txt = cod_almacen
 
             try:
-                stock = float(str(fila.get('Stock', '0')).replace(',', '').strip() or '0')
+                stock = float(str(fila.get(col_stock, '0')).replace(',', '').strip() or '0')
             except ValueError:
                 stock = 0.0
 
             try:
-                comprometido = float(str(fila.get('Comprometido', '0')).replace(',', '').strip() or '0')
+                comprometido = float(str(fila.get(col_comp, '0')).replace(',', '').strip() or '0')
             except ValueError:
                 comprometido = 0.0
 
             try:
-                disponible = float(str(fila.get('Disponible', str(stock - comprometido))).replace(',', '').strip() or str(stock - comprometido))
+                disponible = float(str(fila.get(col_disp, str(stock - comprometido))).replace(',', '').strip() or str(stock - comprometido))
             except ValueError:
                 disponible = stock - comprometido
 
