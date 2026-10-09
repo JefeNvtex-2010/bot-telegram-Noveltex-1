@@ -228,8 +228,8 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
 
         col_art = 'Artículo'
         col_desc = 'Descripción'
-        col_cod_alm = 'Código de Almacén'
-        col_nom_alm = 'Nombre de Almacén'
+        col_cod_alm = next((c for c in df_inv.columns if 'CÓDIGO' in c.upper() or 'ALMACÉN' in c.upper() or 'ALMACEN' in c.upper()), 'Código de Almacén')
+        col_nom_alm = next((c for c in df_inv.columns if 'NOMBRE' in c.upper() and ('ALM' in c.upper())), 'Nombre de Almacén')
         col_stock = 'Stock'
         col_comp = 'Comprometido'
         col_disp = 'Disponible'
@@ -250,12 +250,26 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
         total_disponible = 0.0
 
         for _, fila in filas_match.iterrows():
-            cod_almacen = str(fila.get(col_cod_alm, '1')).strip()
-            if not cod_almacen or cod_almacen == 'nan':
-                cod_almacen = '1'
+            # Buscar código de almacén de forma flexible
+            cod_almacen = '1'
+            for c in df_inv.columns:
+                if 'CÓDIGO' in c.upper() or 'ALMACÉN' in c.upper() or 'ALMACEN' in c.upper():
+                    val = str(fila.get(c, '')).strip()
+                    if val and val != 'nan':
+                        cod_almacen = val
+                        break
 
-            nom_almacen = str(fila.get(col_nom_alm, '')).strip()
-            if nom_almacen and nom_almacen != 'nan' and nom_almacen != '':
+            # Buscar nombre de almacén de forma flexible
+            nom_almacen = ''
+            for c in df_inv.columns:
+                if 'NOMBRE' in c.upper() and ('ALM' in c.upper()):
+                    val = str(fila.get(c, '')).strip()
+                    if val and val != 'nan':
+                        nom_almacen = val
+                        break
+
+            # Construir texto del almacén combinando código y nombre
+            if nom_almacen:
                 almacen_txt = f"{cod_almacen} - {nom_almacen}"
             else:
                 almacen_txt = cod_almacen
