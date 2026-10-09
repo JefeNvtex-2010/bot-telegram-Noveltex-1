@@ -204,11 +204,9 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
             else:
                 almacen_txt = cod_almacen
 
-            # Corrección robusta para parsear números decimales correctamente sin alterar los puntos
+            # Corrección precisa: eliminar comas de miles pero conservar los puntos decimales de SAP
             try:
-                val_stock = str(fila.get(col_stock, '0')).strip()
-                # Si viene con formato de miles con comas, las removemos
-                val_stock = val_stock.replace(',', '')
+                val_stock = str(fila.get(col_stock, '0')).strip().replace(',', '')
                 stock = float(val_stock) if val_stock else 0.0
             except ValueError:
                 stock = 0.0
