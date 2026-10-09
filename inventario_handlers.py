@@ -124,6 +124,31 @@ async def seleccionar_referencia_sap(update: Update, context: ContextTypes.DEFAU
     await query.answer()
     data = query.data
 
+    # Si por alguna razón vuelve aquí desde el botón global
+    if data == "volver_inv_refs":
+        termino = context.user_data.get('termino_busqueda_inv', '')
+        df_inv = context.user_data.get('df_inventario_aislado')
+        col_ref = context.user_data.get('col_ref_inv', '__ref_limpia__')
+
+        if df_inv is not None and termino:
+            df_filtrado = df_inv[df_inv[col_ref].str.contains(termino, na=False)]
+            referencias_unicas = df_filtrado[col_ref].unique()
+
+            keyboard = []
+            for ref_val in referencias_unicas[:20]:
+                cb_data = f"invref_{ref_val}"
+                if len(cb_data.encode('utf-8')) > 64:
+                    cb_data = cb_data[:64]
+                keyboard.append([InlineKeyboardButton(ref_val, callback_data=cb_data)])
+
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(
+                text=f"🔍 Encontré varias referencias para *{termino}*.\nSelecciona una referencia:",
+                reply_markup=reply_markup,
+                parse_mode="Markdown"
+            )
+            return SELECCIONANDO_REF_SAP
+
     if data.startswith("invref_"):
         ref_elegida = data.replace("invref_", "").strip()
         context.user_data['ref_seleccionada_inv'] = ref_elegida
@@ -175,7 +200,7 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
     data = query.data
 
     try:
-        # Manejo correcto del retorno a referencias desde el estado de colores
+        # Manejo directo y explícito del retorno a referencias
         if data == "volver_inv_refs":
             termino = context.user_data.get('termino_busqueda_inv', '')
             df_inv = context.user_data.get('df_inventario_aislado')
