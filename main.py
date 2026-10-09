@@ -44,7 +44,7 @@ def main() -> None:
     
     application = ApplicationBuilder().token(settings.telegram_bot_token).build()
     
-    # 1. Manejador para Pedidos (/PV)
+    # 1. Manejador para Pedidos (/PV) - Solo captura patrones que empiezan con ref_ o col_
     conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler("PV", iniciar_busqueda),
@@ -55,7 +55,7 @@ def main() -> None:
                 CallbackQueryHandler(seleccionar_referencia, pattern="^(ref_|ver_todo)")
             ],
             SELECCIONANDO_COLOR: [
-                CallbackQueryHandler(seleccionar_color)
+                CallbackQueryHandler(seleccionar_color, pattern="^(col_|ref_|volver_colores|volver_referencias)")
             ],
         },
         fallbacks=[
@@ -65,7 +65,7 @@ def main() -> None:
         ],
     )
 
-    # 2. Manejador para Inventario (/in)
+    # 2. Manejador para Inventario (/in) - Solo captura patrones que empiezan estrictamente con inv_
     inventario_conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler("in", iniciar_busqueda_sap),
