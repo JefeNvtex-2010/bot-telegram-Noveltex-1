@@ -8,28 +8,18 @@ from telegram.ext import ContextTypes, ConversationHandler
 
 logger = logging.getLogger(__name__)
 
-# Estados para la conversación interactiva de búsqueda de pedidos (/PV)
 SELECCIONANDO_REFERENCIA, SELECCIONANDO_COLOR = range(2)
 
-# Estados para la conversación de inventario (/in)
-SELECCIONANDO_REF_SAP = 2
-
-# Enlaces de Google Sheets
 GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1EOGz7ix9Z1AufTJ-79TWHgiM9iN65LAf/export?format=csv"
-# IMPORTANTE: Si tu pestaña de inventario tiene un gid específico, agrégalo al final (ej: ".../export?format=csv&gid=123456789")
-INVENTARIO_SHEET_URL = "https://docs.google.com/spreadsheets/d/1EOGz7ix9Z1AufTJ-79TWHgiM9iN65LAf/export?format=csv"
 
 def escapar_markdown(texto: str) -> str:
-    """Escapa caracteres especiales de Telegram para evitar errores de parseo."""
     if not isinstance(texto, str):
         texto = str(texto)
-    caracteres = ['_', '*', '`', '[']
-    for c in caracteres:
+    for c in ['_', '*', '`', '[']:
         texto = texto.replace(c, '')
     return texto.strip()
 
 def _descargar_csv(url):
-    """Función auxiliar robusta usando requests para descargar pestañas de Google Sheets en CSV."""
     response = requests.get(url, timeout=15)
     response.raise_for_status()
     df = pd.read_csv(io.StringIO(response.text), dtype=str, keep_default_na=False)
@@ -37,7 +27,6 @@ def _descargar_csv(url):
     return df
 
 def cargar_catalogo():
-    """Carga el catálogo de pedidos."""
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(_descargar_csv, GOOGLE_SHEET_URL)
         try:
@@ -47,18 +36,6 @@ def cargar_catalogo():
             return df
         except Exception as e:
             logger.error(f"⚠️ Error al leer Google Sheets de pedidos: {e}")
-            return f"ERROR: {e}"
-
-def cargar_inventario_drive():
-    """Carga el inventario desde la pestaña de Google Sheets con exportación directa CSV."""
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(_descargar_csv, INVENTARIO_SHEET_URL)
-        try:
-            df = future.result(timeout=20.0)
-            logger.info(f"✅ ¡Inventario de Google Sheets leído con éxito! ({len(df)} filas)")
-            return df
-        except Exception as e:
-            logger.error(f"⚠️ Error al leer inventario de Google Sheets: {e}")
             return f"ERROR: {e}"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -89,8 +66,6 @@ async def order_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "Por favor, escribe el **nombre del producto** que necesitas:",
         parse_mode="Markdown"
     )
-
-# --- ADMINISTRACIÓN REMOTA DE RENDER ---
 
 async def reiniciar_render(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     MI_TELEGRAM_ID = 5655537446
@@ -125,11 +100,6 @@ async def limpiar_cache_y_deploy(update: Update, context: ContextTypes.DEFAULT_T
     except Exception as e:
         logger.error(f"Error al limpiar caché en Render: {e}")
         await update.message.reply_text(f"⚠️ Ocurrió un error inesperado: `{e}`", parse_mode="Markdown")
-
-
-# ==========================================
-# FLUJO 1: BÚSQUEDA DE PEDIDOS (/PV)
-# ==========================================
 
 async def mostrar_ver_todo_referencia(query, context) -> int:
     resultado = context.user_data.get('df_pedido')
@@ -188,10 +158,7 @@ async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         catalogo_df = cargar_catalogo()
 
         if isinstance(catalogo_df, str):
-            if catalogo_df == "TIMEOUT":
-                await update.message.reply_text("⏱️ La consulta tardó demasiado. Intenta de nuevo.", parse_mode="Markdown")
-                return ConversationHandler.END
-            elif catalogo_df.startswith("ERROR"):
+            if catalogo_df.startswith("ERROR"):
                 await update.message.reply_text(f"⚠️ Error al conectar con Google Sheets:\n`{catalogo_df}`", parse_mode="Markdown")
                 return ConversationHandler.END
 
@@ -365,13 +332,54 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await query.edit_message_text(text=f"⚠️ Error al procesar el color: `{e}`", parse_mode="Markdown")
         return ConversationHandler.END
 
+async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text("❌ Búsqueda cancelada.")
+    return ConversationHandler.END
+3. Archivo inventario_handlers.py completo (Módulo de Inventario /in sin duplicados)
+(Ya incluye el .drop_duplicates(subset=['Código de Almacén']) para que no se repitan los almacenes)
 
-# ==========================================
-# FLUJO 2: BÚSQUEDA DE INVENTARIO DESDE GOOGLE SHEETS (/in)
-# ==========================================
+Python
+import logging
+import io
+import requests
+import pandas as pd
+import concurrent.futures
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ContextTypes, ConversationHandler
+
+logger = logging.getLogger(__name__)
+
+SELECCIONANDO_REF_SAP = 2
+
+# Enlace exclusivo para la hoja o pestaña de Inventario
+INVENTARIO_SHEET_URL = "https://docs.google.com/spreadsheets/d/1EOGz7ix9Z1AufTJ-79TWHgiM9iN65LAf/export?format=csv"
+
+def escapar_markdown(texto: str) -> str:
+    if not isinstance(texto, str):
+        texto = str(texto)
+    for c in ['_', '*', '`', '[']:
+        texto = texto.replace(c, '')
+    return texto.strip()
+
+def _descargar_csv_inventario(url):
+    response = requests.get(url, timeout=15)
+    response.raise_for_status()
+    df = pd.read_csv(io.StringIO(response.text), dtype=str, keep_default_na=False)
+    df.columns = df.columns.str.strip()
+    return df
+
+def cargar_inventario_aislado():
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(_descargar_csv_inventario, INVENTARIO_SHEET_URL)
+        try:
+            df = future.result(timeout=20.0)
+            logger.info(f"✅ ¡Inventario aislado leído con éxito! ({len(df)} filas)")
+            return df
+        except Exception as e:
+            logger.error(f"⚠️ Error al leer inventario: {e}")
+            return f"ERROR: {e}"
 
 async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Busca en la columna REFERENCIA de la pestaña de inventario y muestra los colores disponibles."""
     if not context.args:
         await update.message.reply_text(
             "⚠️ Por favor, ingresa la referencia a buscar.\nEjemplo: `/in CAMILA`", 
@@ -382,12 +390,12 @@ async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYP
     termino_busqueda = " ".join(context.args).strip().upper()
     msg = await update.message.reply_text("🔄 Buscando referencia en inventario...", parse_mode="Markdown")
 
-    df_inv = cargar_inventario_drive()
+    df_inv = cargar_inventario_aislado()
     if isinstance(df_inv, str):
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id,
             message_id=msg.message_id,
-            text=f"⚠️ No se pudo acceder a la pestaña de inventario: `{df_inv}`",
+            text=f"⚠️ No se pudo acceder al inventario: `{df_inv}`",
             parse_mode="Markdown"
         )
         return ConversationHandler.END
@@ -395,14 +403,14 @@ async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYP
     try:
         df_inv.columns = [c.strip() for c in df_inv.columns]
         
-        col_ref = 'REFERENCIA' if 'REFERENCIA' in df_inv.columns else next((c for c in df_inv.columns if 'ref' in c.lower()), None)
-        col_color = 'COLOR' if 'COLOR' in df_inv.columns else next((c for c in df_inv.columns if 'color' in c.lower()), None)
+        col_ref = 'REFERENCIA' if 'REFERENCIA' in df_inv.columns else 'Referencia'
+        col_color = 'COLOR' if 'COLOR' in df_inv.columns else 'Color'
 
-        if not col_ref or not col_color:
+        if col_ref not in df_inv.columns or col_color not in df_inv.columns:
             await context.bot.edit_message_text(
                 chat_id=update.effective_chat.id,
                 message_id=msg.message_id,
-                text="⚠️ No se encontraron las columnas 'REFERENCIA' o 'COLOR' en la hoja de inventario.",
+                text="⚠️ Las columnas 'REFERENCIA' o 'COLOR' no coinciden en el archivo de inventario.",
                 parse_mode="Markdown"
             )
             return ConversationHandler.END
@@ -417,7 +425,7 @@ async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYP
             await context.bot.edit_message_text(
                 chat_id=update.effective_chat.id,
                 message_id=msg.message_id,
-                text=f"❌ No se encontraron referencias coincidentes para: *{termino_busqueda}*.",
+                text=f"❌ No se encontraron referencias para: *{termino_busqueda}*.",
                 parse_mode="Markdown"
             )
             return ConversationHandler.END
@@ -429,33 +437,32 @@ async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYP
             color_val = str(row_c[0]).strip()
             if not color_val:
                 continue
-            # Prefijo exclusivo sapcol_ para evitar conflictos con /PV
-            cb_data = f"sapcol_{color_val}"
+            cb_data = f"inv_{color_val}"
             if len(cb_data.encode('utf-8')) > 64:
                 cb_data = cb_data[:64]
             keyboard.append([InlineKeyboardButton(color_val, callback_data=cb_data)])
 
-        context.user_data['df_inventario_drive'] = df_inv
+        context.user_data['df_inventario_aislado'] = df_inv
         context.user_data['ref_buscada_inv'] = termino_busqueda
-        context.user_data['col_ref'] = '__ref_limpia__'
-        context.user_data['col_color'] = col_color
+        context.user_data['col_ref_inv'] = '__ref_limpia__'
+        context.user_data['col_color_inv'] = col_color
 
         reply_markup = InlineKeyboardMarkup(keyboard)
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id,
             message_id=msg.message_id,
-            text=f"🔍 Referencia de Inventario encontrada: *{termino_busqueda}*.\nSelecciona un color:",
+            text=f"🔍 Referencia: *{termino_busqueda}*.\nSelecciona un color:",
             reply_markup=reply_markup,
             parse_mode="Markdown"
         )
         return SELECCIONANDO_REF_SAP
 
     except Exception as e:
-        logger.error(f"Error procesando inventario: {e}")
+        logger.error(f"Error en inventario: {e}")
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id,
             message_id=msg.message_id,
-            text=f"⚠️ Ocurrió un error procesando los datos: `{e}`",
+            text=f"⚠️ Error procesando datos: `{e}`",
             parse_mode="Markdown"
         )
         return ConversationHandler.END
@@ -466,16 +473,16 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
     data = query.data
 
     try:
-        if data == "volver_sap_colores":
+        if data == "volver_inv_colores":
             ref_buscada = context.user_data.get('ref_buscada_inv')
-            df_inv = context.user_data.get('df_inventario_drive')
-            col_color = context.user_data.get('col_color', 'COLOR')
+            df_inv = context.user_data.get('df_inventario_aislado')
+            col_color = context.user_data.get('col_color_inv', 'COLOR')
+            col_ref = context.user_data.get('col_ref_inv', '__ref_limpia__')
             
             if df_inv is None:
-                await query.edit_message_text(text="⚠️ La sesión ha expirado. Busca de nuevo con `/in [referencia]`.", parse_mode="Markdown")
+                await query.edit_message_text(text="⚠️ La sesión ha expirado.", parse_mode="Markdown")
                 return ConversationHandler.END
 
-            col_ref = context.user_data.get('col_ref', '__ref_limpia__')
             df_filtrado = df_inv[df_inv[col_ref] == ref_buscada]
             colores_unicos = df_filtrado[[col_color]].drop_duplicates().head(20).values
 
@@ -484,24 +491,24 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
                 color_val = str(row_c[0]).strip()
                 if not color_val:
                     continue
-                cb_data = f"sapcol_{color_val}"
+                cb_data = f"inv_{color_val}"
                 if len(cb_data.encode('utf-8')) > 64:
                     cb_data = cb_data[:64]
                 keyboard.append([InlineKeyboardButton(color_val, callback_data=cb_data)])
 
             reply_markup = InlineKeyboardMarkup(keyboard)
             await query.edit_message_text(
-                text=f"🔍 Referencia de Inventario encontrada: *{ref_buscada}*.\nSelecciona un color:",
+                text=f"🔍 Referencia: *{ref_buscada}*.\nSelecciona un color:",
                 reply_markup=reply_markup,
                 parse_mode="Markdown"
             )
             return SELECCIONANDO_REF_SAP
 
-        color_elegido = data.replace("sapcol_", "").strip().upper()
-        df_inv = context.user_data.get('df_inventario_drive')
+        color_elegido = data.replace("inv_", "").strip().upper()
+        df_inv = context.user_data.get('df_inventario_aislado')
         ref_buscada = context.user_data.get('ref_buscada_inv')
-        col_ref = context.user_data.get('col_ref', '__ref_limpia__')
-        col_color = context.user_data.get('col_color', 'COLOR')
+        col_ref = context.user_data.get('col_ref_inv', '__ref_limpia__')
+        col_color = context.user_data.get('col_color_inv', 'COLOR')
 
         if df_inv is None:
             await query.edit_message_text(text="⚠️ La sesión ha expirado. Busca de nuevo con `/in [referencia]`.", parse_mode="Markdown")
@@ -515,11 +522,13 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
         ]
 
         if filas_match.empty:
-            await query.edit_message_text(text=f"❌ No se encontró inventario detallado para el color *{color_elegido}*.", parse_mode="Markdown")
+            await query.edit_message_text(text=f"❌ No se encontró inventario para el color *{color_elegido}*.", parse_mode="Markdown")
             return ConversationHandler.END
 
+        # EVITA DUPLICADOS DE ALMACÉN
+        filas_match = filas_match.drop_duplicates(subset=['Código de Almacén'])
+
         primera_fila = filas_match.iloc[0]
-        
         codigo_articulo = escapar_markdown(str(primera_fila.get('Artículo', 'N/A')))
         descripcion_articulo = escapar_markdown(str(primera_fila.get('Descripción', f"{ref_buscada} - {color_elegido}")))
 
@@ -535,13 +544,13 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
         total_disponible = 0.0
 
         for _, fila in filas_match.iterrows():
-            codigo_almacen = escapar_markdown(str(fila.get('Código de Almacén', '')))
-            nombre_almacen = escapar_markdown(str(fila.get('Nombre de Almacén', '')))
-            
-            if nombre_almacen and nombre_almacen != 'nan' and nombre_almacen != '':
-                almacen_str = f"{codigo_almacen} - {nombre_almacen}"
+            cod_almacen = str(fila.get('Código de Almacén', 'Principal')).strip()
+            nom_almacen = str(fila.get('Nombre de Almacén', '')).strip()
+
+            if nom_almacen and nom_almacen != 'nan' and nom_almacen != '':
+                almacen_txt = f"{cod_almacen} - {nom_almacen}"
             else:
-                almacen_str = codigo_almacen if codigo_almacen else "Principal"
+                almacen_txt = cod_almacen
 
             try:
                 stock = float(str(fila.get('Stock', '0')).replace(',', '').strip() or '0')
@@ -563,7 +572,7 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
             total_disponible += disponible
 
             mensaje += (
-                f"• *Almacén {almacen_str}:*\n"
+                f"• *Almacén {almacen_txt}:*\n"
                 f"  - En stock: `{stock:,.2f}`\n"
                 f"  - Comprometido: `{comprometido:,.2f}`\n"
                 f"  - Disponible: `{disponible:,.2f}`\n\n"
@@ -577,7 +586,7 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
             f"• *Total Disponible:* `{total_disponible:,.2f}`"
         )
 
-        keyboard = [[InlineKeyboardButton("🔙 Volver a colores", callback_data="volver_sap_colores")]]
+        keyboard = [[InlineKeyboardButton("🔙 Volver a colores", callback_data="volver_inv_colores")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         if len(mensaje) > 4000:
@@ -587,11 +596,6 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
         return SELECCIONANDO_REF_SAP
 
     except Exception as e:
-        logger.error(f"Error en seleccionar_color_sap: {e}")
-        await query.edit_message_text(text=f"⚠️ Error al procesar el inventario: `{e}`", parse_mode="Markdown")
+        logger.error(f"Error seleccionando color de inventario: {e}")
+        await query.edit_message_text(text=f"⚠️ Error al procesar: `{e}`", parse_mode="Markdown")
         return ConversationHandler.END
-
-
-async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text("❌ Búsqueda cancelada.")
-    return ConversationHandler.END
