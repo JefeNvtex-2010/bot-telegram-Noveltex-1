@@ -16,7 +16,7 @@ SELECCIONANDO_REF_SAP = 2
 
 # Enlaces de Google Sheets
 GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1EOGz7ix9Z1AufTJ-79TWHgiM9iN65LAf/export?format=csv"
-# Usa el mismo enlace o añade &gid=ID_DE_PESTAÑA si lo requiere tu hoja de inventario
+# Enlace apuntando a la pestaña de Inventario (puedes agregar &gid=ID_DE_PESTAÑA si lo requiere)
 INVENTARIO_SHEET_URL = "https://docs.google.com/spreadsheets/d/1EOGz7ix9Z1AufTJ-79TWHgiM9iN65LAf/export?format=csv"
 
 def escapar_markdown(texto: str) -> str:
@@ -475,18 +475,72 @@ async def seleccionar_ref_sap(update: Update, context: ContextTypes.DEFAULT_TYPE
             await query.edit_message_text(text=f"❌ No se encontró información detallada para el color *{color_elegido}*.", parse_mode="Markdown")
             return ConversationHandler.END
 
-        detalle_texto = f"🟢 *Inventario - Referencia: {ref_buscada}*\n🎨 *Color:* `{color_elegido}`\n"
-        
-        for idx, fila in filas_match.iterrows():
-            detalle_texto += f"\n-----------------------------------\n"
-            for col, val in fila.items():
-                if val is not None and str(val).strip() != "":
-                    detalle_texto += f"• *{escapar_markdown(col)}:* `{escapar_markdown(val)}`\n"
+        # Extraer datos de la primera coincidencia
+        primera_fila = filas_match.iloc[0]
+        codigo_articulo = escapar_markdown(primera_fila.get('Artículo', 'N/A'))
+        descripcion_articulo = escapar_markdown(primera_fila.get('Descripción', f"{ref_buscada} - {color_elegido}"))
 
-        if len(detalle_texto) > 4000:
-            detalle_texto = detalle_texto[:4000]
+        mensaje = (
+            f"🟢 *Inventario SAP en Tiempo Real*\n\n"
+            f"• *Código:* `{codigo_articulo}`\n"
+            f"• *Artículo:* {descripcion_articulo}\n\n"
+            f"*Desglose por Almacén:*\n"
+        )
 
-        await query.edit_message_text(text=detalle_texto, parse_mode="Markdown")
+        total_stock = 0.0
+        total_comprometido = 0.0
+        total_pedido = 0.0
+        total_disponible = 0.0
+
+        for _, fila in filas_match.iterrows():
+            nombre_almacen = escapar_markdown(fila.get('Nombre de Almacén', fila.get('Código de Almacén', 'Principal')))
+            
+            try:
+                stock = float(str(fila.get('Stock', '0')).replace(',', ''))
+            except ValueError:
+                stock = 0.0
+
+            try:
+                comprometido = float(str(fila.get('Comprometido', '0')).replace(',', ''))
+            except ValueError:
+                comprometido = 0.0
+
+            try:
+                pedido = float(str(fila.get('Pedido', '0')).replace(',', ''))
+            except ValueError:
+                pedido = 0.0
+
+            try:
+                disponible = float(str(fila.get('Disponible', str(stock - comprometido))).replace(',', ''))
+            except ValueError:
+                disponible = stock - comprometido
+
+            total_stock += stock
+            total_comprometido += comprometido
+            total_pedido += pedido
+            total_disponible += disponible
+
+            mensaje += (
+                f"• *Almacén {nombre_almacen}:*\n"
+                f"  - En stock: `{stock:,.2f}`\n"
+                f"  - Comprometido: `{comprometido:,.2f}`\n"
+                f"  - Pedido: `{pedido:,.2f}`\n"
+                f"  - Disponible: `{disponible:,.2f}`\n\n"
+            )
+
+        mensaje += (
+            f"-----------------------------------\n"
+            f"📊 *Totales Generales:*\n"
+            f"• *Stock Total:* `{total_stock:,.2f}`\n"
+            f"• *Total Comprometido:* `{total_comprometido:,.2f}`\n"
+            f"• *Total Pedido:* `{total_pedido:,.2f}`\n"
+            f"• *Total Disponible:* `{total_disponible:,.2f}`"
+        )
+
+        if len(mensaje) > 4000:
+            mensaje = mensaje[:4000]
+
+        await query.edit_message_text(text=mensaje, parse_mode="Markdown")
     
     return ConversationHandler.END
 
