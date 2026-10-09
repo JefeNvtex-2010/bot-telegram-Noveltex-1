@@ -59,7 +59,7 @@ def main() -> None:
         ],
     )
 
-    # Configurar el ConversationHandler para la búsqueda interactiva de inventario SAP usando /in
+    # Configurar el ConversationHandler para la búsqueda interactiva de inventario usando /in
     sap_conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler("in", iniciar_busqueda_sap),
@@ -67,7 +67,7 @@ def main() -> None:
         ],
         states={
             SELECCIONANDO_REF_SAP: [
-                CallbackQueryHandler(seleccionar_ref_sap, pattern="^(sapref_|volver_sap_refs)")
+                CallbackQueryHandler(seleccionar_ref_sap, pattern="^(invcol_|sapref_|volver_sap_refs)")
             ],
         },
         fallbacks=[
