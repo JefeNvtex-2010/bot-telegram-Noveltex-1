@@ -25,7 +25,6 @@ def cargar_inventario_aislado():
         future = executor.submit(_descargar_csv_inventario, INVENTARIO_SHEET_URL)
         try:
             df = future.result(timeout=20.0)
-            logger.info(f"✅ ¡Inventario aislado leído con éxito! ({len(df)} filas)")
             return df
         except Exception as e:
             logger.error(f"⚠️ Error al leer inventario: {e}")
@@ -55,10 +54,10 @@ async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYP
     try:
         df_inv.columns = [str(c).strip() for c in df_inv.columns]
         
-        col_ref = 'REFERENCIA' if 'REFERENCIA' in df_inv.columns else next((c for c in df_inv.columns if 'REF' in c.upper()), None)
-        col_color = 'COLOR' if 'COLOR' in df_inv.columns else next((c for c in df_inv.columns if 'COLOR' in c.upper()), None)
+        col_ref = 'REFERENCIA' if 'REFERENCIA' in df_inv.columns else 'Referencia'
+        col_color = 'COLOR' if 'COLOR' in df_inv.columns else 'Color'
 
-        if not col_ref or not col_color:
+        if col_ref not in df_inv.columns or col_color not in df_inv.columns:
             await context.bot.edit_message_text(
                 chat_id=update.effective_chat.id,
                 message_id=msg.message_id,
@@ -82,13 +81,12 @@ async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYP
             )
             return ConversationHandler.END
 
-        colores_unicos = df_filtrado[[col_color]].drop_duplicates().head(20).values
+        # Obtener colores únicos reales de esta referencia exacta
+        colores_unicos = df_filtrado[col_color].astype(str).str.strip()
+        colores_unicos = colores_unicos[colores_unicos != ''].unique()
 
         keyboard = []
-        for row_c in colores_unicos:
-            color_val = str(row_c[0]).strip()
-            if not color_val:
-                continue
+        for color_val in colores_unicos[:20]:
             cb_data = f"inv_{color_val}"
             if len(cb_data.encode('utf-8')) > 64:
                 cb_data = cb_data[:64]
@@ -136,13 +134,11 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
                 return ConversationHandler.END
 
             df_filtrado = df_inv[df_inv[col_ref] == ref_buscada]
-            colores_unicos = df_filtrado[[col_color]].drop_duplicates().head(20).values
+            colores_unicos = df_filtrado[col_color].astype(str).str.strip()
+            colores_unicos = colores_unicos[colores_unicos != ''].unique()
 
             keyboard = []
-            for row_c in colores_unicos:
-                color_val = str(row_c[0]).strip()
-                if not color_val:
-                    continue
+            for color_val in colores_unicos[:20]:
                 cb_data = f"inv_{color_val}"
                 if len(cb_data.encode('utf-8')) > 64:
                     cb_data = cb_data[:64]
@@ -156,7 +152,7 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
             )
             return SELECCIONANDO_REF_SAP
 
-        color_elegido = data.replace("inv_", "").strip().upper()
+        color_elegido = data.replace("inv_", "").strip()
         df_inv = context.user_data.get('df_inventario_aislado')
         ref_buscada = context.user_data.get('ref_buscada_inv')
         col_ref = context.user_data.get('col_ref_inv', '__ref_limpia__')
@@ -166,15 +162,14 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
             await query.edit_message_text(text="⚠️ La sesión ha expirado. Busca de nuevo con `/in [referencia]`.", parse_mode="Markdown")
             return ConversationHandler.END
 
-        df_inv['__color_limpio__'] = df_inv[col_color].astype(str).str.strip().str.upper()
-
+        # Filtrado estricto por Referencia y Color exactos
         filas_match = df_inv[
             (df_inv[col_ref] == ref_buscada) & 
-            (df_inv['__color_limpio__'] == color_elegido)
+            (df_inv[col_color].astype(str).str.strip() == color_elegido)
         ]
 
         if filas_match.empty:
-            await query.edit_message_text(text=f"❌ No se encontró inventario para el color *{color_elegido}*.", parse_mode="Markdown")
+            await query.edit_message_text(text=f"❌ No se encontró inventario para la referencia *{ref_buscada}* y color *{color_elegido}*.", parse_mode="Markdown")
             return ConversationHandler.END
 
         col_cod_alm = 'Código de Almacén' if 'Código de Almacén' in df_inv.columns else 'Codigo de Almacen'
@@ -185,19 +180,14 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
         col_art = 'Artículo' if 'Artículo' in df_inv.columns else 'Articulo'
         col_desc = 'Descripción' if 'Descripción' in df_inv.columns else 'Descripcion'
 
-        # LIMPIEZA RIGUROSA DE DUPLICADOS (Evita filas idénticas o almacenes repetidos vacíos)
-        subset_cols = [c for c in [col_cod_alm, col_stock, col_comp, col_disp] if c in df_inv.columns]
-        if subset_cols:
-            filas_match = filas_match.drop_duplicates(subset=subset_cols)
-
         primera_fila = filas_match.iloc[0]
         codigo_articulo = escapar_markdown(str(primera_fila.get(col_art, 'N/A')))
         descripcion_articulo = escapar_markdown(str(primera_fila.get(col_desc, f"{ref_buscada} - {color_elegido}")))
 
         mensaje = (
             f"🟢 *Inventario SAP en Tiempo Real*\n\n"
-            f"• *Código:* `{codigo_articulo}`\n"
-            f"• *Artículo:* {descripcion_articulo}\n\n"
+            f"• *Artículo:* `{codigo_articulo}`\n"
+            f"• *Descripción:* {descripcion_articulo}\n\n"
             f"*Desglose por Almacén:*\n"
         )
 
@@ -205,10 +195,17 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
         total_comprometido = 0.0
         total_disponible = 0.0
 
+        # Agrupar y consolidar por código de almacén para evitar duplicados en pantalla
+        almacenes_vistos = set()
+
         for _, fila in filas_match.iterrows():
-            cod_almacen = str(fila.get(col_cod_alm, 'Principal')).strip() if col_cod_alm in df_inv.columns else 'Principal'
-            if not cod_almacen or cod_almacen == 'nan':
-                cod_almacen = 'Principal'
+            cod_almacen = str(fila.get(col_cod_alm, '1')).strip() if col_cod_alm in df_inv.columns else '1'
+            if not cod_almacen or cod_almacen == 'nan' or cod_almacen == '':
+                cod_almacen = '1'
+
+            if cod_almacen in almacenes_vistos:
+                continue
+            almacenes_vistos.add(cod_almacen)
 
             nom_almacen = str(fila.get(col_nom_alm, '')).strip() if col_nom_alm in df_inv.columns else ''
 
