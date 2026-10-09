@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 SELECCIONANDO_REF_SAP = 2
 
-INVENTARIO_SHEET_URL = "https://docs.google.com/spreadsheets/d/1EOGz7ix9Z1AufTJ-79TWHgiM9iN65LAf/export?format=csv"
+INVENTARIO_SHEET_URL = "https://docs.google.com/spreadsheets/d/1SoK0_f6YFB36cAzjG8UOvFqELx3qwtgU/export?format=csv"
 
 def _descargar_csv_inventario(url):
     response = requests.get(url, timeout=15)
