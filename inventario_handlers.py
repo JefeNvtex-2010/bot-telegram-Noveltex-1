@@ -52,16 +52,18 @@ async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYP
         return ConversationHandler.END
 
     try:
+        # Normalizar nombres de columnas eliminando espacios extra
         df_inv.columns = [str(c).strip() for c in df_inv.columns]
         
-        col_ref = 'REFERENCIA' if 'REFERENCIA' in df_inv.columns else 'Referencia'
-        col_color = 'COLOR' if 'COLOR' in df_inv.columns else 'Color'
+        # Búsqueda flexible de columnas por palabras clave
+        col_ref = next((c for c in df_inv.columns if 'REF' in c.upper()), None)
+        col_color = next((c for c in df_inv.columns if 'COLOR' in c.upper()), None)
 
-        if col_ref not in df_inv.columns or col_color not in df_inv.columns:
+        if not col_ref or not col_color:
             await context.bot.edit_message_text(
                 chat_id=update.effective_chat.id,
                 message_id=msg.message_id,
-                text="⚠️ No se encontraron las columnas REFERENCIA o COLOR en el inventario.",
+                text=f"⚠️ No se encontraron las columnas REFERENCIA o COLOR. Columnas detectadas: {list(df_inv.columns)}",
                 parse_mode="Markdown"
             )
             return ConversationHandler.END
@@ -172,13 +174,14 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
             await query.edit_message_text(text=f"❌ No se encontró inventario para la referencia *{ref_buscada}* y color *{color_elegido}*.", parse_mode="Markdown")
             return ConversationHandler.END
 
-        col_cod_alm = 'Código de Almacén' if 'Código de Almacén' in df_inv.columns else 'Codigo de Almacen'
-        col_nom_alm = 'Nombre de Almacén' if 'Nombre de Almacén' in df_inv.columns else 'Nombre de Almacen'
-        col_stock = 'Stock'
-        col_comp = 'Comprometido'
-        col_disp = 'Disponible'
-        col_art = 'Artículo' if 'Artículo' in df_inv.columns else 'Articulo'
-        col_desc = 'Descripción' if 'Descripción' in df_inv.columns else 'Descripcion'
+        # Detección flexible de columnas secundarias
+        col_cod_alm = next((c for c in df_inv.columns if 'ALMAC' in c.upper() or 'ALM' in c.upper()), None)
+        col_nom_alm = next((c for c in df_inv.columns if 'NOMBRE' in c.upper() and ('ALM' in c.upper() or 'BODEGA' in c.upper())), None)
+        col_stock = next((c for c in df_inv.columns if 'STOCK' in c.upper()), 'Stock')
+        col_comp = next((c for c in df_inv.columns if 'COMPROMETIDO' in c.upper()), 'Comprometido')
+        col_disp = next((c for c in df_inv.columns if 'DISPONIBLE' in c.upper()), 'Disponible')
+        col_art = next((c for c in df_inv.columns if 'ARTICULO' in c.upper() or 'CÓDIGO' in c.upper()), 'Artículo')
+        col_desc = next((c for c in df_inv.columns if 'DESCRIPCION' in c.upper() or 'DESC' in c.upper()), 'Descripción')
 
         primera_fila = filas_match.iloc[0]
         codigo_articulo = escapar_markdown(str(primera_fila.get(col_art, 'N/A')))
@@ -195,11 +198,10 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
         total_comprometido = 0.0
         total_disponible = 0.0
 
-        # Agrupar y consolidar por código de almacén para evitar duplicados en pantalla
         almacenes_vistos = set()
 
         for _, fila in filas_match.iterrows():
-            cod_almacen = str(fila.get(col_cod_alm, '1')).strip() if col_cod_alm in df_inv.columns else '1'
+            cod_almacen = str(fila.get(col_cod_alm, '1')).strip() if col_cod_alm else '1'
             if not cod_almacen or cod_almacen == 'nan' or cod_almacen == '':
                 cod_almacen = '1'
 
@@ -207,7 +209,7 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
                 continue
             almacenes_vistos.add(cod_almacen)
 
-            nom_almacen = str(fila.get(col_nom_alm, '')).strip() if col_nom_alm in df_inv.columns else ''
+            nom_almacen = str(fila.get(col_nom_alm, '')).strip() if col_nom_alm else ''
 
             if nom_almacen and nom_almacen != 'nan' and nom_almacen != '':
                 almacen_txt = f"{cod_almacen} - {nom_almacen}"
