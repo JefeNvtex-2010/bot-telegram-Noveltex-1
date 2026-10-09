@@ -458,13 +458,46 @@ async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return ConversationHandler.END
 
-async def seleccionar_ref_sap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
     data = query.data
 
-    if data.startswith("invcol_"):
+    try:
+        if data == "volver_sap_colores":
+            ref_buscada = context.user_data.get('ref_buscada_inv')
+            df_inv = context.user_data.get('df_inventario_drive')
+            col_color = context.user_data.get('col_color', 'COLOR')
+            
+            if df_inv is None:
+                await query.edit_message_text(text="⚠️ La sesión ha expirado.", parse_mode="Markdown")
+                return ConversationHandler.END
+
+            col_ref = context.user_data.get('col_ref', '__ref_limpia__')
+            df_filtrado = df_inv[df_inv[col_ref] == ref_buscada]
+            colores_unicos = df_filtrado[[col_color]].drop_duplicates().head(20).values
+
+            keyboard = []
+            for row_c in colores_unicos:
+                color_val = str(row_c[0]).strip()
+                if not color_val:
+                    continue
+                cb_data = f"invcol_{color_val}"
+                if len(cb_data.encode('utf-8')) > 64:
+                    cb_data = cb_data[:64]
+                keyboard.append([InlineKeyboardButton(color_val, callback_data=cb_data)])
+
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(
+                text=f"🔍 Referencia encontrada: *{ref_buscada}*.\nSelecciona un color:",
+                reply_markup=reply_markup,
+                parse_mode="Markdown"
+            )
+            return SELECCIONANDO_REF_SAP
+
         color_elegido = data.replace("invcol_", "").strip().upper()
+        context.user_data['color_elegido_inv'] = color_elegido
+        
         df_inv = context.user_data.get('df_inventario_drive')
         ref_buscada = context.user_data.get('ref_buscada_inv')
         col_ref = context.user_data.get('col_ref', '__ref_limpia__')
@@ -502,11 +535,9 @@ async def seleccionar_ref_sap(update: Update, context: ContextTypes.DEFAULT_TYPE
         total_disponible = 0.0
 
         for _, fila in filas_match.iterrows():
-            # Leyendo estrictamente de las columnas C, D, E, F, G
             codigo_almacen = escapar_markdown(str(fila.get('Código de Almacén', '')))
             nombre_almacen = escapar_markdown(str(fila.get('Nombre de Almacén', '')))
             
-            # Formato de visualización del almacén (Código + Nombre si existe)
             if nombre_almacen and nombre_almacen != 'nan' and nombre_almacen != '':
                 almacen_str = f"{codigo_almacen} - {nombre_almacen}"
             else:
@@ -546,12 +577,22 @@ async def seleccionar_ref_sap(update: Update, context: ContextTypes.DEFAULT_TYPE
             f"• *Total Disponible:* `{total_disponible:,.2f}`"
         )
 
+        keyboard = [[InlineKeyboardButton("🔙 Volver a colores", callback_data="volver_sap_colores")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
         if len(mensaje) > 4000:
             mensaje = mensaje[:4000]
 
-        await query.edit_message_text(text=mensaje, parse_mode="Markdown")
-    
-    return ConversationHandler.END
+        await query.edit_message_text(text=mensaje, reply_markup=reply_markup, parse_mode="Markdown")
+        return SELECCIONANDO_REF_SAP
+
+    except Exception as e:
+        logger.error(f"Error en seleccionar_color_sap: {e}")
+        await query.edit_message_text(text=f"⚠️ Error al procesar: `{e}`", parse_mode="Markdown")
+        return ConversationHandler.END
+
+async def seleccionar_ref_sap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    return await seleccionar_color_sap(update, context)
 
 
 async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
