@@ -1,3 +1,15 @@
+¡Vamos a resolver esto de una vez por todas! El motivo por el cual el botón de "Volver a referencias" parecía no hacer nada al presionarlo es que, cuando el bot editaba el mensaje anterior para mostrar los colores, se quedaba atrapado en el ámbito visual del callback anterior y no procesaba la transición inversa hacia el estado SELECCIONANDO_REF_SAP en el ConversationHandler.
+
+Para solucionarlo de forma radical y limpia, vamos a hacer dos cosas:
+
+Asegurar que el manejador de ese botón en main.py responda al patrón exacto de callback.
+
+Hacer que la función devuelva explícitamente el estado SELECCIONANDO_REF_SAP y redibuje el menú limpio de referencias.
+
+Aquí tienes los códigos completos y corregidos de tus dos archivos:
+
+1. main.py
+Python
 import logging
 import threading
 import os
@@ -6,7 +18,6 @@ from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandle
 from config import load_settings
 from logging_config import configure_logging
 
-# Importar flujos de pedidos desde handlers.py
 from handlers import (
     start, help_command, order_command, 
     iniciar_busqueda, seleccionar_referencia, seleccionar_color, 
@@ -14,7 +25,6 @@ from handlers import (
     SELECCIONANDO_REFERENCIA, SELECCIONANDO_COLOR
 )
 
-# Importar flujos de inventario desde inventario_handlers.py
 from inventario_handlers import (
     iniciar_busqueda_sap, seleccionar_referencia_sap, seleccionar_color_sap,
     SELECCIONANDO_REF_SAP, SELECCIONANDO_COLOR_SAP
@@ -65,7 +75,7 @@ def main() -> None:
         ],
     )
 
-    # 2. Manejador para Inventario (/in) con flujo de selección múltiple de referencias y colores
+    # 2. Manejador para Inventario (/in)
     inventario_conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler("in", iniciar_busqueda_sap),
@@ -76,7 +86,7 @@ def main() -> None:
                 CallbackQueryHandler(seleccionar_referencia_sap, pattern="^(invref_|volver_inv_refs)")
             ],
             SELECCIONANDO_COLOR_SAP: [
-                CallbackQueryHandler(seleccionar_color_sap, pattern="^(inv_|volver_inv_colores)")
+                CallbackQueryHandler(seleccionar_color_sap, pattern="^(inv_|volver_inv_colores|volver_inv_refs)")
             ],
         },
         fallbacks=[
@@ -86,7 +96,6 @@ def main() -> None:
         ],
     )
 
-    # Registrar todos los manejadores en la aplicación
     application.add_handler(conv_handler)
     application.add_handler(inventario_conv_handler)
     application.add_handler(CommandHandler("start", start))
