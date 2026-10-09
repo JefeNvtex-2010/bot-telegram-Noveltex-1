@@ -204,27 +204,21 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
             else:
                 almacen_txt = cod_almacen
 
+            # Parseo infalible: elimina únicamente las comas de miles y convierte a float
             try:
-                raw_stock = str(fila.get(col_stock, '0')).strip()
-                # Reemplazamos la coma que actúa como separador de miles si existe
-                if ',' in raw_stock and '.' in raw_stock:
-                    raw_stock = raw_stock.replace(',', '')
+                raw_stock = str(fila.get(col_stock, '0')).strip().replace(',', '')
                 stock = float(raw_stock) if raw_stock else 0.0
             except ValueError:
                 stock = 0.0
 
             try:
-                raw_comp = str(fila.get(col_comp, '0')).strip()
-                if ',' in raw_comp and '.' in raw_comp:
-                    raw_comp = raw_comp.replace(',', '')
+                raw_comp = str(fila.get(col_comp, '0')).strip().replace(',', '')
                 comprometido = float(raw_comp) if raw_comp else 0.0
             except ValueError:
                 comprometido = 0.0
 
             try:
-                raw_disp = str(fila.get(col_disp, '')).strip()
-                if ',' in raw_disp and '.' in raw_disp:
-                    raw_disp = raw_disp.replace(',', '')
+                raw_disp = str(fila.get(col_disp, '')).strip().replace(',', '')
                 disponible = float(raw_disp) if raw_disp else (stock - comprometido)
             except ValueError:
                 disponible = stock - comprometido
