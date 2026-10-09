@@ -14,11 +14,9 @@ SELECCIONANDO_REFERENCIA, SELECCIONANDO_COLOR = range(2)
 # Estados para la conversación de inventario (/in)
 SELECCIONANDO_REF_SAP = 2
 
-# Enlace principal de Google Sheets (Pedidos)
+# Enlaces de Google Sheets
 GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1EOGz7ix9Z1AufTJ-79TWHgiM9iN65LAf/export?format=csv"
-
-# Enlace del Google Sheets para Inventario (usa la misma URL base y solo agregas el gid de tu pestaña "INVENTARIO BOT")
-# Ejemplo: ".../export?format=csv&gid=TU_GID_AQUI"
+# Usa el mismo enlace o añade &gid=ID_DE_PESTAÑA si lo requiere tu hoja de inventario
 INVENTARIO_SHEET_URL = "https://docs.google.com/spreadsheets/d/1EOGz7ix9Z1AufTJ-79TWHgiM9iN65LAf/export?format=csv"
 
 def escapar_markdown(texto: str) -> str:
@@ -31,7 +29,7 @@ def escapar_markdown(texto: str) -> str:
     return texto.strip()
 
 def _descargar_csv(url):
-    """Función auxiliar robusta usando requests para descargar cualquier pestaña de Google Sheets en CSV."""
+    """Función auxiliar robusta usando requests para descargar pestañas de Google Sheets en CSV."""
     response = requests.get(url, timeout=15)
     response.raise_for_status()
     df = pd.read_csv(io.StringIO(response.text), dtype=str, keep_default_na=False)
@@ -470,14 +468,14 @@ async def seleccionar_ref_sap(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         filas_match = df_inv[
             (df_inv[col_ref].astype(str).str.upper().str.contains(ref_buscada, na=False)) & 
-            (df_inv[col_color].astype(str).str.strip() == color_elegido)
+            (df_inv[col_color].astype(str).str.strip().str.upper() == color_elegido.upper())
         ]
 
         if filas_match.empty:
-            await query.edit_message_text(text="❌ No se encontró información detallada para este color.", parse_mode="Markdown")
+            await query.edit_message_text(text=f"❌ No se encontró información detallada para el color *{color_elegido}*.", parse_mode="Markdown")
             return ConversationHandler.END
 
-        detalle_texto = f"🟢 *Inventario - {ref_buscada}* / *{color_elegido}*\n"
+        detalle_texto = f"🟢 *Inventario - Referencia: {ref_buscada}*\n🎨 *Color:* `{color_elegido}`\n"
         
         for idx, fila in filas_match.iterrows():
             detalle_texto += f"\n-----------------------------------\n"
