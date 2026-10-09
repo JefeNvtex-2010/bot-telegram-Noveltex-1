@@ -55,7 +55,6 @@ async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYP
     try:
         df_inv.columns = [str(c).strip() for c in df_inv.columns]
         
-        # Mapeo exacto basado en tu estructura visual[cite: 7]
         col_ref = 'REFERENCIA' if 'REFERENCIA' in df_inv.columns else next((c for c in df_inv.columns if 'REF' in c.upper()), None)
         col_color = 'COLOR' if 'COLOR' in df_inv.columns else next((c for c in df_inv.columns if 'COLOR' in c.upper()), None)
 
@@ -164,7 +163,7 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
         col_color = context.user_data.get('col_color_inv')
 
         if df_inv is None:
-            await query.edit_message_text(text="⚠️ La sesión ha expirado. Busca de novo con `/in [referencia]`.", parse_mode="Markdown")
+            await query.edit_message_text(text="⚠️ La sesión ha expirado. Busca de nuevo con `/in [referencia]`.", parse_mode="Markdown")
             return ConversationHandler.END
 
         df_inv['__color_limpio__'] = df_inv[col_color].astype(str).str.strip().str.upper()
@@ -178,17 +177,18 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
             await query.edit_message_text(text=f"❌ No se encontró inventario para el color *{color_elegido}*.", parse_mode="Markdown")
             return ConversationHandler.END
 
-        # Columnas exactas de tu estructura[cite: 7]
         col_cod_alm = 'Código de Almacén' if 'Código de Almacén' in df_inv.columns else 'Codigo de Almacen'
         col_nom_alm = 'Nombre de Almacén' if 'Nombre de Almacén' in df_inv.columns else 'Nombre de Almacen'
         col_stock = 'Stock'
-        col_comp = 'Comprometido' if 'Comprometido' in df_inv.columns else 'Comprometido'
+        col_comp = 'Comprometido'
         col_disp = 'Disponible'
         col_art = 'Artículo' if 'Artículo' in df_inv.columns else 'Articulo'
         col_desc = 'Descripción' if 'Descripción' in df_inv.columns else 'Descripcion'
 
-        if col_cod_alm in df_inv.columns:
-            filas_match = filas_match.drop_duplicates(subset=[col_cod_alm])
+        # LIMPIEZA RIGUROSA DE DUPLICADOS (Evita filas idénticas o almacenes repetidos vacíos)
+        subset_cols = [c for c in [col_cod_alm, col_stock, col_comp, col_disp] if c in df_inv.columns]
+        if subset_cols:
+            filas_match = filas_match.drop_duplicates(subset=subset_cols)
 
         primera_fila = filas_match.iloc[0]
         codigo_articulo = escapar_markdown(str(primera_fila.get(col_art, 'N/A')))
@@ -207,6 +207,9 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
 
         for _, fila in filas_match.iterrows():
             cod_almacen = str(fila.get(col_cod_alm, 'Principal')).strip() if col_cod_alm in df_inv.columns else 'Principal'
+            if not cod_almacen or cod_almacen == 'nan':
+                cod_almacen = 'Principal'
+
             nom_almacen = str(fila.get(col_nom_alm, '')).strip() if col_nom_alm in df_inv.columns else ''
 
             if nom_almacen and nom_almacen != 'nan' and nom_almacen != '':
