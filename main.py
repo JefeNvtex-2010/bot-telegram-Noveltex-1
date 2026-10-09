@@ -9,7 +9,7 @@ from handlers import (
     start, help_command, order_command, 
     iniciar_busqueda, seleccionar_referencia, seleccionar_color, 
     cancelar, reiniciar_render, limpiar_cache_y_deploy,
-    iniciar_busqueda_sap, seleccionar_color_sap, seleccionar_ref_sap,
+    iniciar_busqueda_sap, seleccionar_color_sap,
     SELECCIONANDO_REFERENCIA, SELECCIONANDO_COLOR, SELECCIONANDO_REF_SAP
 )
 
@@ -38,7 +38,7 @@ def main() -> None:
     
     application = ApplicationBuilder().token(settings.telegram_bot_token).build()
     
-    # Configurar el ConversationHandler para el flujo interactivo usando /PV
+    # Configurar el ConversationHandler para el flujo interactivo usando /PV (Pedidos)
     conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler("PV", iniciar_busqueda),
@@ -49,7 +49,7 @@ def main() -> None:
                 CallbackQueryHandler(seleccionar_referencia, pattern="^(ref_|ver_todo)")
             ],
             SELECCIONANDO_COLOR: [
-                CallbackQueryHandler(seleccionar_color)
+                CallbackQueryHandler(seleccionar_color, pattern="^(col_|ref_ver_todo|volver_colores|volver_referencias)")
             ],
         },
         fallbacks=[
@@ -59,7 +59,7 @@ def main() -> None:
         ],
     )
 
-    # Configurar el ConversationHandler para la búsqueda interactiva de inventario usando /in (idéntico en estructura a /PV)
+    # Configurar el ConversationHandler independiente para Inventario (/in)
     sap_conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler("in", iniciar_busqueda_sap),
@@ -67,8 +67,7 @@ def main() -> None:
         ],
         states={
             SELECCIONANDO_REF_SAP: [
-                CallbackQueryHandler(seleccionar_color_sap, pattern="^invcol_"),
-                CallbackQueryHandler(seleccionar_ref_sap, pattern="^(volver_sap_colores|volver_sap_refs)")
+                CallbackQueryHandler(seleccionar_color_sap, pattern="^(sapcol_|volver_sap_colores)")
             ],
         },
         fallbacks=[
