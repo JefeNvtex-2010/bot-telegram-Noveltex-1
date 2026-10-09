@@ -132,18 +132,18 @@ async def mostrar_ver_todo_referencia(query, context) -> int:
     for index, fila in df_ref.iterrows():
         mensaje += (
             f"\n-----------------------------------\n"
-            f"• *Estado factura:* {escapar_markdown(fila.get('Estado Factura', 'N/A'))}\n"
+            f"• *Estado del Pedido:* {escapar_markdown(fila.get('Estado Factura', 'N/A'))}\n"
             f"• *Ubicación:* {escapar_markdown(fila.get('Ubicación del Pedido', 'N/A'))}\n"
-            f"• *Id referencia:* {escapar_markdown(fila.get('Id Refer', 'N/A'))}\n"
+            f"• *Referencia:* {escapar_markdown(fila.get('Id Refer', 'N/A'))}\n"
             f"• *Color:* {escapar_markdown(fila.get('Color', 'N/A'))}\n"                    
             f"• *Estado Pedido:* {escapar_markdown(fila.get('Document Status SAP', 'N/A'))}\n"
             f"• *Estado Item:* {escapar_markdown(fila.get('Line Status Sap', 'N/A'))}\n"
             f"• *Cantidad pedida:* {escapar_markdown(fila.get('Cantidad Ped', 'N/A'))}\n"
             f"• *Cantidad alistada:* {escapar_markdown(fila.get('Cantidad Alistada', 'N/A'))}\n"           
             f"• *Fecha Despacho:* {escapar_markdown(fila.get('Fecha Factura', 'N/A'))}\n"
-            f"• *Nombre Operario Asignado:* {escapar_markdown(fila.get('Nombre Operario Asignado', 'N/A'))}\n"
-            f"• *Estado del Pedido:* {escapar_markdown(fila.get('Clasificacion Pedido', 'N/A'))}\n"
-            f"• *Observacion Adicional:* {escapar_markdown(fila.get('Observacion Adicional', 'N/A'))}\n"
+            f"• *Operario:* {escapar_markdown(fila.get('Nombre Operario Asignado', 'N/A'))}\n"
+            f"• *Tipo Pedido:* {escapar_markdown(fila.get('Clasificacion Pedido', 'N/A'))}\n"
+            f"• *Observacion:* {escapar_markdown(fila.get('Observacion Adicional', 'N/A'))}\n"
         )
 
     keyboard = [[InlineKeyboardButton("🔙 Volver a colores", callback_data="volver_colores")]]
@@ -320,18 +320,18 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         fila = fila_match.iloc[0]
         mensaje = (
             f"🔍 *Detalle del Documento {doc_buscado}*:\n\n"
-            f"• *Estado factura:* {escapar_markdown(fila.get('Estado Factura', 'N/A'))}\n"
+            f"• *Estado del Pedido:* {escapar_markdown(fila.get('Estado Factura', 'N/A'))}\n"
             f"• *Ubicación:* {escapar_markdown(fila.get('Ubicación del Pedido', 'N/A'))}\n"
-            f"• *Id referencia:* {escapar_markdown(fila.get('Id Refer', 'N/A'))}\n"
+            f"• *Referencia:* {escapar_markdown(fila.get('Id Refer', 'N/A'))}\n"
             f"• *Color:* {escapar_markdown(fila.get('Color', 'N/A'))}\n"                    
             f"• *Estado Pedido:* {escapar_markdown(fila.get('Document Status SAP', 'N/A'))}\n"
             f"• *Estado Item:* {escapar_markdown(fila.get('Line Status Sap', 'N/A'))}\n"
             f"• *Cantidad pedida:* {escapar_markdown(fila.get('Cantidad Ped', 'N/A'))}\n"
             f"• *Cantidad alistada:* {escapar_markdown(fila.get('Cantidad Alistada', 'N/A'))}\n"           
             f"• *Fecha Despacho:* {escapar_markdown(fila.get('Fecha Factura', 'N/A'))}\n"
-            f"• *Nombre Operario Asignado:* {escapar_markdown(fila.get('Nombre Operario Asignado', 'N/A'))}\n"
-            f"• *Estado del Pedido:* {escapar_markdown(fila.get('Clasificacion Pedido', 'N/A'))}\n"
-            f"• *Observacion Adicional:* {escapar_markdown(fila.get('Observacion Adicional', 'N/A'))}\n"
+            f"• *Operario:* {escapar_markdown(fila.get('Nombre Operario Asignado', 'N/A'))}\n"
+            f"• *Tipo Pedido:* {escapar_markdown(fila.get('Clasificacion Pedido', 'N/A'))}\n"
+            f"• *Observacion:* {escapar_markdown(fila.get('Observacion Adicional', 'N/A'))}\n"
         )
 
         keyboard = [[InlineKeyboardButton("🔙 Volver a colores", callback_data="volver_colores")]]
