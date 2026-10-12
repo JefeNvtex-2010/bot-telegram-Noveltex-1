@@ -12,7 +12,8 @@ logger = logging.getLogger(__name__)
 SELECCIONANDO_REF_SAP = 1
 SELECCIONANDO_COLOR_SAP = 2
 
-INVENTARIO_SHEET_URL = "https://docs.google.com/spreadsheets/d/1FJdfaNhxcFFDVD_AV2lTITHw0f-mB0Y2/export?format=csv"
+# Enlace actualizado
+INVENTARIO_SHEET_URL = "https://cloud.heyvalue.com/s/4FbLJBT9WkjM4QC"
 
 def _descargar_csv_inventario(url):
     response = requests.get(url, timeout=15)
@@ -250,7 +251,6 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
         total_disponible = 0.0
 
         for _, fila in filas_match.iterrows():
-            # Buscar código de almacén de forma flexible
             cod_almacen = '1'
             for c in df_inv.columns:
                 if 'CÓDIGO' in c.upper() or 'ALMACÉN' in c.upper() or 'ALMACEN' in c.upper():
@@ -259,7 +259,6 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
                         cod_almacen = val
                         break
 
-            # Buscar nombre de almacén de forma flexible
             nom_almacen = ''
             for c in df_inv.columns:
                 if 'NOMBRE' in c.upper() and ('ALM' in c.upper()):
@@ -268,7 +267,6 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
                         nom_almacen = val
                         break
 
-            # Construir texto del almacén combinando código y nombre
             if nom_almacen:
                 almacen_txt = f"{cod_almacen} - {nom_almacen}"
             else:
