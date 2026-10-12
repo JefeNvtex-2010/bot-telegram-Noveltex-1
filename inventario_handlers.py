@@ -13,7 +13,9 @@ SELECCIONANDO_REF_SAP = 1
 SELECCIONANDO_COLOR_SAP = 2
 
 # Enlace actualizado
-INVENTARIO_SHEET_URL = "https://cloud.heyvalue.com/s/4FbLJBT9WkjM4QC"
+INVENTARIO_SHEET_URL = "https://docs.google.com/spreadsheets/d/1FJdfaNhxcFFDVD_AV2lTITHw0f-mB0Y2/export?format=csv"
+
+
 
 def _descargar_csv_inventario(url):
     response = requests.get(url, timeout=15)
