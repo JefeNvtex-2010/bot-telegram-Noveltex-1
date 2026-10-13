@@ -82,12 +82,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     name = user.first_name if user else "allí"
     await update.message.reply_text(
-        f"¡Hola {name}! Bienvenido al sistema de pedidos.\n\n"
+        f"¡Hola {name}! Bienvenido al Bot de Noveltex, estoy aqui para ayudarte en tu día, dime cual sera tu primera consulta\n\n"
         "Usa los comandos:\n"
-        "• /pedido - Registrar una nueva orden de compra\n"
-        "• /PV [Nro_Documento] - Consultar estatus de pedidos\n"
-        "• /in [Referencia] - Consultar inventario por referencia\n"
-        "• /i [Referencia] - Consultar inventario vendedor (Bodega 01)"
+        
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
