@@ -237,8 +237,12 @@ def _texto_detalle(fila, titulo=None) -> str:
     """Construye el bloque de texto con el detalle de una fila de pedido."""
     cabecera = f"{titulo}\n\n" if titulo else ""
     
-    # Obtenemos la clasificación del pedido (normalizamos a minúsculas y sin espacios para evitar errores de escritura)
-    clasificacion = str(fila.get('Clasificacion Pedido', '')).strip().upper()
+    # Obtenemos la clasificación del pedido de forma segura y normalizada
+    clasificacion_raw = fila.get('Clasificacion Pedido', '')
+    clasificacion = str(clasificacion_raw).strip().upper()
+    
+    # 🔍 Línea de diagnóstico para ver en los logs de Render qué valor exacto llega
+    logger.info(f"🔎 DEBUG Clasificación leída: '{clasificacion_raw}' -> Normalizada: '{clasificacion}'")
     
     # Campos base del detalle
     detalle_texto = (
@@ -256,7 +260,7 @@ def _texto_detalle(fila, titulo=None) -> str:
         f"• *Tipo Pedido:* {escapar_markdown(fila.get('Clasificacion Pedido', 'N/A'))}\n"
     )
     
-    # Condición: Solo se muestra si Clasificacion Pedido es CONTADO
+    # Condición de validación estricta para Contado
     if clasificacion == "CONTADO":
         detalle_texto += (
             f"• *Fecha Vencimiento:* {escapar_markdown(fila.get('Fecha Vencimiento', 'N/A'))}\n"
