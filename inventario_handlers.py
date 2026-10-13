@@ -1,9 +1,3 @@
-¡Tienes toda la razón! Como en los otros dos archivos (inventario_handlers.py e inventario_vendedor_handlers.py) también aplicamos la lógica de borrado automático, necesitamos asegurarnos de que usen query.message.reply_text o el manejo correcto para que no arrojen ningún error de NoneType.
-
-Aquí tienes los códigos completos y limpios para esos dos módulos:
-
-2. Archivo inventario_handlers.py (Completo)
-Python
 import logging
 import io
 import requests
