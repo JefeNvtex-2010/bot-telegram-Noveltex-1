@@ -1,3 +1,7 @@
+Aquí tienes los tres códigos completos y actualizados de tus archivos (handlers.py, inventario_handlers.py e inventario_vendedor_handlers.py) con la función de borrado automático integrada para que los mensajes del bot desaparezcan solos a las 24 horas.
+
+1. Archivo handlers.py (Completo)
+Python
 import logging
 import io
 import datetime
@@ -47,6 +51,16 @@ def registrar_uso_bot(update: Update, comando_usado: str):
         requests.post(URL_WEB_APP_REPORTE, json=payload, timeout=5)
     except Exception as e:
         logger.error(f"⚠️ Error al enviar reporte al Google Sheet de auditoría: {e}")
+
+async def borrar_mensaje_automaticamente(context: ContextTypes.DEFAULT_TYPE):
+    """Tarea en segundo plano para eliminar un mensaje pasadas las 24 horas."""
+    job = context.job
+    chat_id = job.chat_id
+    message_id = job.data
+    try:
+        await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except Exception as e:
+        logger.error(f"No se pudo borrar el mensaje automáticamente: {e}")
 
 def escapar_markdown(texto: str) -> str:
     """Escapa caracteres especiales de Telegram para evitar errores de parseo."""
@@ -188,9 +202,17 @@ async def mostrar_ver_todo_referencia(query, context) -> int:
     if len(mensaje) > 4000:
         for i in range(0, len(mensaje), 4000):
             await query.message.reply_text(mensaje[i:i+4000], parse_mode="Markdown")
-        await query.edit_message_text(text="📌 Fin del detalle completo.", reply_markup=reply_markup, parse_mode="Markdown")
+        mensaje_enviado = await query.edit_message_text(text="📌 Fin del detalle completo.", reply_markup=reply_markup, parse_mode="Markdown")
     else:
-        await query.edit_message_text(text=mensaje, reply_markup=reply_markup, parse_mode="Markdown")
+        mensaje_enviado = await query.edit_message_text(text=mensaje, reply_markup=reply_markup, parse_mode="Markdown")
+    
+    # 🕒 Programar borrado automático del mensaje final en 24 horas (86400 segundos)
+    context.job_queue.run_once(
+        borrar_mensaje_automaticamente,
+        when=86400,
+        chat_id=query.message.chat_id,
+        data=mensaje_enviado.message_id
+    )
     
     return SELECCIONANDO_COLOR
 
@@ -376,7 +398,16 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         keyboard = [[InlineKeyboardButton("🔙 Volver a colores", callback_data="volver_colores")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        await query.edit_message_text(text=mensaje, reply_markup=reply_markup, parse_mode="Markdown")
+        mensaje_enviado = await query.edit_message_text(text=mensaje, reply_markup=reply_markup, parse_mode="Markdown")
+        
+        # 🕒 Programar borrado automático del resultado en 24 horas (86400 segundos)
+        context.job_queue.run_once(
+            borrar_mensaje_automaticamente,
+            when=86400,
+            chat_id=query.message.chat_id,
+            data=mensaje_enviado.message_id
+        )
+
         return SELECCIONANDO_COLOR
 
     except Exception as e:
