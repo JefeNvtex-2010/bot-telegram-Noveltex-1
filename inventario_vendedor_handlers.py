@@ -209,11 +209,14 @@ async def mostrar_colores_ref_vendedor(update: Update, context: ContextTypes.DEF
 
                 disponible_bodega_01 += disponible
 
-        # Texto del botón al estilo: "10 OPTICAL WHITE - 5000"
+        # 🔹 Si el disponible es menor a 0, lo forzamos a 0
+        if disponible_bodega_01 < 0:
+            disponible_bodega_01 = 0.0
+
+        # Texto del botón al estilo: "240 VINOTINTO - 0"
         disp_str = f"{int(disponible_bodega_01)}" if disponible_bodega_01.is_integer() else f"{disponible_bodega_01:,.2f}"
         texto_boton = f"{color_val} - {disp_str}"
         
-        # Como no se entra al detalle, el cb_data solo sirve de referencia o se puede mantener informativo
         cb_data = f"vend_{color_val}"
         if len(cb_data.encode('utf-8')) > 64:
             cb_data = cb_data[:64]
@@ -250,6 +253,5 @@ async def seleccionar_color_vendedor(update: Update, context: ContextTypes.DEFAU
     if data == "volver_vend_refs":
         return await volver_a_lista_referencias_vendedor(update, context, query)
 
-    # Si hacen clic en un botón de color, simplemente respondemos con un toast/alerta silenciosa ya que los datos están visibles
     await query.answer(text="La disponibilidad de bodega 01 se muestra directamente en el botón.", show_alert=False)
     return SELECCIONANDO_COLOR_VEND
