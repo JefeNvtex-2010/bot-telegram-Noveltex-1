@@ -1,6 +1,7 @@
 import logging
 import io
 import datetime
+import asyncio
 import requests
 import pandas as pd
 import concurrent.futures
@@ -48,12 +49,10 @@ def registrar_uso_bot(update: Update, comando_usado: str):
     except Exception as e:
         logger.error(f"⚠️ Error al enviar reporte al Google Sheet de auditoría: {e}")
 
-async def borrar_mensaje_automaticamente(context: ContextTypes.DEFAULT_TYPE):
-    """Tarea en segundo plano para eliminar un mensaje pasadas las 24 horas."""
-    job = context.job
-    chat_id = job.chat_id
-    message_id = job.data
+async def borrar_mensaje_automaticamente(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int):
+    """Espera 24 horas (86400 segundos) y elimina el mensaje de forma segura en segundo plano."""
     try:
+        await asyncio.sleep(86400)
         await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
     except Exception as e:
         logger.error(f"No se pudo borrar el mensaje automáticamente: {e}")
@@ -202,13 +201,8 @@ async def mostrar_ver_todo_referencia(query, context) -> int:
     else:
         mensaje_enviado = await query.message.reply_text(text=mensaje, reply_markup=reply_markup, parse_mode="Markdown")
     
-    # 🕒 Programar borrado automático del mensaje final en 24 horas (86400 segundos)
-    context.job_queue.run_once(
-        borrar_mensaje_automaticamente,
-        when=86400,
-        chat_id=query.message.chat_id,
-        data=mensaje_enviado.message_id
-    )
+    # 🕒 Programar borrado automático del mensaje final en segundo plano
+    asyncio.create_task(borrar_mensaje_automaticamente(context, query.message.chat_id, mensaje_enviado.message_id))
     
     return SELECCIONANDO_COLOR
 
@@ -396,13 +390,8 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
         mensaje_enviado = await query.message.reply_text(text=mensaje, reply_markup=reply_markup, parse_mode="Markdown")
         
-        # 🕒 Programar borrado automático del resultado en 24 horas (86400 segundos)
-        context.job_queue.run_once(
-            borrar_mensaje_automaticamente,
-            when=86400,
-            chat_id=query.message.chat_id,
-            data=mensaje_enviado.message_id
-        )
+        # 🕒 Programar borrado automático del resultado en segundo plano
+        asyncio.create_task(borrar_mensaje_automaticamente(context, query.message.chat_id, mensaje_enviado.message_id))
 
         return SELECCIONANDO_COLOR
 
