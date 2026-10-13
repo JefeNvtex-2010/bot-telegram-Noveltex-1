@@ -1,7 +1,6 @@
 import logging
 import io
 import datetime
-import asyncio
 import requests
 import pandas as pd
 import concurrent.futures
@@ -48,14 +47,6 @@ def registrar_uso_bot(update: Update, comando_usado: str):
         requests.post(URL_WEB_APP_REPORTE, json=payload, timeout=5)
     except Exception as e:
         logger.error(f"⚠️ Error al enviar reporte al Google Sheet de auditoría: {e}")
-
-async def borrar_mensaje_automaticamente(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int):
-    """Espera 24 horas (86400 segundos) y elimina el mensaje de forma segura en segundo plano."""
-    try:
-        await asyncio.sleep(86400)
-        await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
-    except Exception as e:
-        logger.error(f"No se pudo borrar el mensaje automáticamente: {e}")
 
 def escapar_markdown(texto: str) -> str:
     """Escapa caracteres especiales de Telegram para evitar errores de parseo."""
@@ -197,12 +188,9 @@ async def mostrar_ver_todo_referencia(query, context) -> int:
     if len(mensaje) > 4000:
         for i in range(0, len(mensaje), 4000):
             await query.message.reply_text(mensaje[i:i+4000], parse_mode="Markdown")
-        mensaje_enviado = await query.message.reply_text(text="📌 Fin del detalle completo.", reply_markup=reply_markup, parse_mode="Markdown")
+        await query.edit_message_text(text="📌 Fin del detalle completo.", reply_markup=reply_markup, parse_mode="Markdown")
     else:
-        mensaje_enviado = await query.message.reply_text(text=mensaje, reply_markup=reply_markup, parse_mode="Markdown")
-    
-    # 🕒 Programar borrado automático del mensaje final en segundo plano
-    asyncio.create_task(borrar_mensaje_automaticamente(context, query.message.chat_id, mensaje_enviado.message_id))
+        await query.edit_message_text(text=mensaje, reply_markup=reply_markup, parse_mode="Markdown")
     
     return SELECCIONANDO_COLOR
 
@@ -388,11 +376,7 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         keyboard = [[InlineKeyboardButton("🔙 Volver a colores", callback_data="volver_colores")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        mensaje_enviado = await query.message.reply_text(text=mensaje, reply_markup=reply_markup, parse_mode="Markdown")
-        
-        # 🕒 Programar borrado automático del resultado en segundo plano
-        asyncio.create_task(borrar_mensaje_automaticamente(context, query.message.chat_id, mensaje_enviado.message_id))
-
+        await query.edit_message_text(text=mensaje, reply_markup=reply_markup, parse_mode="Markdown")
         return SELECCIONANDO_COLOR
 
     except Exception as e:
