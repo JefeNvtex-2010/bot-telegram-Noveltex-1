@@ -1,5 +1,6 @@
 import logging
 import io
+import datetime
 import requests
 import pandas as pd
 import concurrent.futures
@@ -13,6 +14,36 @@ SELECCIONANDO_REFERENCIA, SELECCIONANDO_COLOR = range(2)
 
 # Enlace de Google Sheets para Pedidos
 GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1EOGz7ix9Z1AufTJ-79TWHgiM9iN65LAf/export?format=csv"
+
+# 📊 URL de la Aplicación Web de Google Apps Script para la Auditoría
+URL_WEB_APP_REPORTE = "https://script.google.com/macros/s/TU_URL_DE_APPS_SCRIPT_AQUI/exec"
+
+def registrar_uso_bot(update: Update, comando_usado: str):
+    """Registra de forma automática quién consultó el bot, la hora y el comando ejecutado."""
+    user = update.effective_user
+    if not user:
+        return
+
+    user_id = user.id
+    nombre = f"{user.first_name or ''} {user.last_name or ''}".strip()
+    username = f"@{user.username}" if user.username else "Sin alias"
+    hora_actual = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # Registro en la consola del servidor (Render)
+    logger.info(f"📊 [AUDITORÍA] {nombre} ({username}) [ID: {user_id}] -> {comando_usado} a las {hora_actual}")
+
+    # Envío automático al Google Sheet AUDITORIA_BOT
+    try:
+        payload = {
+            "fecha": hora_actual,
+            "usuario": nombre,
+            "username": username,
+            "id": str(user_id),
+            "comando": comando_usado
+        }
+        requests.post(URL_WEB_APP_REPORTE, json=payload, timeout=5)
+    except Exception as e:
+        logger.error(f"⚠️ Error al enviar reporte al Google Sheet de auditoría: {e}")
 
 def escapar_markdown(texto: str) -> str:
     """Escapa caracteres especiales de Telegram para evitar errores de parseo."""
@@ -52,7 +83,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Usa los comandos:\n"
         "• /pedido - Registrar una nueva orden de compra\n"
         "• /PV [Nro_Documento] - Consultar estatus de pedidos\n"
-        "• /in [Referencia] - Consultar inventario por referencia"
+        "• /in [Referencia] - Consultar inventario por referencia\n"
+        "• /i [Referencia] - Consultar inventario vendedor (Bodega 01)"
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -61,7 +93,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/start - Iniciar el bot\n"
         "/pedido - Registrar un pedido\n"
         "/PV [Nro_Documento] - Consultar estatus en Google Sheets\n"
-        "/in [Referencia] - Consultar inventario por referencia\n"
+        "/in [Referencia] - Consultar inventario SAP\n"
+        "/i [Referencia] - Consultar inventario vendedor (Bodega 01)\n"
         "/reiniciar - Reiniciar servicio de Render\n"
         "/actualizar - Limpiar caché y desplegar en Render"
     )
@@ -139,7 +172,7 @@ async def mostrar_ver_todo_referencia(query, context) -> int:
             f"• *Estado Pedido:* {escapar_markdown(fila.get('Document Status SAP', 'N/A'))}\n"
             f"• *Estado Item:* {escapar_markdown(fila.get('Line Status Sap', 'N/A'))}\n"
             f"• *Cantidad pedida:* {escapar_markdown(fila.get('Cantidad Ped', 'N/A'))}\n"
-            f"• *Cantidad alistada:* {escapar_markdown(fila.get('Cantidad Alistada', 'N/A'))}\n"           
+            f"• *Cantidad alistada:* {escapar_markdown(fila.get('Cantidad Alistada', 'N/A'))}\n"            
             f"• *Fecha Despacho:* {escapar_markdown(fila.get('Fecha Factura', 'N/A'))}\n"
             f"• *Operario:* {escapar_markdown(fila.get('Nombre Operario Asignado', 'N/A'))}\n"
             f"• *Tipo Pedido:* {escapar_markdown(fila.get('Clasificacion Pedido', 'N/A'))}\n"
@@ -159,6 +192,9 @@ async def mostrar_ver_todo_referencia(query, context) -> int:
     return SELECCIONANDO_COLOR
 
 async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    # 📊 Registramos automáticamente el uso de /PV
+    registrar_uso_bot(update, "/PV")
+
     try:
         if not context.args:
             await update.message.reply_text(
@@ -327,7 +363,7 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             f"• *Estado Pedido:* {escapar_markdown(fila.get('Document Status SAP', 'N/A'))}\n"
             f"• *Estado Item:* {escapar_markdown(fila.get('Line Status Sap', 'N/A'))}\n"
             f"• *Cantidad pedida:* {escapar_markdown(fila.get('Cantidad Ped', 'N/A'))}\n"
-            f"• *Cantidad alistada:* {escapar_markdown(fila.get('Cantidad Alistada', 'N/A'))}\n"           
+            f"• *Cantidad alistada:* {escapar_markdown(fila.get('Cantidad Alistada', 'N/A'))}\n"            
             f"• *Fecha Despacho:* {escapar_markdown(fila.get('Fecha Factura', 'N/A'))}\n"
             f"• *Operario:* {escapar_markdown(fila.get('Nombre Operario Asignado', 'N/A'))}\n"
             f"• *Tipo Pedido:* {escapar_markdown(fila.get('Clasificacion Pedido', 'N/A'))}\n"
