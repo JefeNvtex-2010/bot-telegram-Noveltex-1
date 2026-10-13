@@ -5,7 +5,7 @@ import pandas as pd
 import concurrent.futures
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
-from handlers import escapar_markdown
+from handlers import escapar_markdown, registrar_uso_bot
 
 logger = logging.getLogger(__name__)
 
@@ -14,8 +14,6 @@ SELECCIONANDO_COLOR_SAP = 2
 
 # Enlace actualizado
 INVENTARIO_SHEET_URL = "https://docs.google.com/spreadsheets/d/1FJdfaNhxcFFDVD_AV2lTITHw0f-mB0Y2/export?format=csv"
-
-
 
 def _descargar_csv_inventario(url):
     response = requests.get(url, timeout=15)
@@ -59,6 +57,9 @@ async def volver_a_lista_referencias(update: Update, context: ContextTypes.DEFAU
     return SELECCIONANDO_REF_SAP
 
 async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    # 📊 Registramos automáticamente el uso de /in en la auditoría
+    registrar_uso_bot(update, "/in")
+
     if not context.args:
         await update.message.reply_text(
             "⚠️ Por favor, ingresa la referencia a buscar.\nEjemplo: `/in SATIN`", 
@@ -231,8 +232,6 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
 
         col_art = 'Artículo'
         col_desc = 'Descripción'
-        col_cod_alm = next((c for c in df_inv.columns if 'CÓDIGO' in c.upper() or 'ALMACÉN' in c.upper() or 'ALMACEN' in c.upper()), 'Código de Almacén')
-        col_nom_alm = next((c for c in df_inv.columns if 'NOMBRE' in c.upper() and ('ALM' in c.upper())), 'Nombre de Almacén')
         col_stock = 'Stock'
         col_comp = 'Comprometido'
         col_disp = 'Disponible'
