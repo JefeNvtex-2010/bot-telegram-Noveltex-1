@@ -15,8 +15,9 @@ SELECCIONANDO_REFERENCIA, SELECCIONANDO_COLOR = range(2)
 # Enlace de Google Sheets para Pedidos
 GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1EOGz7ix9Z1AufTJ-79TWHgiM9iN65LAf/export?format=csv"
 
+
 # 📊 URL de la Aplicación Web de Google Apps Script para la Auditoría
-URL_WEB_APP_REPORTE = "https://script.google.com/macros/s/TU_URL_DE_APPS_SCRIPT_AQUI/exec"
+URL_WEB_APP_REPORTE = "https://script.google.com/macros/s/AKfycbztHKV4C8hqcPUVHq71gFmRzPSbtz36NByAgPfR-JEyDlNRF-LkRj-g2lEWHrf42AaE/exec"
 
 def registrar_uso_bot(update: Update, comando_usado: str):
     """Registra de forma automática quién consultó el bot, la hora y el comando ejecutado."""
