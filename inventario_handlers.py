@@ -5,7 +5,7 @@ import pandas as pd
 import concurrent.futures
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
-from handlers import escapar_markdown, registrar_uso_bot
+from handlers import escapar_markdown, registrar_uso_bot, borrar_mensaje_automaticamente
 
 logger = logging.getLogger(__name__)
 
@@ -316,7 +316,16 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
         if len(mensaje) > 4000:
             mensaje = mensaje[:4000]
 
-        await query.edit_message_text(text=mensaje, reply_markup=reply_markup, parse_mode="Markdown")
+        mensaje_enviado = await query.edit_message_text(text=mensaje, reply_markup=reply_markup, parse_mode="Markdown")
+        
+        # 🕒 Programar borrado automático del inventario SAP en 24 horas (86400 segundos)
+        context.job_queue.run_once(
+            borrar_mensaje_automaticamente,
+            when=86400,
+            chat_id=query.message.chat_id,
+            data=mensaje_enviado.message_id
+        )
+
         return SELECCIONANDO_COLOR_SAP
 
     except Exception as e:
