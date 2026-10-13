@@ -1,5 +1,10 @@
+Aquí tienes los códigos completos y actualizados para los otros dos módulos (inventario_handlers.py e inventario_vendedor_handlers.py), adaptados también con asyncio para que el borrado automático de las 24 horas funcione sin ningún problema de dependencias ni errores:
+
+2. Archivo inventario_handlers.py (Completo)
+Python
 import logging
 import io
+import asyncio
 import requests
 import pandas as pd
 import concurrent.futures
@@ -314,15 +319,10 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
         if len(mensaje) > 4000:
             mensaje = mensaje[:4000]
 
-        # Enviamos mensaje nuevo en lugar de editar para capturar el ID de forma segura para las 24h
+        # Enviamos un mensaje nuevo para capturar el ID de forma segura para las 24h
         mensaje_enviado = await query.message.reply_text(text=mensaje, reply_markup=reply_markup, parse_mode="Markdown")
         
-        context.job_queue.run_once(
-            borrar_mensaje_automaticamente,
-            when=86400,
-            chat_id=query.message.chat_id,
-            data=mensaje_enviado.message_id
-        )
+        asyncio.create_task(borrar_mensaje_automaticamente(context, query.message.chat_id, mensaje_enviado.message_id))
 
         return SELECCIONANDO_COLOR_SAP
 
