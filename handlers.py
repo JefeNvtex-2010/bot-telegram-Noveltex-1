@@ -1,7 +1,3 @@
-Aquí tienes los tres códigos completos y actualizados de tus archivos (handlers.py, inventario_handlers.py e inventario_vendedor_handlers.py) con la función de borrado automático integrada para que los mensajes del bot desaparezcan solos a las 24 horas.
-
-1. Archivo handlers.py (Completo)
-Python
 import logging
 import io
 import datetime
