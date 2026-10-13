@@ -1,3 +1,4 @@
+import os
 import logging
 import io
 import datetime
@@ -15,8 +16,63 @@ SELECCIONANDO_REFERENCIA, SELECCIONANDO_COLOR = range(2)
 # Enlace de Google Sheets para Pedidos
 GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1EOGz7ix9Z1AufTJ-79TWHgiM9iN65LAf/export?format=csv"
 
-# 📊 URL de la Aplicación Web de Google Apps Script para la Auditoría
-URL_WEB_APP_REPORTE = "https://script.google.com/macros/s/AKfycbztHKV4C8hqcPUVHq71gFmRzPSbtz36NByAgPfR-JEyDlNRF-LkRj-g2lEWHrf42AaE/exec"
+# ==========================================
+# CONFIGURACIÓN SENSIBLE (variables de entorno en Render)
+# ==========================================
+# Define estas variables en Render -> Environment:
+#   URL_WEB_APP_REPORTE      -> URL del Apps Script de auditoría
+#   RENDER_DEPLOY_HOOK_URL   -> Deploy hook de Render (sin &clearCache)
+#   MI_TELEGRAM_ID           -> Tu ID numérico de Telegram
+URL_WEB_APP_REPORTE = os.environ.get("URL_WEB_APP_REPORTE", "")
+RENDER_DEPLOY_HOOK_URL = os.environ.get("RENDER_DEPLOY_HOOK_URL", "")
+MI_TELEGRAM_ID = int(os.environ.get("MI_TELEGRAM_ID", "0"))
+
+# ⏳ Tiempo de vida de los mensajes (24 horas). Telegram solo permite borrar
+# mensajes con menos de 48 horas, así que este valor debe ser menor a 48 h.
+SEGUNDOS_BORRADO = 24 * 60 * 60
+
+
+# ==========================================
+# BORRADO AUTOMÁTICO DE MENSAJES
+# ==========================================
+
+async def _borrar_mensaje_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Job que se ejecuta a las 24 h y borra el mensaje."""
+    datos = context.job.data
+    try:
+        await context.bot.delete_message(
+            chat_id=datos["chat_id"],
+            message_id=datos["message_id"]
+        )
+    except Exception as e:
+        # Puede fallar si el usuario ya lo borró o si no hay permisos
+        logger.warning(f"No se pudo borrar el mensaje {datos['message_id']}: {e}")
+
+
+def programar_borrado(context: ContextTypes.DEFAULT_TYPE, mensaje) -> None:
+    """Programa el borrado de un mensaje dentro de SEGUNDOS_BORRADO."""
+    if mensaje is None:
+        return
+    if context.job_queue is None:
+        logger.warning("JobQueue no disponible. Instala: python-telegram-bot[job-queue]")
+        return
+    context.job_queue.run_once(
+        _borrar_mensaje_job,
+        when=SEGUNDOS_BORRADO,
+        data={"chat_id": mensaje.chat_id, "message_id": mensaje.message_id},
+    )
+
+
+async def responder(update: Update, context: ContextTypes.DEFAULT_TYPE, texto: str, **kwargs):
+    """Envía una respuesta y programa su borrado automático."""
+    msg = await update.message.reply_text(texto, **kwargs)
+    programar_borrado(context, msg)
+    return msg
+
+
+# ==========================================
+# AUDITORÍA
+# ==========================================
 
 def registrar_uso_bot(update: Update, comando_usado: str):
     """Registra de forma automática quién consultó el bot, la hora local ajustada y el comando ejecutado."""
@@ -27,7 +83,7 @@ def registrar_uso_bot(update: Update, comando_usado: str):
     user_id = user.id
     nombre = f"{user.first_name or ''} {user.last_name or ''}".strip()
     username = f"@{user.username}" if user.username else "Sin alias"
-    
+
     # 🕒 Ajuste de zona horaria (-5 horas para hora local, ej: Colombia/Perú/Ecuador)
     zona_horaria = datetime.timezone(datetime.timedelta(hours=-5))
     hora_actual = datetime.datetime.now(zona_horaria).strftime("%Y-%m-%d %H:%M:%S")
@@ -36,6 +92,9 @@ def registrar_uso_bot(update: Update, comando_usado: str):
     logger.info(f"📊 [AUDITORÍA] {nombre} ({username}) [ID: {user_id}] -> {comando_usado} a las {hora_actual}")
 
     # Envío automático al Google Sheet AUDITORIA_BOT
+    if not URL_WEB_APP_REPORTE:
+        logger.warning("URL_WEB_APP_REPORTE no está configurada; no se envía la auditoría.")
+        return
     try:
         payload = {
             "fecha": hora_actual,
@@ -48,6 +107,7 @@ def registrar_uso_bot(update: Update, comando_usado: str):
     except Exception as e:
         logger.error(f"⚠️ Error al enviar reporte al Google Sheet de auditoría: {e}")
 
+
 def escapar_markdown(texto: str) -> str:
     """Escapa caracteres especiales de Telegram para evitar errores de parseo."""
     if not isinstance(texto, str):
@@ -57,6 +117,7 @@ def escapar_markdown(texto: str) -> str:
         texto = texto.replace(c, '')
     return texto.strip()
 
+
 def _descargar_csv(url):
     """Función auxiliar robusta usando requests para descargar pestañas de Google Sheets en CSV."""
     response = requests.get(url, timeout=15)
@@ -64,6 +125,7 @@ def _descargar_csv(url):
     df = pd.read_csv(io.StringIO(response.text), dtype=str, keep_default_na=False)
     df.columns = df.columns.str.strip()
     return df
+
 
 def cargar_catalogo():
     """Carga el catálogo de pedidos."""
@@ -78,17 +140,26 @@ def cargar_catalogo():
             logger.error(f"⚠️ Error al leer Google Sheets de pedidos: {e}")
             return f"ERROR: {e}"
 
+
+# ==========================================
+# COMANDOS BÁSICOS
+# ==========================================
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    programar_borrado(context, update.message)
     user = update.effective_user
     name = user.first_name if user else "allí"
-    await update.message.reply_text(
+    await responder(
+        update, context,
         f"¡Hola {name}! Bienvenido al Bot de Noveltex, estoy aqui para ayudarte en tu día, dime cual sera tu primera consulta\n\n"
         "Usa los comandos:\n"
-        
     )
 
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(
+    programar_borrado(context, update.message)
+    await responder(
+        update, context,
         "Comandos disponibles:\n"
         "/start - Iniciar el bot\n"
         "/pedido - Registrar un pedido\n"
@@ -99,53 +170,88 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/actualizar - Limpiar caché y desplegar en Render"
     )
 
+
 async def order_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(
+    programar_borrado(context, update.message)
+    await responder(
+        update, context,
         "📦 ¡Perfecto! Vamos a registrar tu pedido.\n\n"
         "Por favor, escribe el **nombre del producto** que necesitas:",
         parse_mode="Markdown"
     )
 
+
 # --- ADMINISTRACIÓN REMOTA DE RENDER ---
 
 async def reiniciar_render(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    MI_TELEGRAM_ID = 5655537446
+    programar_borrado(context, update.message)
     if update.effective_user.id != MI_TELEGRAM_ID:
-        await update.message.reply_text("⛔ No tienes permisos para ejecutar este comando.")
+        await responder(update, context, "⛔ No tienes permisos para ejecutar este comando.")
         return
 
-    RENDER_DEPLOY_HOOK_URL = "https://api.render.com/deploy/srv-db2ktt7avr4c73eet090?key=gstG3k654R4"
+    if not RENDER_DEPLOY_HOOK_URL:
+        await responder(update, context, "⚠️ Falta configurar la variable RENDER_DEPLOY_HOOK_URL.")
+        return
+
     try:
         response = requests.post(RENDER_DEPLOY_HOOK_URL, timeout=10)
         if response.status_code == 200:
-            await update.message.reply_text("🔄 ¡Orden enviada con éxito! Reiniciando el servicio en Render...")
+            await responder(update, context, "🔄 ¡Orden enviada con éxito! Reiniciando el servicio en Render...")
         else:
-            await update.message.reply_text(f"⚠️ Error al conectar con Render. Código HTTP: {response.status_code}")
+            await responder(update, context, f"⚠️ Error al conectar con Render. Código HTTP: {response.status_code}")
     except Exception as e:
         logger.error(f"Error al reiniciar Render: {e}")
-        await update.message.reply_text(f"⚠️ Ocurrió un error inesperado: `{e}`", parse_mode="Markdown")
+        await responder(update, context, f"⚠️ Ocurrió un error inesperado: `{e}`", parse_mode="Markdown")
+
 
 async def limpiar_cache_y_deploy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    MI_TELEGRAM_ID = 5655537446
+    programar_borrado(context, update.message)
     if update.effective_user.id != MI_TELEGRAM_ID:
-        await update.message.reply_text("⛔ No tienes permisos para ejecutar este comando.")
+        await responder(update, context, "⛔ No tienes permisos para ejecutar este comando.")
         return
 
-    RENDER_CACHE_HOOK_URL = "https://api.render.com/deploy/srv-db2ktt7avr4c73eet090?key=gstG3k654R4&clearCache=true"
+    if not RENDER_DEPLOY_HOOK_URL:
+        await responder(update, context, "⚠️ Falta configurar la variable RENDER_DEPLOY_HOOK_URL.")
+        return
+
+    # El hook de caché es el mismo hook con el parámetro clearCache=true
+    separador = "&" if "?" in RENDER_DEPLOY_HOOK_URL else "?"
+    url_cache = f"{RENDER_DEPLOY_HOOK_URL}{separador}clearCache=true"
+
     try:
-        response = requests.post(RENDER_CACHE_HOOK_URL, timeout=10)
+        response = requests.post(url_cache, timeout=10)
         if response.status_code == 200:
-            await update.message.reply_text("🧹 ¡Orden enviada! Limpiando caché y desplegando nueva versión en Render...")
+            await responder(update, context, "🧹 ¡Orden enviada! Limpiando caché y desplegando nueva versión en Render...")
         else:
-            await update.message.reply_text(f"⚠️ Error al conectar con Render. Código HTTP: {response.status_code}")
+            await responder(update, context, f"⚠️ Error al conectar con Render. Código HTTP: {response.status_code}")
     except Exception as e:
         logger.error(f"Error al limpiar caché en Render: {e}")
-        await update.message.reply_text(f"⚠️ Ocurrió un error inesperado: `{e}`", parse_mode="Markdown")
+        await responder(update, context, f"⚠️ Ocurrió un error inesperado: `{e}`", parse_mode="Markdown")
 
 
 # ==========================================
 # FLUJO DE BÚSQUEDA DE PEDIDOS (/PV)
 # ==========================================
+
+def _texto_detalle(fila, titulo=None) -> str:
+    """Construye el bloque de texto con el detalle de una fila de pedido."""
+    cabecera = f"{titulo}\n\n" if titulo else ""
+    return (
+        f"{cabecera}"
+        f"• *Estado del Pedido:* {escapar_markdown(fila.get('Estado Factura', 'N/A'))}\n"
+        f"• *Ubicación:* {escapar_markdown(fila.get('Ubicación del Pedido', 'N/A'))}\n"
+        f"• *Referencia:* {escapar_markdown(fila.get('Id Refer', 'N/A'))}\n"
+        f"• *Color:* {escapar_markdown(fila.get('Color', 'N/A'))}\n"
+        f"• *Estado Pedido:* {escapar_markdown(fila.get('Document Status SAP', 'N/A'))}\n"
+        f"• *Estado Item:* {escapar_markdown(fila.get('Line Status Sap', 'N/A'))}\n"
+        f"• *Cantidad pedida:* {escapar_markdown(fila.get('Cantidad Ped', 'N/A'))}\n"
+        f"• *Cantidad alistada:* {escapar_markdown(fila.get('Cantidad Alistada', 'N/A'))}\n"
+        f"• *Fecha Despacho:* {escapar_markdown(fila.get('Fecha Factura', 'N/A'))}\n"
+        f"• *Operario:* {escapar_markdown(fila.get('Nombre Operario Asignado', 'N/A'))}\n"
+        f"• *Tipo Pedido:* {escapar_markdown(fila.get('Clasificacion Pedido', 'N/A'))}\n"
+        f"• *Observacion:* {escapar_markdown(fila.get('Observacion Adicional', 'N/A'))}\n"
+    )
+
 
 async def mostrar_ver_todo_referencia(query, context) -> int:
     resultado = context.user_data.get('df_pedido')
@@ -163,41 +269,34 @@ async def mostrar_ver_todo_referencia(query, context) -> int:
     mensaje = f"🔍 *Detalle Completo - Referencia {ref_elegida}* (Documento {doc_buscado}, Total ítems: {len(df_ref)}):\n"
 
     for index, fila in df_ref.iterrows():
-        mensaje += (
-            f"\n-----------------------------------\n"
-            f"• *Estado del Pedido:* {escapar_markdown(fila.get('Estado Factura', 'N/A'))}\n"
-            f"• *Ubicación:* {escapar_markdown(fila.get('Ubicación del Pedido', 'N/A'))}\n"
-            f"• *Referencia:* {escapar_markdown(fila.get('Id Refer', 'N/A'))}\n"
-            f"• *Color:* {escapar_markdown(fila.get('Color', 'N/A'))}\n"                    
-            f"• *Estado Pedido:* {escapar_markdown(fila.get('Document Status SAP', 'N/A'))}\n"
-            f"• *Estado Item:* {escapar_markdown(fila.get('Line Status Sap', 'N/A'))}\n"
-            f"• *Cantidad pedida:* {escapar_markdown(fila.get('Cantidad Ped', 'N/A'))}\n"
-            f"• *Cantidad alistada:* {escapar_markdown(fila.get('Cantidad Alistada', 'N/A'))}\n"            
-            f"• *Fecha Despacho:* {escapar_markdown(fila.get('Fecha Factura', 'N/A'))}\n"
-            f"• *Operario:* {escapar_markdown(fila.get('Nombre Operario Asignado', 'N/A'))}\n"
-            f"• *Tipo Pedido:* {escapar_markdown(fila.get('Clasificacion Pedido', 'N/A'))}\n"
-            f"• *Observacion:* {escapar_markdown(fila.get('Observacion Adicional', 'N/A'))}\n"
-        )
+        mensaje += "\n-----------------------------------\n" + _texto_detalle(fila)
 
     keyboard = [[InlineKeyboardButton("🔙 Volver a colores", callback_data="volver_colores")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     if len(mensaje) > 4000:
         for i in range(0, len(mensaje), 4000):
-            await query.message.reply_text(mensaje[i:i+4000], parse_mode="Markdown")
+            # Cada fragmento es un mensaje NUEVO: hay que programar su borrado
+            msg = await query.message.reply_text(mensaje[i:i+4000], parse_mode="Markdown")
+            programar_borrado(context, msg)
         await query.edit_message_text(text="📌 Fin del detalle completo.", reply_markup=reply_markup, parse_mode="Markdown")
     else:
         await query.edit_message_text(text=mensaje, reply_markup=reply_markup, parse_mode="Markdown")
-    
+
     return SELECCIONANDO_COLOR
+
 
 async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # 📊 Registramos automáticamente el uso de /PV
     registrar_uso_bot(update, "/PV")
 
+    # 🗑️ Programamos el borrado del comando del usuario (/PV 5270)
+    programar_borrado(context, update.message)
+
     try:
         if not context.args:
-            await update.message.reply_text(
+            await responder(
+                update, context,
                 "⚠️ Por favor, ingresa el número de documento a buscar.\n"
                 "Ejemplo: `/PV 5270`", parse_mode="Markdown"
             )
@@ -208,22 +307,22 @@ async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
         if isinstance(catalogo_df, str):
             if catalogo_df.startswith("ERROR"):
-                await update.message.reply_text(f"⚠️ Error al conectar con Google Sheets:\n`{catalogo_df}`", parse_mode="Markdown")
+                await responder(update, context, f"⚠️ Error al conectar con Google Sheets:\n`{catalogo_df}`", parse_mode="Markdown")
                 return ConversationHandler.END
 
         if catalogo_df is None or (isinstance(catalogo_df, pd.DataFrame) and catalogo_df.empty):
-            await update.message.reply_text("⚠️ El catálogo está vacío.")
+            await responder(update, context, "⚠️ El catálogo está vacío.")
             return ConversationHandler.END
 
         columna_doc = 'Documento Pd'
         if columna_doc not in catalogo_df.columns:
-            await update.message.reply_text(f"⚠️ No se encontró la columna '{columna_doc}'.")
+            await responder(update, context, f"⚠️ No se encontró la columna '{columna_doc}'.")
             return ConversationHandler.END
 
         resultado = catalogo_df[catalogo_df[columna_doc].astype(str).str.strip() == doc_buscado]
 
         if resultado.empty:
-            await update.message.reply_text(f"❌ No se encontró ningún registro con el documento: *{doc_buscado}*.", parse_mode="Markdown")
+            await responder(update, context, f"❌ No se encontró ningún registro con el documento: *{doc_buscado}*.", parse_mode="Markdown")
             return ConversationHandler.END
 
         context.user_data['df_pedido'] = resultado
@@ -233,7 +332,9 @@ async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         keyboard = [[InlineKeyboardButton(str(ref), callback_data=f"ref_{ref}")] for ref in referencias]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        await update.message.reply_text(
+        # Este mensaje se edita después (mismo message_id), así que se programa una sola vez
+        await responder(
+            update, context,
             f"🔍 Documento *{doc_buscado}*.\n\nSelecciona una referencia:",
             reply_markup=reply_markup,
             parse_mode="Markdown"
@@ -242,8 +343,9 @@ async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     except Exception as e:
         logger.error(f"Error en iniciar_busqueda: {e}")
-        await update.message.reply_text(f"⚠️ Error inesperado: `{e}`", parse_mode="Markdown")
+        await responder(update, context, f"⚠️ Error inesperado: `{e}`", parse_mode="Markdown")
         return ConversationHandler.END
+
 
 async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
@@ -293,6 +395,7 @@ async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_T
         parse_mode="Markdown"
     )
     return SELECCIONANDO_COLOR
+
 
 async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
@@ -354,21 +457,7 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             return ConversationHandler.END
 
         fila = fila_match.iloc[0]
-        mensaje = (
-            f"🔍 *Detalle del Documento {doc_buscado}*:\n\n"
-            f"• *Estado del Pedido:* {escapar_markdown(fila.get('Estado Factura', 'N/A'))}\n"
-            f"• *Ubicación:* {escapar_markdown(fila.get('Ubicación del Pedido', 'N/A'))}\n"
-            f"• *Referencia:* {escapar_markdown(fila.get('Id Refer', 'N/A'))}\n"
-            f"• *Color:* {escapar_markdown(fila.get('Color', 'N/A'))}\n"                    
-            f"• *Estado Pedido:* {escapar_markdown(fila.get('Document Status SAP', 'N/A'))}\n"
-            f"• *Estado Item:* {escapar_markdown(fila.get('Line Status Sap', 'N/A'))}\n"
-            f"• *Cantidad pedida:* {escapar_markdown(fila.get('Cantidad Ped', 'N/A'))}\n"
-            f"• *Cantidad alistada:* {escapar_markdown(fila.get('Cantidad Alistada', 'N/A'))}\n"            
-            f"• *Fecha Despacho:* {escapar_markdown(fila.get('Fecha Factura', 'N/A'))}\n"
-            f"• *Operario:* {escapar_markdown(fila.get('Nombre Operario Asignado', 'N/A'))}\n"
-            f"• *Tipo Pedido:* {escapar_markdown(fila.get('Clasificacion Pedido', 'N/A'))}\n"
-            f"• *Observacion:* {escapar_markdown(fila.get('Observacion Adicional', 'N/A'))}\n"
-        )
+        mensaje = _texto_detalle(fila, titulo=f"🔍 *Detalle del Documento {doc_buscado}*:")
 
         keyboard = [[InlineKeyboardButton("🔙 Volver a colores", callback_data="volver_colores")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -381,6 +470,8 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await query.edit_message_text(text=f"⚠️ Error al procesar el color: `{e}`", parse_mode="Markdown")
         return ConversationHandler.END
 
+
 async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text("❌ Búsqueda cancelada.")
+    programar_borrado(context, update.message)
+    await responder(update, context, "❌ Búsqueda cancelada.")
     return ConversationHandler.END
