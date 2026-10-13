@@ -198,9 +198,9 @@ async def mostrar_ver_todo_referencia(query, context) -> int:
     if len(mensaje) > 4000:
         for i in range(0, len(mensaje), 4000):
             await query.message.reply_text(mensaje[i:i+4000], parse_mode="Markdown")
-        mensaje_enviado = await query.edit_message_text(text="📌 Fin del detalle completo.", reply_markup=reply_markup, parse_mode="Markdown")
+        mensaje_enviado = await query.message.reply_text(text="📌 Fin del detalle completo.", reply_markup=reply_markup, parse_mode="Markdown")
     else:
-        mensaje_enviado = await query.edit_message_text(text=mensaje, reply_markup=reply_markup, parse_mode="Markdown")
+        mensaje_enviado = await query.message.reply_text(text=mensaje, reply_markup=reply_markup, parse_mode="Markdown")
     
     # 🕒 Programar borrado automático del mensaje final en 24 horas (86400 segundos)
     context.job_queue.run_once(
@@ -394,7 +394,7 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         keyboard = [[InlineKeyboardButton("🔙 Volver a colores", callback_data="volver_colores")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        mensaje_enviado = await query.edit_message_text(text=mensaje, reply_markup=reply_markup, parse_mode="Markdown")
+        mensaje_enviado = await query.message.reply_text(text=mensaje, reply_markup=reply_markup, parse_mode="Markdown")
         
         # 🕒 Programar borrado automático del resultado en 24 horas (86400 segundos)
         context.job_queue.run_once(
