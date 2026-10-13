@@ -1,18 +1,18 @@
 import logging
 import io
-import asyncio
 import requests
 import pandas as pd
 import concurrent.futures
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
-from handlers import escapar_markdown, registrar_uso_bot, borrar_mensaje_automaticamente
+from handlers import escapar_markdown, registrar_uso_bot
 
 logger = logging.getLogger(__name__)
 
 SELECCIONANDO_REF_SAP = 1
 SELECCIONANDO_COLOR_SAP = 2
 
+# Enlace actualizado
 INVENTARIO_SHEET_URL = "https://docs.google.com/spreadsheets/d/1FJdfaNhxcFFDVD_AV2lTITHw0f-mB0Y2/export?format=csv"
 
 def _descargar_csv_inventario(url):
@@ -57,6 +57,7 @@ async def volver_a_lista_referencias(update: Update, context: ContextTypes.DEFAU
     return SELECCIONANDO_REF_SAP
 
 async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    # 📊 Registramos automáticamente el uso de /in en la auditoría
     registrar_uso_bot(update, "/in")
 
     if not context.args:
@@ -315,11 +316,7 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
         if len(mensaje) > 4000:
             mensaje = mensaje[:4000]
 
-        # Enviamos un mensaje nuevo para capturar el ID de forma segura para las 24h
-        mensaje_enviado = await query.message.reply_text(text=mensaje, reply_markup=reply_markup, parse_mode="Markdown")
-        
-        asyncio.create_task(borrar_mensaje_automaticamente(context, query.message.chat_id, mensaje_enviado.message_id))
-
+        await query.edit_message_text(text=mensaje, reply_markup=reply_markup, parse_mode="Markdown")
         return SELECCIONANDO_COLOR_SAP
 
     except Exception as e:
