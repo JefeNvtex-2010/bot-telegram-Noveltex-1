@@ -5,7 +5,7 @@ import pandas as pd
 import concurrent.futures
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
-from handlers import escapar_markdown
+from handlers import escapar_markdown, registrar_uso_bot
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +57,9 @@ async def volver_a_lista_referencias_vendedor(update: Update, context: ContextTy
     return SELECCIONANDO_REF_VEND
 
 async def iniciar_busqueda_vendedor(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    # 📊 Registramos automáticamente el uso de /i en la auditoría
+    registrar_uso_bot(update, "/i")
+
     if not context.args:
         await update.message.reply_text(
             "⚠️ Por favor, ingresa la referencia a buscar.\nEjemplo: `/i VERMONT`", 
