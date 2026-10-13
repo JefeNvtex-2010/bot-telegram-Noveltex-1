@@ -19,16 +19,11 @@ GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1EOGz7ix9Z1AufTJ-79TW
 # ==========================================
 # CONFIGURACIÓN SENSIBLE (variables de entorno en Render)
 # ==========================================
-# Define estas variables en Render -> Environment:
-#   URL_WEB_APP_REPORTE      -> URL del Apps Script de auditoría
-#   RENDER_DEPLOY_HOOK_URL   -> Deploy hook de Render (sin &clearCache)
-#   MI_TELEGRAM_ID           -> Tu ID numérico de Telegram
 URL_WEB_APP_REPORTE = os.environ.get("URL_WEB_APP_REPORTE", "")
 RENDER_DEPLOY_HOOK_URL = os.environ.get("RENDER_DEPLOY_HOOK_URL", "")
 MI_TELEGRAM_ID = int(os.environ.get("MI_TELEGRAM_ID", "0"))
 
-# ⏳ Tiempo de vida de los mensajes (24 horas). Telegram solo permite borrar
-# mensajes con menos de 48 horas, así que este valor debe ser menor a 48 h.
+# ⏳ Tiempo de vida de los mensajes (24 horas)
 SEGUNDOS_BORRADO = 24 * 60 * 60
 
 
@@ -45,7 +40,6 @@ async def _borrar_mensaje_job(context: ContextTypes.DEFAULT_TYPE) -> None:
             message_id=datos["message_id"]
         )
     except Exception as e:
-        # Puede fallar si el usuario ya lo borró o si no hay permisos
         logger.warning(f"No se pudo borrar el mensaje {datos['message_id']}: {e}")
 
 
@@ -84,14 +78,12 @@ def registrar_uso_bot(update: Update, comando_usado: str):
     nombre = f"{user.first_name or ''} {user.last_name or ''}".strip()
     username = f"@{user.username}" if user.username else "Sin alias"
 
-    # 🕒 Ajuste de zona horaria (-5 horas para hora local, ej: Colombia/Perú/Ecuador)
+    # 🕒 Ajuste de zona horaria (-5 horas para hora local)
     zona_horaria = datetime.timezone(datetime.timedelta(hours=-5))
     hora_actual = datetime.datetime.now(zona_horaria).strftime("%Y-%m-%d %H:%M:%S")
 
-    # Registro en la consola del servidor (Render)
     logger.info(f"📊 [AUDITORÍA] {nombre} ({username}) [ID: {user_id}] -> {comando_usado} a las {hora_actual}")
 
-    # Envío automático al Google Sheet AUDITORIA_BOT
     if not URL_WEB_APP_REPORTE:
         logger.warning("URL_WEB_APP_REPORTE no está configurada; no se envía la auditoría.")
         return
@@ -214,7 +206,6 @@ async def limpiar_cache_y_deploy(update: Update, context: ContextTypes.DEFAULT_T
         await responder(update, context, "⚠️ Falta configurar la variable RENDER_DEPLOY_HOOK_URL.")
         return
 
-    # El hook de caché es el mismo hook con el parámetro clearCache=true
     separador = "&" if "?" in RENDER_DEPLOY_HOOK_URL else "?"
     url_cache = f"{RENDER_DEPLOY_HOOK_URL}{separador}clearCache=true"
 
@@ -241,10 +232,7 @@ def _texto_detalle(fila, titulo=None) -> str:
     clasificacion_raw = fila.get('Clasificacion Pedido', '')
     clasificacion = str(clasificacion_raw).strip().upper()
     
-    # 🔍 Línea de diagnóstico para ver en los logs de Render qué valor exacto llega
-    logger.info(f"🔎 DEBUG Clasificación leída: '{clasificacion_raw}' -> Normalizada: '{clasificacion}'")
-    
-    # Campos base del detalle
+    # Bloque base del detalle
     detalle_texto = (
         f"{cabecera}"
         f"• *Estado del Pedido:* {escapar_markdown(fila.get('Estado Factura', 'N/A'))}\n"
@@ -260,7 +248,7 @@ def _texto_detalle(fila, titulo=None) -> str:
         f"• *Tipo Pedido:* {escapar_markdown(fila.get('Clasificacion Pedido', 'N/A'))}\n"
     )
     
-    # Condición de validación estricta para Contado
+    # Condición: Fecha Vencimiento y Numero Proforma solo si es CONTADO
     if clasificacion == "CONTADO":
         detalle_texto += (
             f"• *Fecha Vencimiento:* {escapar_markdown(fila.get('Fecha Vencimiento', 'N/A'))}\n"
@@ -270,6 +258,16 @@ def _texto_detalle(fila, titulo=None) -> str:
     detalle_texto += f"• *Observacion:* {escapar_markdown(fila.get('Observacion Adicional', 'N/A'))}\n"
     
     return detalle_texto
+
+
+async def mostrar_ver_todo_referencia(query, context) -> int:
+    resultado = context.user_data.get('df_pedido')
+    doc_buscado = context.user_data.get('doc_buscado', 'Desconocido')
+    ref_elegida = context.user_data.get('ref_elegida')
+
+    if resultado is None or ref_elegida is None:
+        await query.edit_message_text(text="⚠️ La sesión ha expirado. Realiza la búsqueda de nuevo con `/PV [número]`.", parse_mode="Markdown")
+        return ConversationHandler.END
 
     resultado = resultado.replace('bost_Open', 'Abierto').replace('bost_Close', 'Cerrado')
     resultado['Id Refer'] = resultado['Id Refer'].astype(str).str.strip()
@@ -285,7 +283,6 @@ def _texto_detalle(fila, titulo=None) -> str:
 
     if len(mensaje) > 4000:
         for i in range(0, len(mensaje), 4000):
-            # Cada fragmento es un mensaje NUEVO: hay que programar su borrado
             msg = await query.message.reply_text(mensaje[i:i+4000], parse_mode="Markdown")
             programar_borrado(context, msg)
         await query.edit_message_text(text="📌 Fin del detalle completo.", reply_markup=reply_markup, parse_mode="Markdown")
@@ -296,10 +293,7 @@ def _texto_detalle(fila, titulo=None) -> str:
 
 
 async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # 📊 Registramos automáticamente el uso de /PV
     registrar_uso_bot(update, "/PV")
-
-    # 🗑️ Programamos el borrado del comando del usuario (/PV 5270)
     programar_borrado(context, update.message)
 
     try:
@@ -341,7 +335,6 @@ async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         keyboard = [[InlineKeyboardButton(str(ref), callback_data=f"ref_{ref}")] for ref in referencias]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        # Este mensaje se edita después (mismo message_id), así que se programa una sola vez
         await responder(
             update, context,
             f"🔍 Documento *{doc_buscado}*.\n\nSelecciona una referencia:",
