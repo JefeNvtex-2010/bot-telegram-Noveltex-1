@@ -5,7 +5,7 @@ import pandas as pd
 import concurrent.futures
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
-from handlers import escapar_markdown, registrar_uso_bot
+from handlers import escapar_markdown, registrar_uso_bot, programar_borrado, responder
 
 logger = logging.getLogger(__name__)
 
@@ -60,15 +60,21 @@ async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYP
     # 📊 Registramos automáticamente el uso de /in en la auditoría
     registrar_uso_bot(update, "/in")
 
+    # 🗑️ Programamos el borrado del comando del usuario (/in SATIN) a las 24 h
+    programar_borrado(context, update.message)
+
     if not context.args:
-        await update.message.reply_text(
-            "⚠️ Por favor, ingresa la referencia a buscar.\nEjemplo: `/in SATIN`", 
+        await responder(
+            update, context,
+            "⚠️ Por favor, ingresa la referencia a buscar.\nEjemplo: `/in SATIN`",
             parse_mode="Markdown"
         )
         return ConversationHandler.END
 
     termino_busqueda = " ".join(context.args).strip().upper()
-    msg = await update.message.reply_text("🔄 Buscando en inventario...", parse_mode="Markdown")
+
+    # Este mensaje se edita después (mismo message_id), así que se programa una sola vez
+    msg = await responder(update, context, "🔄 Buscando en inventario...", parse_mode="Markdown")
 
     df_inv = cargar_inventario_aislado()
     if isinstance(df_inv, str):
