@@ -5,7 +5,7 @@ import pandas as pd
 import concurrent.futures
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
-from handlers import escapar_markdown, registrar_uso_bot
+from handlers import escapar_markdown, registrar_uso_bot, borrar_mensaje_automaticamente
 
 logger = logging.getLogger(__name__)
 
@@ -233,7 +233,7 @@ async def mostrar_colores_ref_vendedor(update: Update, context: ContextTypes.DEF
     texto_msg = f"🔍 Referencia: *{ref_seleccionada}*.\nSelecciona un color:"
 
     if edit:
-        await context.bot.edit_message_text(
+        mensaje_enviado = await context.bot.edit_message_text(
             chat_id=update.effective_chat.id,
             message_id=message_id,
             text=texto_msg,
@@ -241,11 +241,20 @@ async def mostrar_colores_ref_vendedor(update: Update, context: ContextTypes.DEF
             parse_mode="Markdown"
         )
     else:
-        await update.callback_query.edit_message_text(
+        mensaje_enviado = await update.callback_query.edit_message_text(
             text=texto_msg,
             reply_markup=reply_markup,
             parse_mode="Markdown"
         )
+
+    # 🕒 Programar borrado automático del menú de vendedor en 24 horas (86400 segundos)
+    context.job_queue.run_once(
+        borrar_mensaje_automaticamente,
+        when=86400,
+        chat_id=update.effective_chat.id,
+        data=mensaje_enviado.message_id
+    )
+
     return SELECCIONANDO_COLOR_VEND
 
 async def seleccionar_color_vendedor(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
