@@ -18,6 +18,11 @@ from inventario_handlers import (
     SELECCIONANDO_REF_SAP, SELECCIONANDO_COLOR_SAP
 )
 
+from inventario_vendedor_handlers import (
+    iniciar_busqueda_vendedor, seleccionar_referencia_vendedor, seleccionar_color_vendedor,
+    SELECCIONANDO_REF_VEND, SELECCIONANDO_COLOR_VEND
+)
+
 logger = logging.getLogger(__name__)
 
 class SimpleHandler(BaseHTTPRequestHandler):
@@ -63,7 +68,7 @@ def main() -> None:
         ],
     )
 
-    # 2. Manejador para Inventario (/in)
+    # 2. Manejador para Inventario SAP original (/in)
     inventario_conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler("in", iniciar_busqueda_sap),
@@ -84,8 +89,31 @@ def main() -> None:
         ],
     )
 
+    # 3. Nuevo Manejador para el Inventario de Vendedor (/i)
+    vendedor_conv_handler = ConversationHandler(
+        entry_points=[
+            CommandHandler("i", iniciar_busqueda_vendedor),
+            CommandHandler("I", iniciar_busqueda_vendedor)
+        ],
+        states={
+            SELECCIONANDO_REF_VEND: [
+                CallbackQueryHandler(seleccionar_referencia_vendedor, pattern="^(vendref_|volver_vend_refs)")
+            ],
+            SELECCIONANDO_COLOR_VEND: [
+                CallbackQueryHandler(seleccionar_color_vendedor, pattern="^(vend_|volver_vend_refs)")
+            ],
+        },
+        fallbacks=[
+            CommandHandler("cancelar", cancelar),
+            CommandHandler("i", iniciar_busqueda_vendedor),
+            CommandHandler("I", iniciar_busqueda_vendedor)
+        ],
+    )
+
     application.add_handler(conv_handler)
     application.add_handler(inventario_conv_handler)
+    application.add_handler(vendedor_conv_handler)
+    
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("pedido", order_command))
