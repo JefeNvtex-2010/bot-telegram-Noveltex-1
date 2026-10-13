@@ -1,5 +1,6 @@
 import logging
 import io
+import asyncio
 import requests
 import pandas as pd
 import concurrent.futures
@@ -12,7 +13,6 @@ logger = logging.getLogger(__name__)
 SELECCIONANDO_REF_VEND = 1
 SELECCIONANDO_COLOR_VEND = 2
 
-# Enlace de tu nuevo libro/hoja de inventario (ajusta la URL si es necesario)
 INVENTARIO_VENDEDOR_SHEET_URL = "https://docs.google.com/spreadsheets/d/1FJdfaNhxcFFDVD_AV2lTITHw0f-mB0Y2/export?format=csv"
 
 def _descargar_csv_inventario_vendedor(url):
@@ -57,7 +57,6 @@ async def volver_a_lista_referencias_vendedor(update: Update, context: ContextTy
     return SELECCIONANDO_REF_VEND
 
 async def iniciar_busqueda_vendedor(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # 📊 Registramos automáticamente el uso de /i en la auditoría
     registrar_uso_bot(update, "/i")
 
     if not context.args:
@@ -212,11 +211,9 @@ async def mostrar_colores_ref_vendedor(update: Update, context: ContextTypes.DEF
 
                 disponible_bodega_01 += disponible
 
-        # 🔹 Si el disponible es menor a 0, lo forzamos a 0
         if disponible_bodega_01 < 0:
             disponible_bodega_01 = 0.0
 
-        # Texto del botón al estilo: "240 VINOTINTO - 0 MTRS"
         disp_str = f"{int(disponible_bodega_01)}" if disponible_bodega_01.is_integer() else f"{disponible_bodega_01:,.2f}"
         texto_boton = f"{color_val} - {disp_str} MTRS"
         
@@ -226,34 +223,36 @@ async def mostrar_colores_ref_vendedor(update: Update, context: ContextTypes.DEF
             
         keyboard.append([InlineKeyboardButton(texto_boton, callback_data=cb_data)])
 
-    # Único botón habilitado: Volver a referencias
     keyboard.append([InlineKeyboardButton("🔙 Volver a referencias", callback_data="volver_vend_refs")])
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     texto_msg = f"🔍 Referencia: *{ref_seleccionada}*.\nSelecciona un color:"
 
     if edit:
-        mensaje_enviado = await context.bot.edit_message_text(
+        try:
+            await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=message_id)
+        except Exception:
+            pass
+        mensaje_enviado = await context.bot.send_message(
             chat_id=update.effective_chat.id,
-            message_id=message_id,
             text=texto_msg,
             reply_markup=reply_markup,
             parse_mode="Markdown"
         )
     else:
-        mensaje_enviado = await update.callback_query.edit_message_text(
+        query = update.callback_query
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+        mensaje_enviado = await query.message.reply_text(
             text=texto_msg,
             reply_markup=reply_markup,
             parse_mode="Markdown"
         )
 
-    # 🕒 Programar borrado automático del menú de vendedor en 24 horas (86400 segundos)
-    context.job_queue.run_once(
-        borrar_mensaje_automaticamente,
-        when=86400,
-        chat_id=update.effective_chat.id,
-        data=mensaje_enviado.message_id
-    )
+    # Programar borrado automático del menú en segundo plano
+    asyncio.create_task(borrar_mensaje_automaticamente(context, update.effective_chat.id, mensaje_enviado.message_id))
 
     return SELECCIONANDO_COLOR_VEND
 
