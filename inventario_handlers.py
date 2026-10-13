@@ -1,3 +1,9 @@
+¡Tienes toda la razón! Como en los otros dos archivos (inventario_handlers.py e inventario_vendedor_handlers.py) también aplicamos la lógica de borrado automático, necesitamos asegurarnos de que usen query.message.reply_text o el manejo correcto para que no arrojen ningún error de NoneType.
+
+Aquí tienes los códigos completos y limpios para esos dos módulos:
+
+2. Archivo inventario_handlers.py (Completo)
+Python
 import logging
 import io
 import requests
@@ -12,7 +18,6 @@ logger = logging.getLogger(__name__)
 SELECCIONANDO_REF_SAP = 1
 SELECCIONANDO_COLOR_SAP = 2
 
-# Enlace actualizado
 INVENTARIO_SHEET_URL = "https://docs.google.com/spreadsheets/d/1FJdfaNhxcFFDVD_AV2lTITHw0f-mB0Y2/export?format=csv"
 
 def _descargar_csv_inventario(url):
@@ -57,7 +62,6 @@ async def volver_a_lista_referencias(update: Update, context: ContextTypes.DEFAU
     return SELECCIONANDO_REF_SAP
 
 async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # 📊 Registramos automáticamente el uso de /in en la auditoría
     registrar_uso_bot(update, "/in")
 
     if not context.args:
@@ -316,9 +320,9 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
         if len(mensaje) > 4000:
             mensaje = mensaje[:4000]
 
-        mensaje_enviado = await query.edit_message_text(text=mensaje, reply_markup=reply_markup, parse_mode="Markdown")
+        # Enviamos mensaje nuevo en lugar de editar para capturar el ID de forma segura para las 24h
+        mensaje_enviado = await query.message.reply_text(text=mensaje, reply_markup=reply_markup, parse_mode="Markdown")
         
-        # 🕒 Programar borrado automático del inventario SAP en 24 horas (86400 segundos)
         context.job_queue.run_once(
             borrar_mensaje_automaticamente,
             when=86400,
