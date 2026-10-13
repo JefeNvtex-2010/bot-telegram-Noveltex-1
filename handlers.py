@@ -236,7 +236,12 @@ async def limpiar_cache_y_deploy(update: Update, context: ContextTypes.DEFAULT_T
 def _texto_detalle(fila, titulo=None) -> str:
     """Construye el bloque de texto con el detalle de una fila de pedido."""
     cabecera = f"{titulo}\n\n" if titulo else ""
-    return (
+    
+    # Obtenemos la clasificación del pedido (normalizamos a minúsculas y sin espacios para evitar errores de escritura)
+    clasificacion = str(fila.get('Clasificacion Pedido', '')).strip().upper()
+    
+    # Campos base del detalle
+    detalle_texto = (
         f"{cabecera}"
         f"• *Estado del Pedido:* {escapar_markdown(fila.get('Estado Factura', 'N/A'))}\n"
         f"• *Ubicación:* {escapar_markdown(fila.get('Ubicación del Pedido', 'N/A'))}\n"
@@ -249,18 +254,18 @@ def _texto_detalle(fila, titulo=None) -> str:
         f"• *Fecha Despacho:* {escapar_markdown(fila.get('Fecha Factura', 'N/A'))}\n"
         f"• *Operario:* {escapar_markdown(fila.get('Nombre Operario Asignado', 'N/A'))}\n"
         f"• *Tipo Pedido:* {escapar_markdown(fila.get('Clasificacion Pedido', 'N/A'))}\n"
-        f"• *Observacion:* {escapar_markdown(fila.get('Observacion Adicional', 'N/A'))}\n"
     )
-
-
-async def mostrar_ver_todo_referencia(query, context) -> int:
-    resultado = context.user_data.get('df_pedido')
-    doc_buscado = context.user_data.get('doc_buscado', 'Desconocido')
-    ref_elegida = context.user_data.get('ref_elegida')
-
-    if resultado is None or ref_elegida is None:
-        await query.edit_message_text(text="⚠️ La sesión ha expirado. Realiza la búsqueda de nuevo con `/PV [número]`.", parse_mode="Markdown")
-        return ConversationHandler.END
+    
+    # Condición: Solo se muestra si Clasificacion Pedido es CONTADO
+    if clasificacion == "CONTADO":
+        detalle_texto += (
+            f"• *Fecha Vencimiento:* {escapar_markdown(fila.get('Fecha Vencimiento', 'N/A'))}\n"
+            f"• *Numero Proforma:* {escapar_markdown(fila.get('Numero Proforma', 'N/A'))}\n"
+        )
+        
+    detalle_texto += f"• *Observacion:* {escapar_markdown(fila.get('Observacion Adicional', 'N/A'))}\n"
+    
+    return detalle_texto
 
     resultado = resultado.replace('bost_Open', 'Abierto').replace('bost_Close', 'Cerrado')
     resultado['Id Refer'] = resultado['Id Refer'].astype(str).str.strip()
