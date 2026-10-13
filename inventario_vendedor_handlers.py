@@ -216,9 +216,9 @@ async def mostrar_colores_ref_vendedor(update: Update, context: ContextTypes.DEF
         if disponible_bodega_01 < 0:
             disponible_bodega_01 = 0.0
 
-        # Texto del botón al estilo: "240 VINOTINTO - 0"
+        # Texto del botón al estilo: "240 VINOTINTO - 0 MTRS"
         disp_str = f"{int(disponible_bodega_01)}" if disponible_bodega_01.is_integer() else f"{disponible_bodega_01:,.2f}"
-        texto_boton = f"{color_val} - {disp_str}"
+        texto_boton = f"{color_val} - {disp_str} MTRS"
         
         cb_data = f"vend_{color_val}"
         if len(cb_data.encode('utf-8')) > 64:
