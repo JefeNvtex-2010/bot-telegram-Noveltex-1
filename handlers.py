@@ -1,3 +1,8 @@
+¡Claro que sí, Diego! Le acabo de agregar la línea divisoria justo antes de la fecha de vencimiento para que quede ordenado y visualmente separado como me indicaste en la imagen.
+
+Aquí tienes el código completo y actualizado:
+
+Python
 import os
 import logging
 import io
@@ -248,6 +253,8 @@ def _texto_detalle(fila, titulo=None) -> str:
         fecha_vencimiento = escapar_markdown(fila.get('Fecha Vencimiento', 'N/A')) or 'N/A'
         num_proforma = escapar_markdown(fila.get('Numero Proforma', 'N/A')) or 'N/A'
         
+        # Agregamos la línea separadora antes de la fecha de vencimiento
+        campos_contado += "-----------------------------------\n"
         campos_contado += f"• *Fecha Vencimiento:* {fecha_vencimiento}\n"
         if num_proforma and num_proforma != 'N/A':
             campos_contado += f"• *Número Proforma:* {num_proforma}\n"
@@ -266,7 +273,7 @@ def _texto_detalle(fila, titulo=None) -> str:
         f"• *Operario:* {escapar_markdown(fila.get('Nombre Operario Asignado', 'N/A'))}\n"
         f"• *Tipo Pedido:* {escapar_markdown(fila.get('Clasificacion Pedido', 'N/A'))}\n"
         f"• *Observacion:* {escapar_markdown(fila.get('Observacion Adicional', 'N/A'))}\n"
-        f"{campos_contado}"  # <--- Movido exactamente al final de todo
+        f"{campos_contado}"  # <--- Línea divisoria y campos de contado al final
     )
 
 
