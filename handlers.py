@@ -264,6 +264,35 @@ def _texto_detalle(fila, titulo=None) -> str:
     )
  
  
+def _traducir_estado(valor) -> str:
+    """Traduce el estado de SAP a texto legible."""
+    v = str(valor).strip()
+    return {"bost_Open": "Abierto", "bost_Close": "Cerrado"}.get(v, v or "N/A")
+ 
+ 
+def _construir_teclado_colores(df_ref) -> InlineKeyboardMarkup:
+    """Un botón por color, con el Estado Item al frente.
+    Si el color se repite con estados distintos, los muestra todos (ej: 407 - Abierto / Cerrado)."""
+    df = df_ref.copy()
+    df['Color'] = df['Color'].astype(str).str.strip()
+ 
+    keyboard = [[InlineKeyboardButton("📄 Ver todo", callback_data="ref_ver_todo")]]
+    for color in df['Color'].unique():
+        estados = (
+            df.loc[df['Color'] == color, 'Line Status Sap']
+            .map(_traducir_estado)
+            .unique()
+        )
+        etiqueta = f"{color} - {' / '.join(estados)}"
+ 
+        cb_data = f"col_{color}"
+        if len(cb_data.encode('utf-8')) > 64:
+            cb_data = cb_data[:64]
+        keyboard.append([InlineKeyboardButton(etiqueta, callback_data=cb_data)])
+    keyboard.append([InlineKeyboardButton("🔙 Volver", callback_data="volver_referencias")])
+    return InlineKeyboardMarkup(keyboard)
+ 
+ 
 async def mostrar_ver_todo_referencia(query, context) -> int:
     resultado = context.user_data.get('df_pedido')
     doc_buscado = context.user_data.get('doc_buscado', 'Desconocido')
@@ -389,17 +418,8 @@ async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_T
     context.user_data['ref_elegida'] = referencia_elegida
     resultado['Id Refer'] = resultado['Id Refer'].astype(str).str.strip()
     df_ref = resultado[resultado['Id Refer'] == referencia_elegida]
-    colores = df_ref['Color'].astype(str).str.strip().unique()
  
-    keyboard = [[InlineKeyboardButton("📄 Ver todo", callback_data="ref_ver_todo")]]
-    for color in colores:
-        cb_data = f"col_{color}"
-        if len(cb_data.encode('utf-8')) > 64:
-            cb_data = cb_data[:64]
-        keyboard.append([InlineKeyboardButton(str(color), callback_data=cb_data)])
-    keyboard.append([InlineKeyboardButton("🔙 Volver", callback_data="volver_referencias")])
- 
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    reply_markup = _construir_teclado_colores(df_ref)
     await query.edit_message_text(
         text=f"Referencia seleccionada: *{referencia_elegida}*.\nAhora selecciona el color:",
         reply_markup=reply_markup,
@@ -430,20 +450,10 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
  
             resultado['Id Refer'] = resultado['Id Refer'].astype(str).str.strip()
             df_ref = resultado[resultado['Id Refer'] == ref_elegida]
-            colores = df_ref['Color'].astype(str).str.strip().unique()
  
-            keyboard = [[InlineKeyboardButton("📄 Ver todo", callback_data="ref_ver_todo")]]
-            for color in colores:
-                cb_data = f"col_{color}"
-                if len(cb_data.encode('utf-8')) > 64:
-                    cb_data = cb_data[:64]
-                keyboard.append([InlineKeyboardButton(str(color), callback_data=cb_data)])
-            keyboard.append([InlineKeyboardButton("🔙 Volver", callback_data="volver_referencias")])
- 
-            reply_markup = InlineKeyboardMarkup(keyboard)
             await query.edit_message_text(
                 text=f"Referencia seleccionada: *{ref_elegida}*.\nAhora selecciona el color:",
-                reply_markup=reply_markup,
+                reply_markup=_construir_teclado_colores(df_ref),
                 parse_mode="Markdown"
             )
             return SELECCIONANDO_COLOR
@@ -467,13 +477,25 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             await query.edit_message_text(text=f"❌ No se encontró información para la referencia *{ref_elegida}* y color *{color_elegido}*.", parse_mode="Markdown")
             return ConversationHandler.END
  
-        fila = fila_match.iloc[0]
-        mensaje = _texto_detalle(fila, titulo=f"🔍 *Detalle del Documento {doc_buscado}*:")
+        # Se muestran TODAS las filas que coinciden con el color (no solo la primera)
+        mensaje = (
+            f"🔍 *Detalle del Documento {doc_buscado}* "
+            f"(Color {color_elegido}, Total ítems: {len(fila_match)}):\n"
+        )
+        for _, fila in fila_match.iterrows():
+            mensaje += "\n-----------------------------------\n" + _texto_detalle(fila)
  
         keyboard = [[InlineKeyboardButton("🔙 Volver a colores", callback_data="volver_colores")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
  
-        await query.edit_message_text(text=mensaje, reply_markup=reply_markup, parse_mode="Markdown")
+        if len(mensaje) > 4000:
+            for i in range(0, len(mensaje), 4000):
+                # Cada fragmento es un mensaje NUEVO: hay que programar su borrado
+                msg = await query.message.reply_text(mensaje[i:i+4000], parse_mode="Markdown")
+                programar_borrado(context, msg)
+            await query.edit_message_text(text="📌 Fin del detalle.", reply_markup=reply_markup, parse_mode="Markdown")
+        else:
+            await query.edit_message_text(text=mensaje, reply_markup=reply_markup, parse_mode="Markdown")
         return SELECCIONANDO_COLOR
  
     except Exception as e:
