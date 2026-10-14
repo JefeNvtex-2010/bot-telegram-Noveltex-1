@@ -240,11 +240,17 @@ def _texto_detalle(fila, titulo=None) -> str:
     """Construye el bloque de texto con el detalle de una fila de pedido."""
     cabecera = f"{titulo}\n\n" if titulo else ""
     
-    # Obtención de los campos de la imagen
-    fecha_vencimiento = escaping = escapar_markdown(fila.get('Fecha Vencimiento', 'N/A')) or 'N/A'
-    num_proforma = escapar_markdown(fila.get('Numero Proforma', 'N/A')) or 'N/A'
-
-    texto_proforma = f"• *Número Proforma:* {num_proforma}\n" if num_proforma != 'N/A' else ""
+    # Validamos si la clasificación del pedido es de contado
+    tipo_pedido = str(fila.get('Clasificacion Pedido', '')).strip().lower()
+    
+    campos_contado = ""
+    if tipo_pedido == 'contado':
+        fecha_vencimiento = escapar_markdown(fila.get('Fecha Vencimiento', 'N/A')) or 'N/A'
+        num_proforma = escapar_markdown(fila.get('Numero Proforma', 'N/A')) or 'N/A'
+        
+        campos_contado += f"• *Fecha Vencimiento:* {fecha_vencimiento}\n"
+        if num_proforma and num_proforma != 'N/A':
+            campos_contado += f"• *Número Proforma:* {num_proforma}\n"
 
     return (
         f"{cabecera}"
@@ -257,8 +263,7 @@ def _texto_detalle(fila, titulo=None) -> str:
         f"• *Cantidad pedida:* {escapar_markdown(fila.get('Cantidad Ped', 'N/A'))}\n"
         f"• *Cantidad alistada:* {escapar_markdown(fila.get('Cantidad Alistada', 'N/A'))}\n"
         f"• *Fecha Despacho:* {escapar_markdown(fila.get('Fecha Factura', 'N/A'))}\n"
-        f"• *Fecha Vencimiento:* {fecha_vencimiento}\n"
-        f"{texto_proforma}"
+        f"{campos_contado}"
         f"• *Operario:* {escapar_markdown(fila.get('Nombre Operario Asignado', 'N/A'))}\n"
         f"• *Tipo Pedido:* {escapar_markdown(fila.get('Clasificacion Pedido', 'N/A'))}\n"
         f"• *Observacion:* {escapar_markdown(fila.get('Observacion Adicional', 'N/A'))}\n"
@@ -294,21 +299,14 @@ def _construir_teclado_colores(df_ref) -> InlineKeyboardMarkup:
 
 
 def _texto_encabezado(resultado, doc_buscado) -> str:
-    """Mensaje inicial del documento: número, vendedor, cliente, proforma y fecha vencimiento."""
+    """Mensaje inicial del documento: número, vendedor y cliente (Nombre Tercero)."""
     primera = resultado.iloc[0]
     vendedor = escapar_markdown(primera.get('Nombre Vendedor', 'N/A')) or 'N/A'
     cliente = escapar_markdown(primera.get('Nombre Tercero', 'N/A')) or 'N/A'
-    fecha_vencimiento = escapar_markdown(primera.get('Fecha Vencimiento', 'N/A')) or 'N/A'
-    num_proforma = escapar_markdown(primera.get('Numero Proforma', 'N/A')) or 'N/A'
-
-    texto_proforma = f"• *Número Proforma:* {num_proforma}\n" if num_proforma != 'N/A' else ""
-
     return (
         f"🔍 Documento *{doc_buscado}*\n"
         f"• *Vendedor:* {vendedor}\n"
-        f"• *Cliente:* {cliente}\n"
-        f"• *Fecha Vencimiento:* {fecha_vencimiento}\n"
-        f"{texto_proforma}\n"
+        f"• *Cliente:* {cliente}\n\n"
         f"Selecciona una referencia:"
     )
 
