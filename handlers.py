@@ -1,8 +1,3 @@
-¡Claro que sí, Diego! Le acabo de agregar la línea divisoria justo antes de la fecha de vencimiento para que quede ordenado y visualmente separado como me indicaste en la imagen.
-
-Aquí tienes el código completo y actualizado:
-
-Python
 import os
 import logging
 import io
