@@ -293,6 +293,19 @@ def _construir_teclado_colores(df_ref) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(keyboard)
  
  
+def _texto_encabezado(resultado, doc_buscado) -> str:
+    """Mensaje inicial del documento: número, vendedor y cliente (Nombre Tercero)."""
+    primera = resultado.iloc[0]
+    vendedor = escapar_markdown(primera.get('Nombre Vendedor', 'N/A')) or 'N/A'
+    cliente = escapar_markdown(primera.get('Nombre Tercero', 'N/A')) or 'N/A'
+    return (
+        f"🔍 Documento *{doc_buscado}*\n"
+        f"• *Vendedor:* {vendedor}\n"
+        f"• *Cliente:* {cliente}\n\n"
+        f"Selecciona una referencia:"
+    )
+ 
+ 
 async def mostrar_ver_todo_referencia(query, context) -> int:
     resultado = context.user_data.get('df_pedido')
     doc_buscado = context.user_data.get('doc_buscado', 'Desconocido')
@@ -375,7 +388,7 @@ async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         # Este mensaje se edita después (mismo message_id), así que se programa una sola vez
         await responder(
             update, context,
-            f"🔍 Documento *{doc_buscado}*.\n\nSelecciona una referencia:",
+            _texto_encabezado(resultado, doc_buscado),
             reply_markup=reply_markup,
             parse_mode="Markdown"
         )
@@ -403,7 +416,7 @@ async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_T
         keyboard = [[InlineKeyboardButton(str(ref), callback_data=f"ref_{ref}")] for ref in referencias]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(
-            text=f"🔍 Documento *{doc_buscado}*.\n\nSelecciona una referencia:",
+            text=_texto_encabezado(resultado, doc_buscado),
             reply_markup=reply_markup,
             parse_mode="Markdown"
         )
