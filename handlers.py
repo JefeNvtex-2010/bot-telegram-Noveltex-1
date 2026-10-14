@@ -263,10 +263,10 @@ def _texto_detalle(fila, titulo=None) -> str:
         f"• *Cantidad pedida:* {escapar_markdown(fila.get('Cantidad Ped', 'N/A'))}\n"
         f"• *Cantidad alistada:* {escapar_markdown(fila.get('Cantidad Alistada', 'N/A'))}\n"
         f"• *Fecha Despacho:* {escapar_markdown(fila.get('Fecha Factura', 'N/A'))}\n"
-        f"{campos_contado}"
         f"• *Operario:* {escapar_markdown(fila.get('Nombre Operario Asignado', 'N/A'))}\n"
         f"• *Tipo Pedido:* {escapar_markdown(fila.get('Clasificacion Pedido', 'N/A'))}\n"
         f"• *Observacion:* {escapar_markdown(fila.get('Observacion Adicional', 'N/A'))}\n"
+        f"{campos_contado}"  # <--- Movido exactamente al final de todo
     )
 
 
