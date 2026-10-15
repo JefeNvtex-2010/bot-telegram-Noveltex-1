@@ -14,8 +14,76 @@ SELECCIONANDO_REF_SAP, SELECCIONANDO_COLOR_SAP, ESPERANDO_REF_SAP = 3, 4, 5
 MAX_BOTONES = 20
 
 
+def _num(valor, defecto):
+    """Número con coma o punto decimal; si está vacío o inválido devuelve `defecto`."""
+    texto = str(valor).strip().replace(",", ".")
+    if not texto:
+        return defecto
+    try:
+        return float(texto)
+    except ValueError:
+        return defecto
+
+
+def _primer_valor(fila, columnas, defecto=""):
+    for c in columnas:
+        val = str(fila.get(c, "")).strip()
+        if val and val != "nan":
+            return val
+    return defecto
+
+
+def _texto_inventario(df, ref: str, color: str, filas) -> str:
+    """Detalle final: artículo, descripción, desglose por almacén y totales generales."""
+    cols_cod = [c for c in df.columns if any(k in c.upper() for k in ("CÓDIGO", "ALMACÉN", "ALMACEN"))]
+    cols_nom = [c for c in df.columns if "NOMBRE" in c.upper() and "ALM" in c.upper()]
+
+    primera = filas.iloc[0]
+    codigo = esc(primera.get("Artículo", "N/A"))
+    descripcion = esc(primera.get("Descripción", f"{ref} - {color}"))
+
+    mensaje = (
+        f"🟢 <b>Inventario</b>\n\n"
+        f"• <b>Artículo:</b> <code>{codigo}</code>\n"
+        f"• <b>Descripción:</b> {descripcion}\n\n"
+        f"<b>Desglose por Almacén:</b>\n"
+    )
+
+    total_stock = total_comp = total_disp = 0.0
+    for _, fila in filas.iterrows():
+        cod_almacen = _primer_valor(fila, cols_cod, "1")
+        nom_almacen = _primer_valor(fila, cols_nom, "")
+        almacen_txt = f"{cod_almacen} - {nom_almacen}" if nom_almacen else cod_almacen
+
+        stock = _num(fila.get("Stock", "0"), 0.0)
+        comprometido = _num(fila.get("Comprometido", "0"), 0.0)
+        disponible = _num(fila.get("Disponible", ""), None)
+        if disponible is None:
+            disponible = stock - comprometido
+
+        total_stock += stock
+        total_comp += comprometido
+        total_disp += disponible
+
+        mensaje += (
+            f"• <b>Almacén {esc(almacen_txt)}:</b>\n"
+            f"  - En stock: <code>{stock:,.2f}</code>\n"
+            f"  - Comprometido: <code>{comprometido:,.2f}</code>\n"
+            f"  - Disponible: <code>{disponible:,.2f}</code>\n\n"
+        )
+
+    mensaje += (
+        f"-----------------------------------\n"
+        f"📊 <b>Totales Generales:</b>\n"
+        f"• <b>Stock Total:</b> <code>{total_stock:,.2f}</code>\n"
+        f"• <b>Total Comprometido:</b> <code>{total_comp:,.2f}</code>\n"
+        f"• <b>Total Disponible:</b> <code>{total_disp:,.2f}</code>"
+    )
+    return mensaje
+
+
 def _pantalla_refs(d: dict):
-    texto = f"🔍 Varias referencias para <b>{esc(d['termino'])}</b>:"
+    texto = f"🔍 Encontré varias referencias para <b>{esc(d['termino'])}</b>.\nSelecciona una referencia:"
     if d["total"] > len(d["refs"]):
         texto += f"\n(Mostrando {len(d['refs'])} de {d['total']}; escribe una referencia más específica)"
     teclado = InlineKeyboardMarkup([
@@ -148,15 +216,11 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
         return await _expirada(query)
 
     filas = df[(df["_ref"] == d["ref"]) & (df["_color"] == color)]
-    mensaje = f"🟢 <b>Inventario SAP</b> ({esc(d['ref'])} - {esc(color)}):\n"
     if filas.empty:
-        mensaje += "Sin registros."
-    for _, fila in filas.iterrows():
-        mensaje += (
-            f"• Stock: <code>{esc(fila.get('Stock', '0'))}</code> | "
-            f"Disponible: <code>{esc(fila.get('Disponible', '0'))}</code>\n"
-        )
+        mensaje = f"❌ No se encontró inventario para la referencia <b>{esc(d['ref'])}</b> y color <b>{esc(color)}</b>."
+    else:
+        mensaje = _texto_inventario(df, d["ref"], color, filas)
 
-    teclado = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver", callback_data="sap_back_cols")]])
+    teclado = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver a colores", callback_data="sap_back_cols")]])
     await editar(query, recortar(mensaje), teclado)
     return SELECCIONANDO_COLOR_SAP
