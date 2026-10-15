@@ -1,5 +1,6 @@
 import logging
 import io
+import time
 import requests
 import pandas as pd
 import concurrent.futures
@@ -13,8 +14,11 @@ SELECCIONANDO_REF_VEND = 1
 SELECCIONANDO_COLOR_VEND = 2
 ESPERANDO_REF_VEND = 3
 
-# Enlace de tu libro/hoja de inventario vendedor
 INVENTARIO_VENDEDOR_SHEET_URL = "https://docs.google.com/spreadsheets/d/1FJdfaNhxcFFDVD_AV2lTITHw0f-mB0Y2/export?format=csv"
+
+# Caché en memoria para inventario de vendedor (2 minutos)
+_cache_inventario_vend = {"df": None, "timestamp": 0}
+CACHE_TTL = 120
 
 def _descargar_csv_inventario_vendedor(url):
     response = requests.get(url, timeout=15)
@@ -24,10 +28,17 @@ def _descargar_csv_inventario_vendedor(url):
     return df
 
 def cargar_inventario_vendedor_aislado():
+    global _cache_inventario_vend
+    tiempo_actual = time.time()
+    if _cache_inventario_vend["df"] is not None and (tiempo_actual - _cache_inventario_vend["timestamp"]) < CACHE_TTL:
+        return _cache_inventario_vend["df"]
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(_descargar_csv_inventario_vendedor, INVENTARIO_VENDEDOR_SHEET_URL)
         try:
             df = future.result(timeout=20.0)
+            _cache_inventario_vend["df"] = df
+            _cache_inventario_vend["timestamp"] = tiempo_actual
             return df
         except Exception as e:
             logger.error(f"⚠️ Error al leer inventario de vendedor: {e}")
