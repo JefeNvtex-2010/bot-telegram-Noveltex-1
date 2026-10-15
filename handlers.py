@@ -1,11 +1,3 @@
-¡Claro que sí! Para que al presionar el botón el bot no te obligue a escribir el comando con barra (/in, /i o /PV), sino que directamente te pida el dato en el chat y al escribirlo te arroje el resultado, vamos a usar estados intermedios en los ConversationHandler de cada archivo.
-
-Aquí tienes los códigos completos y ajustados para tus tres archivos (handlers.py, inventario_handlers.py e inventario_vendedor_handlers.py) junto con cómo debes actualizar los entry points en tu main.py.
-
-1. Actualización en handlers.py (Pedidos - /PV)
-Agregamos un estado nuevo llamado ESPERANDO_DOCUMENTO_PV para que capture el texto directamente cuando pulses el botón.
-
-Python
 import os
 import logging
 import io
