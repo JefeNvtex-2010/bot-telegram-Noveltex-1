@@ -1,4 +1,4 @@
-import loggingimport logging
+import logging
 import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -100,4 +100,74 @@ def main() -> None:
         CallbackQueryHandler(iniciar_busqueda_vendedor, pattern="^start_vend$"),
     ]
 
-    texto_pv = MessageHandler(filters.TEXT &
+    texto_pv = MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_texto_documento_pv)
+    texto_sap = MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_texto_ref_sap)
+    texto_vend = MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_texto_ref_vendedor)
+
+    estados = {
+        # PEDIDOS (PV). Escribir texto en cualquier pantalla lanza una nueva búsqueda.
+        ESPERANDO_DOCUMENTO_PV: [texto_pv],
+        SELECCIONANDO_REFERENCIA: [
+            CallbackQueryHandler(seleccionar_referencia, pattern=r"^pv_ref_\d+$"),
+            texto_pv,
+        ],
+        SELECCIONANDO_COLOR: [
+            CallbackQueryHandler(seleccionar_color, pattern=r"^pv_(col_\d+|all|back_refs|back_cols)$"),
+            texto_pv,
+        ],
+        # INVENTARIO SAP
+        ESPERANDO_REF_SAP: [texto_sap],
+        SELECCIONANDO_REF_SAP: [
+            CallbackQueryHandler(seleccionar_referencia_sap, pattern=r"^sap_ref_\d+$"),
+            texto_sap,
+        ],
+        SELECCIONANDO_COLOR_SAP: [
+            CallbackQueryHandler(seleccionar_color_sap, pattern=r"^sap_(col_\d+|back_refs|back_cols)$"),
+            texto_sap,
+        ],
+        # INVENTARIO VENDEDOR
+        ESPERANDO_REF_VEND: [texto_vend],
+        SELECCIONANDO_REF_VEND: [
+            CallbackQueryHandler(seleccionar_referencia_vendedor, pattern=r"^vend_ref_\d+$"),
+            texto_vend,
+        ],
+        SELECCIONANDO_COLOR_VEND: [
+            CallbackQueryHandler(seleccionar_color_vendedor, pattern=r"^vend_(col_\d+|back_refs|share)$"),
+            texto_vend,
+        ],
+    }
+
+    fallbacks = entradas + [
+        CommandHandler("cancelar", cancelar),
+        CommandHandler(["inicio", "menu"], menu_inicio),
+    ]
+
+    application.add_handler(ConversationHandler(
+        entry_points=entradas,
+        states=estados,
+        fallbacks=fallbacks,
+        conversation_timeout=900 if application.job_queue else None,  # 15 min sin uso: se cierra
+    ))
+
+    # Comandos generales
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("pedido", order_command))
+    application.add_handler(CommandHandler("reiniciar", reiniciar_render))
+    application.add_handler(CommandHandler("actualizar", limpiar_cache_y_deploy))
+    application.add_handler(CommandHandler("refrescar", refrescar_datos))
+    application.add_handler(CommandHandler(["inicio", "menu"], menu_inicio))
+
+    # Botones viejos (p. ej. tras reiniciar el bot): responde en vez de quedarse "cargando"
+    application.add_handler(CallbackQueryHandler(callback_expirado))
+
+    application.add_error_handler(manejar_error)
+
+    application.run_polling(
+        drop_pending_updates=True,  # no procesa mensajes acumulados mientras el bot estuvo apagado
+        allowed_updates=["message", "callback_query"],
+    )
+
+
+if __name__ == "__main__":
+    main()
