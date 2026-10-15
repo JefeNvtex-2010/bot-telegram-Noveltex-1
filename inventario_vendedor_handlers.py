@@ -67,7 +67,8 @@ async def iniciar_busqueda_vendedor(update: Update, context: ContextTypes.DEFAUL
 
     if not context.args:
         await responder(
-            update, context,
+            update,
+            context,
             "🛒 <b>Inventario Vendedor (Bodega 01)</b>\n\nEscribe la <b>referencia</b> que deseas buscar "
             "(o usa <code>/i VERMONT</code>):",
         )
@@ -99,7 +100,8 @@ async def ejecutar_busqueda_vendedor(update: Update, context: ContextTypes.DEFAU
     refs = datos.buscar_referencias(df, termino)
     if not refs:
         await responder(
-            update, context,
+            update,
+            context,
             f"❌ No se encontraron referencias para: <b>{esc(termino)}</b>.\nPuedes escribir otra referencia.",
         )
         return ESPERANDO_REF_VEND
@@ -114,4 +116,64 @@ async def ejecutar_busqueda_vendedor(update: Update, context: ContextTypes.DEFAU
         return SELECCIONANDO_COLOR_VEND
 
     texto, teclado = _pantalla_refs(d)
-    await responder(update,
+    await responder(update, context, texto, reply_markup=teclado)
+    return SELECCIONANDO_REF_VEND
+
+
+async def _expirada(query) -> int:
+    await editar(query, "⌛ Esta consulta expiró. Escribe /inicio para empezar de nuevo.")
+    return ConversationHandler.END
+
+
+async def seleccionar_referencia_vendedor(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    d = context.user_data.get("vend")
+    df = await datos.inventario.obtener()
+    if not d or df is None:
+        return await _expirada(query)
+    try:
+        d["ref"] = d["refs"][int(query.data.rsplit("_", 1)[1])]
+    except (ValueError, IndexError):
+        return await _expirada(query)
+
+    texto, teclado = _pantalla_colores(d, df)
+    await editar(query, texto, teclado)
+    return SELECCIONANDO_COLOR_VEND
+
+
+async def seleccionar_color_vendedor(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    d = context.user_data.get("vend")
+    if not d or "ref" not in d:
+        await query.answer()
+        return await _expirada(query)
+
+    if query.data == "vend_back_refs":
+        await query.answer()
+        texto, teclado = _pantalla_refs(d)
+        await editar(query, texto, teclado)
+        return SELECCIONANDO_REF_VEND
+
+    if query.data == "vend_share":
+        await query.answer()
+        msg = await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text=_texto_compartir(d),
+            parse_mode=ParseMode.HTML,
+        )
+        programar_borrado(context, msg)  # se borra a las 24 h como los demás mensajes
+        return SELECCIONANDO_COLOR_VEND
+
+    try:
+        color, disp = d["colores"][int(query.data.rsplit("_", 1)[1])]
+    except (ValueError, IndexError):
+        await query.answer()
+        return await _expirada(query)
+
+    # Un solo query.answer() (antes se llamaba dos veces y el aviso nunca se mostraba)
+    await query.answer(
+        text=f"{d['ref']} - {color}\nDisponible en bodega 01: {_fmt(disp)} MTRS",
+        show_alert=True,
+    )
+    return SELECCIONANDO_COLOR_VEND
