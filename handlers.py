@@ -1,6 +1,3 @@
-Aquí tienes el archivo handlers.py completo y actualizado, integrando la función menu_inicio para el menú con botones y adaptando iniciar_busqueda para que funcione tanto si escriben /PV como si presionan el botón interactivo:
-
-Python
 import os
 import logging
 import io
