@@ -1,5 +1,6 @@
 import logging
 import io
+import time
 import requests
 import pandas as pd
 import concurrent.futures
@@ -15,6 +16,10 @@ ESPERANDO_REF_SAP = 3
 
 INVENTARIO_SHEET_URL = "https://docs.google.com/spreadsheets/d/1FJdfaNhxcFFDVD_AV2lTITHw0f-mB0Y2/export?format=csv"
 
+# Caché en memoria para inventario SAP (2 minutos)
+_cache_inventario_sap = {"df": None, "timestamp": 0}
+CACHE_TTL = 120
+
 def _descargar_csv_inventario(url):
     response = requests.get(url, timeout=15)
     response.raise_for_status()
@@ -23,10 +28,18 @@ def _descargar_csv_inventario(url):
     return df
 
 def cargar_inventario_aislado():
+    global _cache_inventario_sap
+    tiempo_actual = time.time()
+    if _cache_inventario_sap["df"] is not None and (tiempo_actual - _cache_inventario_sap["timestamp"]) < CACHE_TTL:
+        return _cache_inventario_sap["df"]
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(_descargar_csv_inventario, INVENTARIO_SHEET_URL)
         try:
-            return future.result(timeout=20.0)
+            df = future.result(timeout=20.0)
+            _cache_inventario_sap["df"] = df
+            _cache_inventario_sap["timestamp"] = tiempo_actual
+            return df
         except Exception as e:
             return f"ERROR: {e}"
 
