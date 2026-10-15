@@ -1,6 +1,7 @@
 import logging
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.constants import ParseMode
 from telegram.ext import ContextTypes, ConversationHandler
 
 import datos
@@ -37,15 +38,17 @@ def _pantalla_colores(d: dict, df):
     ]
     if len(d["refs"]) > 1:
         filas.append([InlineKeyboardButton("🔙 Volver a referencias", callback_data="vend_back_refs")])
+    # Botón final: convierte la lista a texto para copiar/reenviar
+    filas.append([InlineKeyboardButton("📋 Clic para compartir", callback_data="vend_share")])
 
-    # Lista en texto para poder copiarla/reenviarla
-    lineas = [f"{esc(color)} - {_fmt(disp)} MTRS" for color, disp in d["colores"]]
-    texto = (
-        f"🔍 Referencia: <b>{esc(d['ref'])}</b>.\n\n"
-        + "\n".join(lineas)
-        + "\n\nSelecciona un color:"
-    )
+    texto = f"🔍 Referencia: <b>{esc(d['ref'])}</b>.\nSelecciona un color:"
     return texto, InlineKeyboardMarkup(filas)
+
+
+def _texto_compartir(d: dict) -> str:
+    """Lista en texto plano (sin botones) lista para copiar o reenviar."""
+    lineas = [f"{esc(color)} - {_fmt(disp)} MTRS" for color, disp in d["colores"]]
+    return f"🔍 Referencia: <b>{esc(d['ref'])}</b> (Bodega 01)\n\n" + "\n".join(lineas)
 
 
 async def iniciar_busqueda_vendedor(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -111,54 +114,4 @@ async def ejecutar_busqueda_vendedor(update: Update, context: ContextTypes.DEFAU
         return SELECCIONANDO_COLOR_VEND
 
     texto, teclado = _pantalla_refs(d)
-    await responder(update, context, texto, reply_markup=teclado)
-    return SELECCIONANDO_REF_VEND
-
-
-async def _expirada(query) -> int:
-    await editar(query, "⌛ Esta consulta expiró. Escribe /inicio para empezar de nuevo.")
-    return ConversationHandler.END
-
-
-async def seleccionar_referencia_vendedor(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    d = context.user_data.get("vend")
-    df = await datos.inventario.obtener()
-    if not d or df is None:
-        return await _expirada(query)
-    try:
-        d["ref"] = d["refs"][int(query.data.rsplit("_", 1)[1])]
-    except (ValueError, IndexError):
-        return await _expirada(query)
-
-    texto, teclado = _pantalla_colores(d, df)
-    await editar(query, texto, teclado)
-    return SELECCIONANDO_COLOR_VEND
-
-
-async def seleccionar_color_vendedor(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    d = context.user_data.get("vend")
-    if not d or "ref" not in d:
-        await query.answer()
-        return await _expirada(query)
-
-    if query.data == "vend_back_refs":
-        await query.answer()
-        texto, teclado = _pantalla_refs(d)
-        await editar(query, texto, teclado)
-        return SELECCIONANDO_REF_VEND
-
-    try:
-        color, disp = d["colores"][int(query.data.rsplit("_", 1)[1])]
-    except (ValueError, IndexError):
-        await query.answer()
-        return await _expirada(query)
-
-    # Un solo query.answer() (antes se llamaba dos veces y el aviso nunca se mostraba)
-    await query.answer(
-        text=f"{d['ref']} - {color}\nDisponible en bodega 01: {_fmt(disp)} MTRS",
-        show_alert=True,
-    )
-    return SELECCIONANDO_COLOR_VEND
+    await responder(update,
