@@ -1,3 +1,6 @@
+Aquí tienes el archivo handlers.py completo y actualizado, integrando la función menu_inicio para el menú con botones y adaptando iniciar_busqueda para que funcione tanto si escriben /PV como si presionan el botón interactivo:
+
+Python
 import os
 import logging
 import io
@@ -19,19 +22,13 @@ GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1EOGz7ix9Z1AufTJ-79TW
 # ==========================================
 # CONFIGURACIÓN
 # ==========================================
-# 📊 URL de la Aplicación Web de Google Apps Script para la Auditoría.
 URL_WEB_APP_REPORTE = os.environ.get(
     "URL_WEB_APP_REPORTE",
     "https://script.google.com/macros/s/AKfycbztHKV4C8hqcPUVHq71gFmRzPSbtz36NByAgPfR-JEyDlNRF-LkRj-g2lEWHrf42AaE/exec"
 )
 
-# Tu ID de Telegram (variable de entorno MI_TELEGRAM_ID, con respaldo)
 MI_TELEGRAM_ID = int(os.environ.get("MI_TELEGRAM_ID", "5655537446"))
-
-# Deploy hook de Render: SOLO por variable de entorno RENDER_DEPLOY_HOOK_URL
 RENDER_DEPLOY_HOOK_URL = os.environ.get("RENDER_DEPLOY_HOOK_URL", "")
-
-# ⏳ Tiempo de vida de los mensajes (24 horas)
 SEGUNDOS_BORRADO = 24 * 60 * 60
 
 
@@ -40,7 +37,6 @@ SEGUNDOS_BORRADO = 24 * 60 * 60
 # ==========================================
 
 async def _borrar_mensaje_job(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Job que se ejecuta a las 24 h y borra el mensaje."""
     datos = context.job.data
     try:
         await context.bot.delete_message(
@@ -52,7 +48,6 @@ async def _borrar_mensaje_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 def programar_borrado(context: ContextTypes.DEFAULT_TYPE, mensaje) -> None:
-    """Programa el borrado de un mensaje dentro de SEGUNDOS_BORRADO."""
     if mensaje is None:
         return
     if context.job_queue is None:
@@ -66,7 +61,6 @@ def programar_borrado(context: ContextTypes.DEFAULT_TYPE, mensaje) -> None:
 
 
 async def responder(update: Update, context: ContextTypes.DEFAULT_TYPE, texto: str, **kwargs):
-    """Envía una respuesta y programa su borrado automático."""
     msg = await update.message.reply_text(texto, **kwargs)
     programar_borrado(context, msg)
     return msg
@@ -77,7 +71,6 @@ async def responder(update: Update, context: ContextTypes.DEFAULT_TYPE, texto: s
 # ==========================================
 
 def registrar_uso_bot(update: Update, comando_usado: str):
-    """Registra de forma automática quién consultó el bot, la hora local ajustada y el comando ejecutado."""
     user = update.effective_user
     if not user:
         return
@@ -86,7 +79,6 @@ def registrar_uso_bot(update: Update, comando_usado: str):
     nombre = f"{user.first_name or ''} {user.last_name or ''}".strip()
     username = f"@{user.username}" if user.username else "Sin alias"
 
-    # 🕒 Ajuste de zona horaria (-5 horas)
     zona_horaria = datetime.timezone(datetime.timedelta(hours=-5))
     hora_actual = datetime.datetime.now(zona_horaria).strftime("%Y-%m-%d %H:%M:%S")
 
@@ -113,7 +105,6 @@ def registrar_uso_bot(update: Update, comando_usado: str):
 
 
 def escapar_markdown(texto: str) -> str:
-    """Escapa caracteres especiales de Telegram para evitar errores de parseo."""
     if not isinstance(texto, str):
         texto = str(texto)
     caracteres = ['_', '*', '`', '[']
@@ -123,7 +114,6 @@ def escapar_markdown(texto: str) -> str:
 
 
 def _descargar_csv(url):
-    """Función auxiliar robusta usando requests para descargar pestañas de Google Sheets en CSV."""
     response = requests.get(url, timeout=15)
     response.raise_for_status()
     df = pd.read_csv(io.StringIO(response.text), dtype=str, keep_default_na=False)
@@ -132,7 +122,6 @@ def _descargar_csv(url):
 
 
 def cargar_catalogo():
-    """Carga el catálogo de pedidos."""
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(_descargar_csv, GOOGLE_SHEET_URL)
         try:
@@ -146,6 +135,35 @@ def cargar_catalogo():
 
 
 # ==========================================
+# MENÚ PRINCIPAL E INTERFAZ DE BOTONES
+# ==========================================
+
+async def menu_inicio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Muestra el menú principal interactivo con botones."""
+    if update.message:
+        programar_borrado(context, update.message)
+        
+    keyboard = [
+        [InlineKeyboardButton("🛒 Inventario Vendedor", callback_data="start_vend")],
+        [InlineKeyboardButton("📦 Inventario SAP", callback_data="start_sap")],
+        [InlineKeyboardButton("📋 Pedidos (PV)", callback_data="start_pv")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    texto_bienvenida = (
+        "👋 ¡Hola! Selecciona una opción del menú principal para comenzar o usa los comandos rápidos:"
+    )
+    
+    if update.callback_query:
+        query = update.callback_query
+        await query.answer()
+        await query.edit_message_text(text=texto_bienvenida, reply_markup=reply_markup, parse_mode="Markdown")
+    else:
+        msg = await update.message.reply_text(texto_bienvenida, reply_markup=reply_markup, parse_mode="Markdown")
+        programar_borrado(context, msg)
+
+
+# ==========================================
 # COMANDOS BÁSICOS
 # ==========================================
 
@@ -155,8 +173,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     name = user.first_name if user else "allí"
     await responder(
         update, context,
-        f"¡Hola {name}! Bienvenido al Bot de Noveltex, estoy aqui para ayudarte en tu día, dime cual sera tu primera consulta\n\n"
-        "Usa los comandos:\n"
+        f"¡Hola {name}! Bienvenido al Bot de Noveltex, estoy aqui para ayudarte en tu día.\n\n"
+        "Escribe /inicio para ver el menú interactivo con botones o usa /help para ver los comandos disponibles."
     )
 
 
@@ -165,6 +183,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await responder(
         update, context,
         "Comandos disponibles:\n"
+        "/inicio - Mostrar menú principal con botones\n"
         "/start - Iniciar el bot\n"
         "/pedido - Registrar un pedido\n"
         "/PV [Nro_Documento] - Consultar estatus en Google Sheets\n"
@@ -237,10 +256,7 @@ async def limpiar_cache_y_deploy(update: Update, context: ContextTypes.DEFAULT_T
 # ==========================================
 
 def _texto_detalle(fila, titulo=None) -> str:
-    """Construye el bloque de texto con el detalle de una fila de pedido."""
     cabecera = f"{titulo}\n\n" if titulo else ""
-    
-    # Validamos si la clasificación del pedido es de contado
     tipo_pedido = str(fila.get('Clasificacion Pedido', '')).strip().lower()
     
     campos_contado = ""
@@ -248,7 +264,6 @@ def _texto_detalle(fila, titulo=None) -> str:
         fecha_vencimiento = escapar_markdown(fila.get('Fecha Vencimiento', 'N/A')) or 'N/A'
         num_proforma = escapar_markdown(fila.get('Numero Proforma', 'N/A')) or 'N/A'
         
-        # Agregamos la línea separadora antes de la fecha de vencimiento
         campos_contado += "-----------------------------------\n"
         campos_contado += f"• *Fecha Vencimiento:* {fecha_vencimiento}\n"
         if num_proforma and num_proforma != 'N/A':
@@ -268,18 +283,16 @@ def _texto_detalle(fila, titulo=None) -> str:
         f"• *Operario:* {escapar_markdown(fila.get('Nombre Operario Asignado', 'N/A'))}\n"
         f"• *Tipo Pedido:* {escapar_markdown(fila.get('Clasificacion Pedido', 'N/A'))}\n"
         f"• *Observacion:* {escapar_markdown(fila.get('Observacion Adicional', 'N/A'))}\n"
-        f"{campos_contado}"  # <--- Línea divisoria y campos de contado al final
+        f"{campos_contado}"
     )
 
 
 def _traducir_estado(valor) -> str:
-    """Traduce el estado de SAP a texto legible."""
     v = str(valor).strip()
     return {"bost_Open": "Abierto", "bost_Close": "Cerrado"}.get(v, v or "N/A")
 
 
 def _construir_teclado_colores(df_ref) -> InlineKeyboardMarkup:
-    """Un botón por color, con el Estado Item al frente."""
     df = df_ref.copy()
     df['Color'] = df['Color'].astype(str).str.strip()
 
@@ -301,7 +314,6 @@ def _construir_teclado_colores(df_ref) -> InlineKeyboardMarkup:
 
 
 def _texto_encabezado(resultado, doc_buscado) -> str:
-    """Mensaje inicial del documento: número, vendedor y cliente (Nombre Tercero)."""
     primera = resultado.iloc[0]
     vendedor = escapar_markdown(primera.get('Nombre Vendedor', 'N/A')) or 'N/A'
     cliente = escapar_markdown(primera.get('Nombre Tercero', 'N/A')) or 'N/A'
@@ -346,10 +358,18 @@ async def mostrar_ver_todo_referencia(query, context) -> int:
 
 
 async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # 📊 Registramos automáticamente el uso de /PV
-    registrar_uso_bot(update, "/PV")
+    query = update.callback_query
+    
+    if query:
+        await query.answer()
+        registrar_uso_bot(update, "BOTÓN_PV")
+        await query.edit_message_text(
+            text="📦 *Gestión de Pedidos*\n\nPor favor, ingresa el número de documento a buscar usando el comando, por ejemplo: `/PV 5270`",
+            parse_mode="Markdown"
+        )
+        return ConversationHandler.END
 
-    # 🗑️ Programamos el borrado del comando del usuario (/PV 5270)
+    registrar_uso_bot(update, "/PV")
     programar_borrado(context, update.message)
 
     try:
@@ -361,7 +381,6 @@ async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             )
             return ConversationHandler.END
 
-        # 🔍 Mensaje temporal indicando que se está buscando el pedido
         msg_buscando = await update.message.reply_text("🔍 Buscando pedido...")
         programar_borrado(context, msg_buscando)
 
