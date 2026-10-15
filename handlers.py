@@ -1,6 +1,7 @@
 import os
 import logging
 import io
+import time
 import datetime
 import requests
 import pandas as pd
@@ -23,6 +24,10 @@ URL_WEB_APP_REPORTE = os.environ.get(
 MI_TELEGRAM_ID = int(os.environ.get("MI_TELEGRAM_ID", "5655537446"))
 RENDER_DEPLOY_HOOK_URL = os.environ.get("RENDER_DEPLOY_HOOK_URL", "")
 SEGUNDOS_BORRADO = 24 * 60 * 60
+
+# Caché en memoria para pedidos (2 minutos)
+_cache_catalogo = {"df": None, "timestamp": 0}
+CACHE_TTL = 120
 
 async def _borrar_mensaje_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     datos = context.job.data
@@ -80,12 +85,19 @@ def _descargar_csv(url):
     return df
 
 def cargar_catalogo():
+    global _cache_catalogo
+    tiempo_actual = time.time()
+    if _cache_catalogo["df"] is not None and (tiempo_actual - _cache_catalogo["timestamp"]) < CACHE_TTL:
+        return _cache_catalogo["df"]
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(_descargar_csv, GOOGLE_SHEET_URL)
         try:
             df = future.result(timeout=20.0)
             if 'Documento Pd' in df.columns:
                 df['Documento Pd'] = df['Documento Pd'].astype(str).str.split('.').str[0].str.strip()
+            _cache_catalogo["df"] = df
+            _cache_catalogo["timestamp"] = tiempo_actual
             return df
         except Exception as e:
             return f"ERROR: {e}"
@@ -134,12 +146,14 @@ async def reiniciar_render(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await responder(update, context, "🔄 Reiniciando Render...")
 
 async def limpiar_cache_y_deploy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    global _cache_catalogo
     programar_borrado(context, update.message)
     if update.effective_user.id != MI_TELEGRAM_ID:
         await responder(update, context, "⛔ Sin permisos.")
         return
+    _cache_catalogo = {"df": None, "timestamp": 0}
     requests.post(f"{RENDER_DEPLOY_HOOK_URL}&clearCache=true", timeout=10)
-    await responder(update, context, "🧹 Limpiando caché y desplegando...")
+    await responder(update, context, "🧹 Caché limpiada localmente y desplegando en Render...")
 
 # FLUJO PEDIDOS
 def _texto_detalle(fila, titulo=None) -> str:
