@@ -37,7 +37,14 @@ def _pantalla_colores(d: dict, df):
     ]
     if len(d["refs"]) > 1:
         filas.append([InlineKeyboardButton("🔙 Volver a referencias", callback_data="vend_back_refs")])
-    texto = f"🔍 Referencia: <b>{esc(d['ref'])}</b>.\nSelecciona un color:"
+
+    # Lista en texto para poder copiarla/reenviarla
+    lineas = [f"{esc(color)} - {_fmt(disp)} MTRS" for color, disp in d["colores"]]
+    texto = (
+        f"🔍 Referencia: <b>{esc(d['ref'])}</b>.\n\n"
+        + "\n".join(lineas)
+        + "\n\nSelecciona un color:"
+    )
     return texto, InlineKeyboardMarkup(filas)
 
 
