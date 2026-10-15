@@ -1,148 +1,162 @@
 import logging
-import io
-import time
-import requests
-import pandas as pd
-import concurrent.futures
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes, ConversationHandler
-from handlers import escapar_markdown, registrar_uso_bot, programar_borrado, responder
+
+import datos
+from handlers import editar, esc, programar_borrado, recortar, registrar_uso_bot, responder
 
 logger = logging.getLogger(__name__)
 
-SELECCIONANDO_REF_SAP = 1
-SELECCIONANDO_COLOR_SAP = 2
-ESPERANDO_REF_SAP = 3
+# Estados únicos (no chocan con los de handlers.py ni con los del vendedor)
+SELECCIONANDO_REF_SAP, SELECCIONANDO_COLOR_SAP, ESPERANDO_REF_SAP = 3, 4, 5
 
-INVENTARIO_SHEET_URL = "https://docs.google.com/spreadsheets/d/1FJdfaNhxcFFDVD_AV2lTITHw0f-mB0Y2/export?format=csv"
+MAX_BOTONES = 20
 
-# Caché en memoria para inventario SAP (2 minutos)
-_cache_inventario_sap = {"df": None, "timestamp": 0}
-CACHE_TTL = 120
 
-def _descargar_csv_inventario(url):
-    response = requests.get(url, timeout=15)
-    response.raise_for_status()
-    df = pd.read_csv(io.StringIO(response.text), dtype=str, keep_default_na=False)
-    df.columns = df.columns.str.strip()
-    return df
+def _pantalla_refs(d: dict):
+    texto = f"🔍 Varias referencias para <b>{esc(d['termino'])}</b>:"
+    if d["total"] > len(d["refs"]):
+        texto += f"\n(Mostrando {len(d['refs'])} de {d['total']}; escribe una referencia más específica)"
+    teclado = InlineKeyboardMarkup([
+        [InlineKeyboardButton(ref, callback_data=f"sap_ref_{i}")] for i, ref in enumerate(d["refs"])
+    ])
+    return texto, teclado
 
-def cargar_inventario_aislado():
-    global _cache_inventario_sap
-    tiempo_actual = time.time()
-    if _cache_inventario_sap["df"] is not None and (tiempo_actual - _cache_inventario_sap["timestamp"]) < CACHE_TTL:
-        return _cache_inventario_sap["df"]
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(_descargar_csv_inventario, INVENTARIO_SHEET_URL)
-        try:
-            df = future.result(timeout=20.0)
-            _cache_inventario_sap["df"] = df
-            _cache_inventario_sap["timestamp"] = tiempo_actual
-            return df
-        except Exception as e:
-            return f"ERROR: {e}"
+def _pantalla_colores(d: dict):
+    filas = [
+        [InlineKeyboardButton(color, callback_data=f"sap_col_{i}")]
+        for i, color in enumerate(d["colores"][:MAX_BOTONES])
+    ]
+    if len(d["refs"]) > 1:
+        filas.append([InlineKeyboardButton("🔙 Volver a referencias", callback_data="sap_back_refs")])
+    texto = f"🔍 Referencia: <b>{esc(d['ref'])}</b>.\nSelecciona un color:"
+    return texto, InlineKeyboardMarkup(filas)
+
 
 async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    
     if query:
         await query.answer()
         registrar_uso_bot(update, "BOTÓN_INVENTARIO_SAP")
-        await query.edit_message_text(
-            text="📦 *Inventario SAP*\n\nPor favor, escribe la **referencia** que deseas buscar:",
-            parse_mode="Markdown"
-        )
+        await editar(query, "📦 <b>Inventario SAP</b>\n\nEscribe la <b>referencia</b> que deseas buscar:")
         return ESPERANDO_REF_SAP
 
     registrar_uso_bot(update, "/in")
     programar_borrado(context, update.message)
 
     if not context.args:
-        await responder(update, context, "⚠️ Ingresa la referencia. Ejemplo: `/in SATIN`", parse_mode="Markdown")
-        return ConversationHandler.END
+        await responder(
+            update, context,
+            "📦 <b>Inventario SAP</b>\n\nEscribe la <b>referencia</b> que deseas buscar "
+            "(o usa <code>/in SATIN</code>):",
+        )
+        return ESPERANDO_REF_SAP
 
-    termino_busqueda = " ".join(context.args).strip().upper()
-    return await ejecutar_busqueda_sap(update, context, termino_busqueda)
+    return await ejecutar_busqueda_sap(update, context, " ".join(context.args))
+
 
 async def recibir_texto_ref_sap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     programar_borrado(context, update.message)
-    termino_busqueda = update.message.text.strip().upper()
-    return await ejecutar_busqueda_sap(update, context, termino_busqueda)
+    return await ejecutar_busqueda_sap(update, context, update.message.text)
 
-async def ejecutar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYPE, termino_busqueda: str) -> int:
-    msg = await update.message.reply_text("🔄 Buscando en inventario SAP...", parse_mode="Markdown")
-    programar_borrado(context, msg)
 
-    df_inv = cargar_inventario_aislado()
-    if isinstance(df_inv, str):
-        await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=msg.message_id, text=f"⚠️ Error: `{df_inv}`", parse_mode="Markdown")
+async def ejecutar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYPE, termino: str) -> int:
+    termino = termino.strip().upper()
+    if not termino:
+        await responder(update, context, "⚠️ Escribe la referencia a buscar.")
+        return ESPERANDO_REF_SAP
+
+    if datos.inventario.df is None:  # solo en la primera carga tras arrancar
+        await responder(update, context, "⏳ Cargando inventario, un momento…")
+
+    df = await datos.inventario.obtener()
+    if df is None:
+        detalle = f"\n<code>{esc(datos.inventario.ultimo_error)}</code>" if datos.inventario.ultimo_error else ""
+        await responder(update, context, f"⚠️ No se pudo acceder al inventario.{detalle}")
         return ConversationHandler.END
 
-    df_inv.columns = [str(c).strip() for c in df_inv.columns]
-    col_ref = next((c for c in df_inv.columns if 'REF' in c.upper()), None)
-    col_color = next((c for c in df_inv.columns if 'COLOR' in c.upper()), None)
+    refs = datos.buscar_referencias(df, termino)
+    if not refs:
+        await responder(update, context, f"❌ No se encontró: <b>{esc(termino)}</b>.\nPuedes escribir otra referencia.")
+        return ESPERANDO_REF_SAP
 
-    if not col_ref or not col_color:
-        await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=msg.message_id, text="⚠️ No se encontraron columnas clave.", parse_mode="Markdown")
-        return ConversationHandler.END
+    d = {"termino": termino, "refs": refs[:MAX_BOTONES], "total": len(refs)}
+    context.user_data["sap"] = d
 
-    df_inv['__ref_limpia__'] = df_inv[col_ref].astype(str).str.strip().str.upper()
-    df_filtrado = df_inv[df_inv['__ref_limpia__'].str.contains(termino_busqueda, na=False)]
+    if len(refs) == 1:
+        d["ref"] = refs[0]
+        d["colores"] = datos.colores_de(df, refs[0])
+        texto, teclado = _pantalla_colores(d)
+        await responder(update, context, texto, reply_markup=teclado)
+        return SELECCIONANDO_COLOR_SAP
 
-    if df_filtrado.empty:
-        await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=msg.message_id, text=f"❌ No se encontró: *{termino_busqueda}*.", parse_mode="Markdown")
-        return ConversationHandler.END
+    texto, teclado = _pantalla_refs(d)
+    await responder(update, context, texto, reply_markup=teclado)
+    return SELECCIONANDO_REF_SAP
 
-    referencias_unicas = df_filtrado['__ref_limpia__'].unique()
-    context.user_data['df_inventario_aislado'] = df_inv
-    context.user_data['termino_busqueda_inv'] = termino_busqueda
-    context.user_data['col_ref_inv'] = '__ref_limpia__'
-    context.user_data['col_color_inv'] = col_color
 
-    if len(referencias_unicas) > 1:
-        keyboard = [[InlineKeyboardButton(ref_val, callback_data=f"invref_{ref_val}")] for ref_val in referencias_unicas[:20]]
-        await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=msg.message_id, text=f"🔍 Varias referencias para *{termino_busqueda}*:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-        return SELECCIONANDO_REF_SAP
+async def _expirada(query) -> int:
+    await editar(query, "⌛ Esta consulta expiró. Escribe /inicio para empezar de nuevo.")
+    return ConversationHandler.END
 
-    context.user_data['ref_seleccionada_inv'] = referencias_unicas[0]
-    return await mostrar_colores_ref(update, context, msg.message_id, edit=True)
 
 async def seleccionar_referencia_sap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    if query.data.startswith("invref_"):
-        context.user_data['ref_seleccionada_inv'] = query.data.replace("invref_", "").strip()
-        return await mostrar_colores_ref(update, context, query.message.message_id, edit=True)
-    return SELECCIONANDO_REF_SAP
+    d = context.user_data.get("sap")
+    df = await datos.inventario.obtener()
+    if not d or df is None:
+        return await _expirada(query)
+    try:
+        ref = d["refs"][int(query.data.rsplit("_", 1)[1])]
+    except (ValueError, IndexError):
+        return await _expirada(query)
 
-async def mostrar_colores_ref(update: Update, context: ContextTypes.DEFAULT_TYPE, message_id: int, edit=False) -> int:
-    df_inv = context.user_data.get('df_inventario_aislado')
-    ref_sel = context.user_data.get('ref_seleccionada_inv')
-    col_color = context.user_data.get('col_color_inv')
-    colores = df_inv[df_inv['__ref_limpia__'] == ref_sel][col_color].astype(str).str.strip().unique()
-
-    keyboard = [[InlineKeyboardButton(c, callback_data=f"inv_{c}")] for c in colores[:20]]
-    text = f"🔍 Referencia: *{ref_sel}*.\nSelecciona un color:"
-    
-    if edit:
-        await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=message_id, text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-    else:
-        await update.callback_query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    d["ref"] = ref
+    d["colores"] = datos.colores_de(df, ref)
+    texto, teclado = _pantalla_colores(d)
+    await editar(query, texto, teclado)
     return SELECCIONANDO_COLOR_SAP
+
 
 async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    color_elegido = query.data.replace("inv_", "").strip()
-    ref_sel = context.user_data.get('ref_seleccionada_inv')
-    df_inv = context.user_data.get('df_inventario_aislado')
-    
-    filas = df_inv[(df_inv['__ref_limpia__'] == ref_sel) & (df_inv[context.user_data.get('col_color_inv')].astype(str).str.strip() == color_elegido)]
-    
-    mensaje = f"🟢 *Inventario SAP* ({ref_sel} - {color_elegido}):\n"
-    for _, fila in filas.iterrows():
-        mensaje += f"• Stock: `{fila.get('Stock', '0')}` | Disponible: `{fila.get('Disponible', '0')}`\n"
+    d = context.user_data.get("sap")
+    if not d or "ref" not in d:
+        return await _expirada(query)
+    data = query.data
 
-    await query.edit_message_text(text=mensaje, parse_mode="Markdown")
+    if data == "sap_back_refs":
+        texto, teclado = _pantalla_refs(d)
+        await editar(query, texto, teclado)
+        return SELECCIONANDO_REF_SAP
+
+    if data == "sap_back_cols":
+        texto, teclado = _pantalla_colores(d)
+        await editar(query, texto, teclado)
+        return SELECCIONANDO_COLOR_SAP
+
+    df = await datos.inventario.obtener()
+    if df is None:
+        return await _expirada(query)
+    try:
+        color = d["colores"][int(data.rsplit("_", 1)[1])]
+    except (ValueError, IndexError):
+        return await _expirada(query)
+
+    filas = df[(df["_ref"] == d["ref"]) & (df["_color"] == color)]
+    mensaje = f"🟢 <b>Inventario SAP</b> ({esc(d['ref'])} - {esc(color)}):\n"
+    if filas.empty:
+        mensaje += "Sin registros."
+    for _, fila in filas.iterrows():
+        mensaje += (
+            f"• Stock: <code>{esc(fila.get('Stock', '0'))}</code> | "
+            f"Disponible: <code>{esc(fila.get('Disponible', '0'))}</code>\n"
+        )
+
+    teclado = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver", callback_data="sap_back_cols")]])
+    await editar(query, recortar(mensaje), teclado)
     return SELECCIONANDO_COLOR_SAP
