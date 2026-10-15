@@ -144,7 +144,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     programar_borrado(context, update.message)
     user = update.effective_user
     name = user.first_name if user else "allí"
-    await responder(update, context, f"¡Hola {esc(name)}! Escribe /inicio para ver el menú principal con botones.")
+    await responder(update, context, f"¡Hola {esc(name)}! Soy WILLI-BOT y estoy aqui para ayudarte en tu día a día")
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
