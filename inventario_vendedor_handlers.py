@@ -1,82 +1,54 @@
 import logging
-import io
-import time
-import requests
-import pandas as pd
-import concurrent.futures
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes, ConversationHandler
-from handlers import escapar_markdown, registrar_uso_bot, programar_borrado, responder
+
+import datos
+from handlers import editar, esc, programar_borrado, registrar_uso_bot, responder
 
 logger = logging.getLogger(__name__)
 
-SELECCIONANDO_REF_VEND = 1
-SELECCIONANDO_COLOR_VEND = 2
-ESPERANDO_REF_VEND = 3
+# Estados únicos (no chocan con los de handlers.py ni con los de SAP)
+SELECCIONANDO_REF_VEND, SELECCIONANDO_COLOR_VEND, ESPERANDO_REF_VEND = 6, 7, 8
 
-INVENTARIO_VENDEDOR_SHEET_URL = "https://docs.google.com/spreadsheets/d/1FJdfaNhxcFFDVD_AV2lTITHw0f-mB0Y2/export?format=csv"
+MAX_BOTONES = 20
 
-# Caché en memoria para inventario de vendedor (2 minutos)
-_cache_inventario_vend = {"df": None, "timestamp": 0}
-CACHE_TTL = 120
 
-def _descargar_csv_inventario_vendedor(url):
-    response = requests.get(url, timeout=15)
-    response.raise_for_status()
-    df = pd.read_csv(io.StringIO(response.text), dtype=str, keep_default_na=False)
-    df.columns = df.columns.str.strip()
-    return df
+def _fmt(valor: float) -> str:
+    return f"{int(valor)}" if float(valor).is_integer() else f"{valor:,.2f}"
 
-def cargar_inventario_vendedor_aislado():
-    global _cache_inventario_vend
-    tiempo_actual = time.time()
-    if _cache_inventario_vend["df"] is not None and (tiempo_actual - _cache_inventario_vend["timestamp"]) < CACHE_TTL:
-        return _cache_inventario_vend["df"]
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(_descargar_csv_inventario_vendedor, INVENTARIO_VENDEDOR_SHEET_URL)
-        try:
-            df = future.result(timeout=20.0)
-            _cache_inventario_vend["df"] = df
-            _cache_inventario_vend["timestamp"] = tiempo_actual
-            return df
-        except Exception as e:
-            logger.error(f"⚠️ Error al leer inventario de vendedor: {e}")
-            return f"ERROR: {e}"
+def _pantalla_refs(d: dict):
+    texto = f"🔍 Encontré varias referencias para <b>{esc(d['termino'])}</b>.\nSelecciona una referencia:"
+    if d["total"] > len(d["refs"]):
+        texto += f"\n(Mostrando {len(d['refs'])} de {d['total']}; escribe una referencia más específica)"
+    teclado = InlineKeyboardMarkup([
+        [InlineKeyboardButton(ref, callback_data=f"vend_ref_{i}")] for i, ref in enumerate(d["refs"])
+    ])
+    return texto, teclado
 
-async def volver_a_lista_referencias_vendedor(update: Update, context: ContextTypes.DEFAULT_TYPE, query) -> int:
-    termino = context.user_data.get('termino_busqueda_vend', '')
-    df_inv = context.user_data.get('df_inventario_vendedor_aislado')
-    col_ref = context.user_data.get('col_ref_vend', '__ref_limpia__')
 
-    if df_inv is not None and termino:
-        df_filtrado = df_inv[df_inv[col_ref].str.contains(termino, na=False)]
-        referencias_unicas = df_filtrado[col_ref].unique()
+def _pantalla_colores(d: dict, df):
+    # (color, disponible en bodega 01) calculado de forma vectorizada
+    d["colores"] = datos.disponibilidad_bodega01(df, d["ref"])[:MAX_BOTONES]
+    filas = [
+        [InlineKeyboardButton(f"{color} - {_fmt(disp)} MTRS", callback_data=f"vend_col_{i}")]
+        for i, (color, disp) in enumerate(d["colores"])
+    ]
+    if len(d["refs"]) > 1:
+        filas.append([InlineKeyboardButton("🔙 Volver a referencias", callback_data="vend_back_refs")])
+    texto = f"🔍 Referencia: <b>{esc(d['ref'])}</b>.\nSelecciona un color:"
+    return texto, InlineKeyboardMarkup(filas)
 
-        keyboard = []
-        for ref_val in referencias_unicas[:20]:
-            cb_data = f"vendref_{ref_val}"
-            if len(cb_data.encode('utf-8')) > 64:
-                cb_data = cb_data[:64]
-            keyboard.append([InlineKeyboardButton(ref_val, callback_data=cb_data)])
-
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(
-            text=f"🔍 Encontré varias referencias para *{termino}*.\nSelecciona una referencia:",
-            reply_markup=reply_markup,
-            parse_mode="Markdown"
-        )
-    return SELECCIONANDO_REF_VEND
 
 async def iniciar_busqueda_vendedor(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    
     if query:
         await query.answer()
         registrar_uso_bot(update, "BOTÓN_INVENTARIO_VENDEDOR")
-        await query.edit_message_text(
-            text="🛒 *Inventario Vendedor (Bodega 01)*\n\nPor favor, escribe la **referencia** que deseas buscar:",
-            parse_mode="Markdown"
+        await editar(
+            query,
+            "🛒 <b>Inventario Vendedor (Bodega 01)</b>\n\nEscribe la <b>referencia</b> que deseas buscar:",
         )
         return ESPERANDO_REF_VEND
 
@@ -86,205 +58,100 @@ async def iniciar_busqueda_vendedor(update: Update, context: ContextTypes.DEFAUL
     if not context.args:
         await responder(
             update, context,
-            "⚠️ Por favor, ingresa la referencia a buscar.\nEjemplo: `/i VERMONT`",
-            parse_mode="Markdown"
+            "🛒 <b>Inventario Vendedor (Bodega 01)</b>\n\nEscribe la <b>referencia</b> que deseas buscar "
+            "(o usa <code>/i VERMONT</code>):",
         )
-        return ConversationHandler.END
+        return ESPERANDO_REF_VEND
 
-    termino_busqueda = " ".join(context.args).strip().upper()
-    return await ejecutar_busqueda_vendedor(update, context, termino_busqueda)
+    return await ejecutar_busqueda_vendedor(update, context, " ".join(context.args))
+
 
 async def recibir_texto_ref_vendedor(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     programar_borrado(context, update.message)
-    termino_busqueda = update.message.text.strip().upper()
-    return await ejecutar_busqueda_vendedor(update, context, termino_busqueda)
+    return await ejecutar_busqueda_vendedor(update, context, update.message.text)
 
-async def ejecutar_busqueda_vendedor(update: Update, context: ContextTypes.DEFAULT_TYPE, termino_busqueda: str) -> int:
-    msg = await update.message.reply_text("🔄 Buscando en inventario...", parse_mode="Markdown")
-    programar_borrado(context, msg)
 
-    df_inv = cargar_inventario_vendedor_aislado()
-    if isinstance(df_inv, str):
-        await context.bot.edit_message_text(
-            chat_id=update.effective_chat.id,
-            message_id=msg.message_id,
-            text=f"⚠️ No se pudo acceder al inventario: `{df_inv}`",
-            parse_mode="Markdown"
-        )
+async def ejecutar_busqueda_vendedor(update: Update, context: ContextTypes.DEFAULT_TYPE, termino: str) -> int:
+    termino = termino.strip().upper()
+    if not termino:
+        await responder(update, context, "⚠️ Escribe la referencia a buscar.")
+        return ESPERANDO_REF_VEND
+
+    if datos.inventario.df is None:  # solo en la primera carga tras arrancar
+        await responder(update, context, "⏳ Cargando inventario, un momento…")
+
+    df = await datos.inventario.obtener()
+    if df is None:
+        detalle = f"\n<code>{esc(datos.inventario.ultimo_error)}</code>" if datos.inventario.ultimo_error else ""
+        await responder(update, context, f"⚠️ No se pudo acceder al inventario.{detalle}")
         return ConversationHandler.END
 
-    try:
-        df_inv.columns = [str(c).strip() for c in df_inv.columns]
-        
-        col_ref = next((c for c in df_inv.columns if 'REF' in c.upper()), None)
-        col_color = next((c for c in df_inv.columns if 'COLOR' in c.upper()), None)
-
-        if not col_ref or not col_color:
-            await context.bot.edit_message_text(
-                chat_id=update.effective_chat.id,
-                message_id=msg.message_id,
-                text="⚠️ No se encontraron las columnas REFERENCIA o COLOR en el inventario.",
-                parse_mode="Markdown"
-            )
-            return ConversationHandler.END
-
-        df_inv['__ref_limpia__'] = df_inv[col_ref].astype(str).str.strip().str.upper()
-        df_filtrado = df_inv[df_inv['__ref_limpia__'].str.contains(termino_busqueda, na=False)]
-
-        if df_filtrado.empty:
-            await context.bot.edit_message_text(
-                chat_id=update.effective_chat.id,
-                message_id=msg.message_id,
-                text=f"❌ No se encontraron referencias para: *{termino_busqueda}*.",
-                parse_mode="Markdown"
-            )
-            return ConversationHandler.END
-
-        referencias_unicas = df_filtrado['__ref_limpia__'].unique()
-
-        context.user_data['df_inventario_vendedor_aislado'] = df_inv
-        context.user_data['termino_busqueda_vend'] = termino_busqueda
-        context.user_data['col_ref_vend'] = '__ref_limpia__'
-        context.user_data['col_color_vend'] = col_color
-
-        if len(referencias_unicas) > 1:
-            keyboard = []
-            for ref_val in referencias_unicas[:20]:
-                cb_data = f"vendref_{ref_val}"
-                if len(cb_data.encode('utf-8')) > 64:
-                    cb_data = cb_data[:64]
-                keyboard.append([InlineKeyboardButton(ref_val, callback_data=cb_data)])
-
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await context.bot.edit_message_text(
-                chat_id=update.effective_chat.id,
-                message_id=msg.message_id,
-                text=f"🔍 Encontré varias referencias para *{termino_busqueda}*.\nSelecciona una referencia:",
-                reply_markup=reply_markup,
-                parse_mode="Markdown"
-            )
-            return SELECCIONANDO_REF_VEND
-
-        ref_unica = referencias_unicas[0]
-        context.user_data['ref_seleccionada_vend'] = ref_unica
-        return await mostrar_colores_ref_vendedor(update, context, msg.message_id, edit=True)
-
-    except Exception as e:
-        logger.error(f"Error en inventario vendedor: {e}")
-        await context.bot.edit_message_text(
-            chat_id=update.effective_chat.id,
-            message_id=msg.message_id,
-            text=f"⚠️ Error procesando datos: `{e}`",
-            parse_mode="Markdown"
+    refs = datos.buscar_referencias(df, termino)
+    if not refs:
+        await responder(
+            update, context,
+            f"❌ No se encontraron referencias para: <b>{esc(termino)}</b>.\nPuedes escribir otra referencia.",
         )
-        return ConversationHandler.END
+        return ESPERANDO_REF_VEND
+
+    d = {"termino": termino, "refs": refs[:MAX_BOTONES], "total": len(refs)}
+    context.user_data["vend"] = d
+
+    if len(refs) == 1:
+        d["ref"] = refs[0]
+        texto, teclado = _pantalla_colores(d, df)
+        await responder(update, context, texto, reply_markup=teclado)
+        return SELECCIONANDO_COLOR_VEND
+
+    texto, teclado = _pantalla_refs(d)
+    await responder(update, context, texto, reply_markup=teclado)
+    return SELECCIONANDO_REF_VEND
+
+
+async def _expirada(query) -> int:
+    await editar(query, "⌛ Esta consulta expiró. Escribe /inicio para empezar de nuevo.")
+    return ConversationHandler.END
+
 
 async def seleccionar_referencia_vendedor(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    data = query.data
+    d = context.user_data.get("vend")
+    df = await datos.inventario.obtener()
+    if not d or df is None:
+        return await _expirada(query)
+    try:
+        d["ref"] = d["refs"][int(query.data.rsplit("_", 1)[1])]
+    except (ValueError, IndexError):
+        return await _expirada(query)
 
-    if data == "volver_vend_refs":
-        return await volver_a_lista_referencias_vendedor(update, context, query)
-
-    if data.startswith("vendref_"):
-        ref_elegida = data.replace("vendref_", "").strip()
-        context.user_data['ref_seleccionada_vend'] = ref_elegida
-        return await mostrar_colores_ref_vendedor(update, context, query.message.message_id, edit=True)
-    
-    return SELECCIONANDO_REF_VEND
-
-async def mostrar_colores_ref_vendedor(update: Update, context: ContextTypes.DEFAULT_TYPE, message_id: int, edit=False) -> int:
-    df_inv = context.user_data.get('df_inventario_vendedor_aislado')
-    ref_seleccionada = context.user_data.get('ref_seleccionada_vend')
-    col_ref = context.user_data.get('col_ref_vend', '__ref_limpia__')
-    col_color = context.user_data.get('col_color_vend')
-
-    df_filtrado = df_inv[df_inv[col_ref] == ref_seleccionada]
-    
-    colores_unicos = df_filtrado[col_color].astype(str).str.strip()
-    colores_unicos = colores_unicos[colores_unicos != ''].unique()
-
-    col_stock = 'Stock'
-    col_comp = 'Comprometido'
-    col_disp = 'Disponible'
-
-    keyboard = []
-    for color_val in colores_unicos[:20]:
-        df_color = df_filtrado[df_filtrado[col_color].astype(str).str.strip() == color_val]
-        
-        disponible_bodega_01 = 0.0
-
-        for _, fila in df_color.iterrows():
-            cod_almacen = '1'
-            for c in df_inv.columns:
-                if 'CÓDIGO' in c.upper() or 'ALMACÉN' in c.upper() or 'ALMACEN' in c.upper():
-                    val = str(fila.get(c, '')).strip()
-                    if val and val != 'nan':
-                        cod_almacen = val
-                        break
-            
-            if cod_almacen in ['1', '01']:
-                try:
-                    raw_stock = str(fila.get(col_stock, '0')).strip().replace(',', '.')
-                    stock = float(raw_stock) if raw_stock else 0.0
-                except ValueError:
-                    stock = 0.0
-
-                try:
-                    raw_comp = str(fila.get(col_comp, '0')).strip().replace(',', '.')
-                    comprometido = float(raw_comp) if raw_comp else 0.0
-                except ValueError:
-                    comprometido = 0.0
-
-                try:
-                    raw_disp = str(fila.get(col_disp, '')).strip().replace(',', '.')
-                    disponible = float(raw_disp) if raw_disp else (stock - comprometido)
-                except ValueError:
-                    disponible = stock - comprometido
-
-                disponible_bodega_01 += disponible
-
-        if disponible_bodega_01 < 0:
-            disponible_bodega_01 = 0.0
-
-        disp_str = f"{int(disponible_bodega_01)}" if disponible_bodega_01.is_integer() else f"{disponible_bodega_01:,.2f}"
-        texto_boton = f"{color_val} - {disp_str} MTRS"
-        
-        cb_data = f"vend_{color_val}"
-        if len(cb_data.encode('utf-8')) > 64:
-            cb_data = cb_data[:64]
-            
-        keyboard.append([InlineKeyboardButton(texto_boton, callback_data=cb_data)])
-
-    keyboard.append([InlineKeyboardButton("🔙 Volver a referencias", callback_data="volver_vend_refs")])
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    texto_msg = f"🔍 Referencia: *{ref_seleccionada}*.\nSelecciona un color:"
-
-    if edit:
-        await context.bot.edit_message_text(
-            chat_id=update.effective_chat.id,
-            message_id=message_id,
-            text=texto_msg,
-            reply_markup=reply_markup,
-            parse_mode="Markdown"
-        )
-    else:
-        await update.callback_query.edit_message_text(
-            text=texto_msg,
-            reply_markup=reply_markup,
-            parse_mode="Markdown"
-        )
+    texto, teclado = _pantalla_colores(d, df)
+    await editar(query, texto, teclado)
     return SELECCIONANDO_COLOR_VEND
+
 
 async def seleccionar_color_vendedor(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    await query.answer()
-    data = query.data
+    d = context.user_data.get("vend")
+    if not d or "ref" not in d:
+        await query.answer()
+        return await _expirada(query)
 
-    if data == "volver_vend_refs":
-        return await volver_a_lista_referencias_vendedor(update, context, query)
+    if query.data == "vend_back_refs":
+        await query.answer()
+        texto, teclado = _pantalla_refs(d)
+        await editar(query, texto, teclado)
+        return SELECCIONANDO_REF_VEND
 
-    await query.answer(text="La disponibilidad de bodega 01 se muestra directamente en el botón.", show_alert=False)
+    try:
+        color, disp = d["colores"][int(query.data.rsplit("_", 1)[1])]
+    except (ValueError, IndexError):
+        await query.answer()
+        return await _expirada(query)
+
+    # Un solo query.answer() (antes se llamaba dos veces y el aviso nunca se mostraba)
+    await query.answer(
+        text=f"{d['ref']} - {color}\nDisponible en bodega 01: {_fmt(disp)} MTRS",
+        show_alert=True,
+    )
     return SELECCIONANDO_COLOR_VEND
