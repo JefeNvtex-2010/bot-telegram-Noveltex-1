@@ -57,6 +57,18 @@ async def volver_a_lista_referencias_vendedor(update: Update, context: ContextTy
     return SELECCIONANDO_REF_VEND
 
 async def iniciar_busqueda_vendedor(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    
+    # Si viene del botón del menú principal
+    if query:
+        await query.answer()
+        registrar_uso_bot(update, "BOTÓN_INVENTARIO_VENDEDOR")
+        await query.edit_message_text(
+            text="🛒 *Inventario Vendedor (Bodega 01)*\n\nPor favor, busca una referencia usando el comando, por ejemplo: `/i VERMONT`",
+            parse_mode="Markdown"
+        )
+        return ConversationHandler.END
+
     # 📊 Registramos automáticamente el uso de /i en la auditoría
     registrar_uso_bot(update, "/i")
 
@@ -218,11 +230,9 @@ async def mostrar_colores_ref_vendedor(update: Update, context: ContextTypes.DEF
 
                 disponible_bodega_01 += disponible
 
-        # 🔹 Si el disponible es menor a 0, lo forzamos a 0
         if disponible_bodega_01 < 0:
             disponible_bodega_01 = 0.0
 
-        # Texto del botón al estilo: "240 VINOTINTO - 0 MTRS"
         disp_str = f"{int(disponible_bodega_01)}" if disponible_bodega_01.is_integer() else f"{disponible_bodega_01:,.2f}"
         texto_boton = f"{color_val} - {disp_str} MTRS"
         
@@ -232,7 +242,6 @@ async def mostrar_colores_ref_vendedor(update: Update, context: ContextTypes.DEF
             
         keyboard.append([InlineKeyboardButton(texto_boton, callback_data=cb_data)])
 
-    # Único botón habilitado: Volver a referencias
     keyboard.append([InlineKeyboardButton("🔙 Volver a referencias", callback_data="volver_vend_refs")])
     reply_markup = InlineKeyboardMarkup(keyboard)
 
