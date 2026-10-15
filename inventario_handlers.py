@@ -57,6 +57,18 @@ async def volver_a_lista_referencias(update: Update, context: ContextTypes.DEFAU
     return SELECCIONANDO_REF_SAP
 
 async def iniciar_busqueda_sap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    
+    # Si viene del botón del menú principal
+    if query:
+        await query.answer()
+        registrar_uso_bot(update, "BOTÓN_INVENTARIO_SAP")
+        await query.edit_message_text(
+            text="📦 *Inventario SAP*\n\nPor favor, busca una referencia usando el comando, por ejemplo: `/in SATIN`",
+            parse_mode="Markdown"
+        )
+        return ConversationHandler.END
+
     # 📊 Registramos automáticamente el uso de /in en la auditoría
     registrar_uso_bot(update, "/in")
 
