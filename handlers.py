@@ -240,21 +240,47 @@ def _v(fila, columna: str) -> str:
     return esc(fila.get(columna, "")) or "N/A"
 
 
+def _raw(fila, columna: str) -> str:
+    """Valor tal cual (en blanco si la celda está vacía), como se mostraba antes."""
+    return esc(fila.get(columna, "N/A"))
+
+
 def _texto_detalle(fila) -> str:
     tipo_pedido = str(fila.get("Clasificacion Pedido", "")).strip().lower()
     campos_contado = ""
     if tipo_pedido == "contado":
         campos_contado = "-----------------------------------\n"
         campos_contado += f"• <b>Fecha Vencimiento:</b> {_v(fila, 'Fecha Vencimiento')}\n"
+        num_proforma = esc(fila.get("Numero Proforma", ""))
+        if num_proforma:
+            campos_contado += f"• <b>Número Proforma:</b> {num_proforma}\n"
     return (
-        f"• <b>Estado del Pedido:</b> {_v(fila, 'Estado Factura')}\n"
-        f"• <b>Ubicación:</b> {_v(fila, 'Ubicación del Pedido')}\n"
-        f"• <b>Referencia:</b> {_v(fila, 'Id Refer')}\n"
-        f"• <b>Color:</b> {_v(fila, 'Color')}\n"
-        f"• <b>Cantidad pedida:</b> {_v(fila, 'Cantidad Ped')}\n"
-        f"• <b>Cantidad alistada:</b> {_v(fila, 'Cantidad Alistada')}\n"
+        f"• <b>Estado del Pedido:</b> {_raw(fila, 'Estado Factura')}\n"
+        f"• <b>Ubicación:</b> {_raw(fila, 'Ubicación del Pedido')}\n"
+        f"• <b>Referencia:</b> {_raw(fila, 'Id Refer')}\n"
+        f"• <b>Color:</b> {_raw(fila, 'Color')}\n"
+        f"• <b>Estado Pedido:</b> {esc(_traducir_estado(fila.get('Document Status SAP', '')))}\n"
+        f"• <b>Estado Item:</b> {esc(_traducir_estado(fila.get('Line Status Sap', '')))}\n"
+        f"• <b>Cantidad pedida:</b> {_raw(fila, 'Cantidad Ped')}\n"
+        f"• <b>Cantidad alistada:</b> {_raw(fila, 'Cantidad Alistada')}\n"
+        f"• <b>Fecha Despacho:</b> {_raw(fila, 'Fecha Factura')}\n"
+        f"• <b>Operario:</b> {_raw(fila, 'Nombre Operario Asignado')}\n"
+        f"• <b>Tipo Pedido:</b> {_raw(fila, 'Clasificacion Pedido')}\n"
+        f"• <b>Observacion:</b> {_raw(fila, 'Observacion Adicional')}\n"
         f"{campos_contado}"
     )
+
+
+def _agrupar(titulo: str, bloques: list, limite: int = 3800) -> list:
+    """Junta el título y los bloques en mensajes de hasta `limite` caracteres sin partir un bloque."""
+    partes, actual = [], titulo
+    for b in bloques:
+        if actual != titulo and len(actual) + len(b) > limite:
+            partes.append(actual)
+            actual = ""
+        actual += b
+    partes.append(actual)
+    return partes
 
 
 def _traducir_estado(valor) -> str:
@@ -403,21 +429,32 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     base = df[df["Id Refer"] == d["ref"]]
     if data == "pv_all":
         filas = base
-        titulo = f"🔍 <b>Detalle completo</b> (Referencia {esc(d['ref'])}):\n"
+        titulo = (
+            f"🔍 <b>Detalle Completo - Referencia {esc(d['ref'])}</b> "
+            f"(Documento {esc(d['doc'])}, Total ítems: {len(filas)}):\n"
+        )
     else:
         try:
             color = d["colores"][int(data.rsplit("_", 1)[1])]
         except (ValueError, IndexError):
             return await _sesion_expirada(query)
         filas = base[base["Color"] == color]
-        titulo = f"🔍 <b>Detalle</b> (Color {esc(color)}):\n"
+        titulo = (
+            f"🔍 <b>Detalle del Documento {esc(d['doc'])}</b> "
+            f"(Color {esc(color)}, Total ítems: {len(filas)}):\n"
+        )
 
-    mensaje = titulo
-    for _, fila in filas.iterrows():
-        mensaje += "\n-----------------------------------\n" + _texto_detalle(fila)
+    bloques = ["\n-----------------------------------\n" + _texto_detalle(fila) for _, fila in filas.iterrows()]
+    partes = _agrupar(titulo, bloques)
 
-    teclado = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver", callback_data="pv_back_cols")]])
-    await editar(query, recortar(mensaje), teclado)
+    teclado = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver a colores", callback_data="pv_back_cols")]])
+    if len(partes) == 1:
+        await editar(query, partes[0], teclado)
+    else:  # detalle largo: se envía en varios mensajes y el original queda con el botón de volver
+        for parte in partes:
+            msg = await query.message.reply_text(parte, parse_mode=ParseMode.HTML)
+            programar_borrado(context, msg)
+        await editar(query, "📌 Fin del detalle.", teclado)
     return SELECCIONANDO_COLOR
 
 
