@@ -2,7 +2,7 @@ import logging
 import threading
 import os
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ConversationHandler
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ConversationHandler, MessageHandler, filters
 from config import load_settings
 from logging_config import configure_logging
 
@@ -10,18 +10,20 @@ from handlers import (
     start, help_command, order_command, 
     iniciar_busqueda, seleccionar_referencia, seleccionar_color, 
     cancelar, reiniciar_render, limpiar_cache_y_deploy,
-    menu_inicio, # <--- 1. Importamos la función del menú
-    SELECCIONANDO_REFERENCIA, SELECCIONANDO_COLOR
+    menu_inicio, recibir_texto_documento_pv,
+    SELECCIONANDO_REFERENCIA, SELECCIONANDO_COLOR, ESPERANDO_DOCUMENTO_PV
 )
 
 from inventario_handlers import (
     iniciar_busqueda_sap, seleccionar_referencia_sap, seleccionar_color_sap,
-    SELECCIONANDO_REF_SAP, SELECCIONANDO_COLOR_SAP
+    recibir_texto_ref_sap,
+    SELECCIONANDO_REF_SAP, SELECCIONANDO_COLOR_SAP, ESPERANDO_REF_SAP
 )
 
 from inventario_vendedor_handlers import (
     iniciar_busqueda_vendedor, seleccionar_referencia_vendedor, seleccionar_color_vendedor,
-    SELECCIONANDO_REF_VEND, SELECCIONANDO_COLOR_VEND
+    recibir_texto_ref_vendedor,
+    SELECCIONANDO_REF_VEND, SELECCIONANDO_COLOR_VEND, ESPERANDO_REF_VEND
 )
 
 logger = logging.getLogger(__name__)
@@ -53,9 +55,12 @@ def main() -> None:
         entry_points=[
             CommandHandler("PV", iniciar_busqueda),
             CommandHandler("pv", iniciar_busqueda),
-            CallbackQueryHandler(iniciar_busqueda, pattern="^start_pv$") # <--- NUEVO PUNTO DE ENTRADA POR BOTÓN
+            CallbackQueryHandler(iniciar_busqueda, pattern="^start_pv$")
         ],
         states={
+            ESPERANDO_DOCUMENTO_PV: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_texto_documento_pv)
+            ],
             SELECCIONANDO_REFERENCIA: [
                 CallbackQueryHandler(seleccionar_referencia, pattern="^(ref_|ver_todo)")
             ],
@@ -75,9 +80,12 @@ def main() -> None:
         entry_points=[
             CommandHandler("in", iniciar_busqueda_sap),
             CommandHandler("IN", iniciar_busqueda_sap),
-            CallbackQueryHandler(iniciar_busqueda_sap, pattern="^start_sap$") # <--- NUEVO PUNTO DE ENTRADA POR BOTÓN
+            CallbackQueryHandler(iniciar_busqueda_sap, pattern="^start_sap$")
         ],
         states={
+            ESPERANDO_REF_SAP: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_texto_ref_sap)
+            ],
             SELECCIONANDO_REF_SAP: [
                 CallbackQueryHandler(seleccionar_referencia_sap, pattern="^(invref_|volver_inv_refs)")
             ],
@@ -97,9 +105,12 @@ def main() -> None:
         entry_points=[
             CommandHandler("i", iniciar_busqueda_vendedor),
             CommandHandler("I", iniciar_busqueda_vendedor),
-            CallbackQueryHandler(iniciar_busqueda_vendedor, pattern="^start_vend$") # <--- NUEVO PUNTO DE ENTRADA POR BOTÓN
+            CallbackQueryHandler(iniciar_busqueda_vendedor, pattern="^start_vend$")
         ],
         states={
+            ESPERANDO_REF_VEND: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_texto_ref_vendedor)
+            ],
             SELECCIONANDO_REF_VEND: [
                 CallbackQueryHandler(seleccionar_referencia_vendedor, pattern="^(vendref_|volver_vend_refs)")
             ],
@@ -125,9 +136,9 @@ def main() -> None:
     application.add_handler(CommandHandler("reiniciar", reiniciar_render))
     application.add_handler(CommandHandler("actualizar", limpiar_cache_y_deploy))
     
-    # NUEVO: Comando para desplegar el menú interactivo con botones
+    # Comando para desplegar el menú interactivo con botones
     application.add_handler(CommandHandler("inicio", menu_inicio))
-    application.add_handler(CommandHandler("menu", menu_inicio)) # Opcional por comodidad
+    application.add_handler(CommandHandler("menu", menu_inicio))
     
     application.run_polling()
 
