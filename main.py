@@ -66,15 +66,17 @@ ai_client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
 SYSTEM_INSTRUCTION = """
 Eres el Agente Inteligente y Asistente Virtual oficial de Noveltex.
-Tu objetivo es conversar fluidamente con los usuarios, ayudarles con información general, 
-resolver dudas y guiarlos de forma amigable, profesional y precisa. 
-Tienes un tono cercano y corporativo. Recuerda el contexto de la charla.
+Tu objetivo es conversar fluidamente con los usuarios de Telegram, responder dudas generales, 
+guiarlos amablemente sobre las funciones del bot (pedidos, inventario SAP, inventario de vendedores) 
+y brindar un excelente trato al cliente. 
+Mantén un tono profesional, cercano y servicial. Recuerda la conversación anterior con el usuario.
 """
 
 user_chats = {}
 
 
 def get_or_create_chat(user_id):
+  """Crea o recupera la sesión de chat conversacional para cada usuario."""
   if user_id not in user_chats:
     config = types.GenerateContentConfig(
         system_instruction=SYSTEM_INSTRUCTION,
@@ -87,10 +89,11 @@ def get_or_create_chat(user_id):
 
 
 async def handle_gemini_agent(update, context):
+  """Maneja las conversaciones por texto libre usando Gemini AI."""
   user_id = update.effective_user.id
   user_text = update.message.text
 
-  await context.bot.chat_action(
+  await context.bot.send_chat_action(
       chat_id=update.effective_chat.id, action="typing"
   )
 
@@ -99,10 +102,41 @@ async def handle_gemini_agent(update, context):
     response = chat_session.send_message(user_text)
     await update.message.reply_text(response.text)
   except Exception as e:
-    logger.error(f"Error en agente Gemini: {e}")
+    logger.error(f"Error en agente Gemini (texto): {e}")
     await update.message.reply_text(
         "Ups, tuve un pequeño problema procesando tu mensaje. Inténtalo de"
         " nuevo."
+    )
+
+
+async def handle_voice_message(update, context):
+  """Maneja las notas de voz recibidas en Telegram con Gemini AI."""
+  user_id = update.effective_user.id
+
+  await context.bot.send_chat_action(
+      chat_id=update.effective_chat.id, action="typing"
+  )
+
+  try:
+    # Descargar el archivo de voz enviado por el usuario
+    voice_file = await update.message.voice.get_file()
+    audio_bytes = await voice_file.download_as_bytearray()
+
+    chat_session = get_or_create_chat(user_id)
+
+    # Enviar el audio a Gemini indicando su tipo MIME (audio/ogg en Telegram)
+    response = chat_session.send_message([
+        types.Part.from_bytes(data=bytes(audio_bytes), mime_type="audio/ogg"),
+        "Por favor, responde a lo que se escucha en esta nota de voz.",
+    ])
+
+    await update.message.reply_text(response.text)
+
+  except Exception as e:
+    logger.error(f"Error procesando nota de voz en Gemini: {e}")
+    await update.message.reply_text(
+        "No pude procesar bien tu nota de voz, ¿podrías intentarlo de nuevo o"
+        " escribirme por texto?"
     )
 
 
@@ -231,6 +265,7 @@ def main() -> None:
       )
   )
 
+  # Comandos generales
   application.add_handler(CommandHandler("start", start))
   application.add_handler(CommandHandler("help", help_command))
   application.add_handler(CommandHandler("pedido", order_command))
@@ -239,9 +274,12 @@ def main() -> None:
   application.add_handler(CommandHandler("refrescar", refrescar_datos))
   application.add_handler(CommandHandler(["inicio", "menu"], menu_inicio))
 
-  # Manejador del Agente Gemini para mensajes generales
+  # --- MANEJADORES DEL AGENTE GEMINI (TEXTO Y NOTAS DE VOZ) ---
   application.add_handler(
       MessageHandler(filters.TEXT & ~filters.COMMAND, handle_gemini_agent)
+  )
+  application.add_handler(
+      MessageHandler(filters.VOICE, handle_voice_message)
   )
 
   application.add_handler(CallbackQueryHandler(callback_expirado))
