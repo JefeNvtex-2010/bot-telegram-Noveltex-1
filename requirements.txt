@@ -2,3 +2,4 @@ python-telegram-bot
 pandas
 requests
 python-dotenv
+google-genai
