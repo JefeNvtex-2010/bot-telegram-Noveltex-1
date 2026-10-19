@@ -46,7 +46,7 @@ from inventario_handlers import (
     SELECCIONANDO_COLOR_SAP,
     SELECCIONANDO_REF_SAP,
     _num,
-    _primer_valorn,
+    _primer_valor,  # <--- Corregido aquí
     iniciar_busqueda_sap,
     recibir_texto_ref_sap,
     seleccionar_color_sap,
@@ -69,11 +69,9 @@ logger = logging.getLogger(__name__)
 ai_client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
 
-# 1. Definimos la función de inventario que Gemini podrá usar como herramienta (Tool)
 def consultar_inventario_sap(termino_busqueda: str) -> str:
   """Busca el stock e inventario SAP general de una referencia o tela y devuelve el desglose por almacén con sus totales."""
   try:
-    # Como esto corre en un hilo secundario/síncrono, obtenemos los datos del inventario
     df = datos.inventario.df
     if df is None or df.empty:
       return "El inventario aún no se ha cargado o no está disponible."
@@ -85,14 +83,12 @@ def consultar_inventario_sap(termino_busqueda: str) -> str:
           f"No se encontraron referencias que coincidan con '{termino_busqueda}'."
       )
 
-    # Tomamos la primera coincidencia relevante
     ref_encontrada = refs[0]
     filas_ref = df[df["_ref"] == ref_encontrada]
 
     if filas_ref.empty:
       return f"No hay existencias para la referencia {ref_encontrada}."
 
-    # Formateamos el resultado idéntico a tu estructura oficial SAP
     codigo_articulo = str(filas_ref.iloc[0].get("Artículo", "N/A"))
     descripcion = str(
         filas_ref.iloc[0].get("Descripción", f"{ref_encontrada}")
@@ -116,23 +112,27 @@ def consultar_inventario_sap(termino_busqueda: str) -> str:
     ]
 
     for _, fila in filas_ref.iterrows():
-      # Usamos lógica segura para los valores
-      cod_alm = str(fila.get("Almacén", "1"))
-      stock = float(str(fila.get("Stock", "0")).strip().replace(",", ".") or 0)
-      comp = float(
-          str(fila.get("Comprometido", "0")).strip().replace(",", ".") or 0
+      cod_almacen = _primer_valor(fila, cols_cod, "1")
+      nom_almacen = _primer_valor(fila, cols_nom, "")
+      almacen_txt = (
+          f"{cod_almacen} - {nom_almacen}" if nom_almacen else cod_almacen
       )
-      disp = stock - comp
+
+      stock = _num(fila.get("Stock", "0"), 0.0)
+      comprometido = _num(fila.get("Comprometido", "0"), 0.0)
+      disponible = _num(fila.get("Disponible", ""), None)
+      if disponible is None:
+        disponible = stock - comprometido
 
       total_stock += stock
-      total_comp += comp
-      total_disp += disp
+      total_comp += comprometido
+      total_disp += disponible
 
       resultado_texto += (
-          f"• Almacén {cod_alm}:\n"
+          f"• Almacén {esc(almacen_txt)}:\n"
           f"  - En stock: {stock:,.2f}\n"
-          f"  - Comprometido: {comp:,.2f}\n"
-          f"  - Disponible: {disp:,.2f}\n\n"
+          f"  - Comprometido: {comprometido:,.2f}\n"
+          f"  - Disponible: {disponible:,.2f}\n\n"
       )
 
     resultado_texto += (
@@ -163,8 +163,8 @@ def get_or_create_chat(user_id):
   if user_id not in user_chats:
     config = types.GenerateContentConfig(
         system_instruction=SYSTEM_INSTRUCTION,
-        temperature=0.3,  # Temperatura baja para que sea preciso ejecutando herramientas
-        tools=[consultar_inventario_sap],  # Le pasamos la función como herramienta
+        temperature=0.3,
+        tools=[consultar_inventario_sap],
     )
     user_chats[user_id] = ai_client.chats.create(
         model="gemini-3.8-flash", config=config
@@ -183,12 +183,8 @@ async def handle_gemini_agent(update, context):
 
   try:
     chat_session = get_or_create_chat(user_id)
-
-    # Enviamos el mensaje al chat de Gemini
     response = await asyncio.to_thread(chat_session.send_message, user_text)
 
-    # Verificamos si Gemini decidió invocar alguna herramienta (Function Calling)
-    # El SDK moderno maneja las llamadas a funciones de forma integrada en response.text o mediante llamadas
     if response.text:
       await update.message.reply_text(response.text, parse_mode="HTML")
     else:
@@ -361,7 +357,6 @@ def main() -> None:
       )
   )
 
-  # Comandos generales
   application.add_handler(CommandHandler("start", start))
   application.add_handler(CommandHandler("help", help_command))
   application.add_handler(CommandHandler("pedido", order_command))
@@ -370,7 +365,6 @@ def main() -> None:
   application.add_handler(CommandHandler("refrescar", refrescar_datos))
   application.add_handler(CommandHandler(["inicio", "menu"], menu_inicio))
 
-  # --- MANEJADORES DEL AGENTE GEMINI (TEXTO Y NOTAS DE VOZ) ---
   application.add_handler(
       MessageHandler(filters.TEXT & ~filters.COMMAND, handle_gemini_agent)
   )
