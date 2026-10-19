@@ -21,43 +21,43 @@ from config import load_settings
 from logging_config import configure_logging
 
 from handlers import (
-    start,
-    help_command,
-    order_command,
-    iniciar_busqueda,
-    seleccionar_referencia,
-    seleccionar_color,
-    cancelar,
-    reiniciar_render,
-    limpiar_cache_y_deploy,
-    refrescar_datos,
-    menu_inicio,
-    recibir_texto_documento_pv,
-    callback_expirado,
-    manejar_error,
-    SELECCIONANDO_REFERENCIA,
     SELECCIONANDO_COLOR,
+    SELECCIONANDO_REFERENCIA,
     ESPERANDO_DOCUMENTO_PV,
+    callback_expirado,
+    cancelar,
+    help_command,
+    iniciar_busqueda,
+    limpiar_cache_y_deploy,
+    manejar_error,
+    menu_inicio,
+    order_command,
+    recibir_texto_documento_pv,
+    refrescar_datos,
+    reiniciar_render,
+    seleccionar_color,
+    seleccionar_referencia,
+    start,
 )
 
 from inventario_handlers import (
-    iniciar_busqueda_sap,
-    seleccionar_referencia_sap,
-    seleccionar_color_sap,
-    recibir_texto_ref_sap,
-    SELECCIONANDO_REF_SAP,
-    SELECCIONANDO_COLOR_SAP,
     ESPERANDO_REF_SAP,
+    SELECCIONANDO_COLOR_SAP,
+    SELECCIONANDO_REF_SAP,
+    iniciar_busqueda_sap,
+    recibir_texto_ref_sap,
+    seleccionar_color_sap,
+    seleccionar_referencia_sap,
 )
 
 from inventario_vendedor_handlers import (
-    iniciar_busqueda_vendedor,
-    seleccionar_referencia_vendedor,
-    seleccionar_color_vendedor,
-    recibir_texto_ref_vendedor,
-    SELECCIONANDO_REF_VEND,
-    SELECCIONANDO_COLOR_VEND,
     ESPERANDO_REF_VEND,
+    SELECCIONANDO_COLOR_VEND,
+    SELECCIONANDO_REF_VEND,
+    iniciar_busqueda_vendedor,
+    recibir_texto_ref_vendedor,
+    seleccionar_color_vendedor,
+    seleccionar_referencia_vendedor,
 )
 
 logger = logging.getLogger(__name__)
@@ -83,8 +83,9 @@ def get_or_create_chat(user_id):
         system_instruction=SYSTEM_INSTRUCTION,
         temperature=0.7,
     )
+    # Actualizado al modelo correcto requerido por la API
     user_chats[user_id] = ai_client.chats.create(
-        model="gemini-2.5-flash", config=config
+        model="gemini-3.8-flash", config=config
     )
   return user_chats[user_id]
 
@@ -104,7 +105,6 @@ async def handle_gemini_agent(update, context):
     await update.message.reply_text(response.text)
   except Exception as e:
     logger.error(f"DETALLE DEL ERROR GEMINI: {e}", exc_info=True)
-    # Mostramos el error técnico en el chat para diagnosticar inmediatamente
     await update.message.reply_text(f"⚠️ Error técnico: {str(e)}")
 
 
