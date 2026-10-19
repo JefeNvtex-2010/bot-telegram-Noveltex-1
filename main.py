@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import threading
@@ -82,7 +83,6 @@ def get_or_create_chat(user_id):
         system_instruction=SYSTEM_INSTRUCTION,
         temperature=0.7,
     )
-    # Usamos el modelo activo recomendado
     user_chats[user_id] = ai_client.chats.create(
         model="gemini-2.5-flash", config=config
     )
@@ -90,7 +90,7 @@ def get_or_create_chat(user_id):
 
 
 async def handle_gemini_agent(update, context):
-  """Maneja las conversaciones por texto libre usando Gemini AI."""
+  """Maneja las conversaciones por texto libre usando Gemini AI de forma asíncrona."""
   user_id = update.effective_user.id
   user_text = update.message.text
 
@@ -100,7 +100,8 @@ async def handle_gemini_agent(update, context):
 
   try:
     chat_session = get_or_create_chat(user_id)
-    response = chat_session.send_message(user_text)
+    # Ejecutamos la llamada a Gemini en un hilo separado para no bloquear el bot
+    response = await asyncio.to_thread(chat_session.send_message, user_text)
     await update.message.reply_text(response.text)
   except Exception as e:
     logger.error(f"Error en agente Gemini (texto): {e}")
@@ -111,7 +112,7 @@ async def handle_gemini_agent(update, context):
 
 
 async def handle_voice_message(update, context):
-  """Maneja las notas de voz recibidas en Telegram con Gemini AI."""
+  """Maneja las notas de voz recibidas en Telegram con Gemini AI de forma asíncrona."""
   user_id = update.effective_user.id
 
   await context.bot.send_chat_action(
@@ -119,17 +120,21 @@ async def handle_voice_message(update, context):
   )
 
   try:
-    # Descargar el archivo de voz enviado por el usuario
     voice_file = await update.message.voice.get_file()
     audio_bytes = await voice_file.download_as_bytearray()
 
     chat_session = get_or_create_chat(user_id)
 
-    # Enviar el audio a Gemini indicando su tipo MIME (audio/ogg en Telegram)
-    response = chat_session.send_message([
-        types.Part.from_bytes(data=bytes(audio_bytes), mime_type="audio/ogg"),
-        "Por favor, responde a lo que se escucha en esta nota de voz.",
-    ])
+    # Enviamos el audio a Gemini de forma asíncrona
+    response = await asyncio.to_thread(
+        chat_session.send_message,
+        [
+            types.Part.from_bytes(
+                data=bytes(audio_bytes), mime_type="audio/ogg"
+            ),
+            "Por favor, responde a lo que se escucha en esta nota de voz.",
+        ],
+    )
 
     await update.message.reply_text(response.text)
 
