@@ -26,6 +26,7 @@ from handlers import (
     ESPERANDO_DOCUMENTO_PV,
     callback_expirado,
     cancelar,
+    esc,
     help_command,
     iniciar_busqueda,
     limpiar_cache_y_deploy,
@@ -44,6 +45,8 @@ from inventario_handlers import (
     ESPERANDO_REF_SAP,
     SELECCIONANDO_COLOR_SAP,
     SELECCIONANDO_REF_SAP,
+    _num,
+    _primer_valorn,
     iniciar_busqueda_sap,
     recibir_texto_ref_sap,
     seleccionar_color_sap,
@@ -62,28 +65,107 @@ from inventario_vendedor_handlers import (
 
 logger = logging.getLogger(__name__)
 
-# --- CONFIGURACIÓN DE GEMINI AGENTE ---
+# --- CONFIGURACIÓN DE GEMINI AGENTE Y HERRAMIENTAS ---
 ai_client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
+
+# 1. Definimos la función de inventario que Gemini podrá usar como herramienta (Tool)
+def consultar_inventario_sap(termino_busqueda: str) -> str:
+  """Busca el stock e inventario SAP general de una referencia o tela y devuelve el desglose por almacén con sus totales."""
+  try:
+    # Como esto corre en un hilo secundario/síncrono, obtenemos los datos del inventario
+    df = datos.inventario.df
+    if df is None or df.empty:
+      return "El inventario aún no se ha cargado o no está disponible."
+
+    termino = termino_busqueda.strip().upper()
+    refs = datos.buscar_referencias(df, termino)
+    if not refs:
+      return (
+          f"No se encontraron referencias que coincidan con '{termino_busqueda}'."
+      )
+
+    # Tomamos la primera coincidencia relevante
+    ref_encontrada = refs[0]
+    filas_ref = df[df["_ref"] == ref_encontrada]
+
+    if filas_ref.empty:
+      return f"No hay existencias para la referencia {ref_encontrada}."
+
+    # Formateamos el resultado idéntico a tu estructura oficial SAP
+    codigo_articulo = str(filas_ref.iloc[0].get("Artículo", "N/A"))
+    descripcion = str(
+        filas_ref.iloc[0].get("Descripción", f"{ref_encontrada}")
+    )
+
+    resultado_texto = (
+        f"🟢 Inventario SAP\n\n"
+        f"• Artículo: {codigo_articulo}\n"
+        f"• Descripción: {descripcion}\n\n"
+        f"Desglose por Almacén:\n"
+    )
+
+    total_stock = total_comp = total_disp = 0.0
+    cols_cod = [
+        c
+        for c in df.columns
+        if any(k in c.upper() for k in ("CÓDIGO", "ALMACÉN", "ALMACEN"))
+    ]
+    cols_nom = [
+        c for c in df.columns if "NOMBRE" in c.upper() and "ALM" in c.upper()
+    ]
+
+    for _, fila in filas_ref.iterrows():
+      # Usamos lógica segura para los valores
+      cod_alm = str(fila.get("Almacén", "1"))
+      stock = float(str(fila.get("Stock", "0")).strip().replace(",", ".") or 0)
+      comp = float(
+          str(fila.get("Comprometido", "0")).strip().replace(",", ".") or 0
+      )
+      disp = stock - comp
+
+      total_stock += stock
+      total_comp += comp
+      total_disp += disp
+
+      resultado_texto += (
+          f"• Almacén {cod_alm}:\n"
+          f"  - En stock: {stock:,.2f}\n"
+          f"  - Comprometido: {comp:,.2f}\n"
+          f"  - Disponible: {disp:,.2f}\n\n"
+      )
+
+    resultado_texto += (
+        "-----------------------------------\n"
+        "📊 Totales Generales:\n"
+        f"• Stock Total: {total_stock:,.2f}\n"
+        f"• Total Comprometido: {total_comp:,.2f}\n"
+        f"• Total Disponible: {total_disp:,.2f}"
+    )
+    return resultado_texto
+
+  except Exception as e:
+    return f"Ocurrió un error consultando el inventario: {str(e)}"
+
+
 SYSTEM_INSTRUCTION = """
-Eres el Agente Inteligente y Asistente Virtual oficial de Noveltex.
-Tu objetivo es conversar fluidamente con los usuarios de Telegram, responder dudas generales, 
-guiarlos amablemente sobre las funciones del bot (pedidos, inventario SAP, inventario de vendedores) 
-y brindar un excelente trato al cliente. 
-Mantén un tono profesional, cercano y servicial. Recuerda la conversación anterior con el usuario.
+Eres el Agente Inteligente y Asistente Virtual oficial de Noveltex en Telegram.
+Tu objetivo principal es ayudar a los usuarios a consultar el inventario de telas y productos usando la herramienta 'consultar_inventario_sap' siempre que pidan ver el stock, disponibilidad o metros de una referencia (por ejemplo, 'Fit', 'Satin', etc.).
+Cuando el usuario pregunte por un inventario, DEBES invocar la herramienta de inventario para darle el reporte exacto con el formato estructurado de almacenes y totales.
+Mantén un trato profesional, cercano y servicial. Recuerda el contexto de la charla anterior.
 """
 
 user_chats = {}
 
 
 def get_or_create_chat(user_id):
-  """Crea o recupera la sesión de chat conversacional para cada usuario."""
+  """Crea o recupera la sesión de chat conversacional con la herramienta de inventario habilitada."""
   if user_id not in user_chats:
     config = types.GenerateContentConfig(
         system_instruction=SYSTEM_INSTRUCTION,
-        temperature=0.7,
+        temperature=0.3,  # Temperatura baja para que sea preciso ejecutando herramientas
+        tools=[consultar_inventario_sap],  # Le pasamos la función como herramienta
     )
-    # Actualizado al modelo correcto requerido por la API
     user_chats[user_id] = ai_client.chats.create(
         model="gemini-3.8-flash", config=config
     )
@@ -91,7 +173,7 @@ def get_or_create_chat(user_id):
 
 
 async def handle_gemini_agent(update, context):
-  """Maneja las conversaciones por texto libre usando Gemini AI de forma asíncrona."""
+  """Maneja las conversaciones y ejecución automática de herramientas (Function Calling)."""
   user_id = update.effective_user.id
   user_text = update.message.text
 
@@ -101,15 +183,26 @@ async def handle_gemini_agent(update, context):
 
   try:
     chat_session = get_or_create_chat(user_id)
+
+    # Enviamos el mensaje al chat de Gemini
     response = await asyncio.to_thread(chat_session.send_message, user_text)
-    await update.message.reply_text(response.text)
+
+    # Verificamos si Gemini decidió invocar alguna herramienta (Function Calling)
+    # El SDK moderno maneja las llamadas a funciones de forma integrada en response.text o mediante llamadas
+    if response.text:
+      await update.message.reply_text(response.text, parse_mode="HTML")
+    else:
+      await update.message.reply_text(
+          "Consulta procesada, pero no se generó respuesta.", parse_mode="HTML"
+      )
+
   except Exception as e:
     logger.error(f"DETALLE DEL ERROR GEMINI: {e}", exc_info=True)
     await update.message.reply_text(f"⚠️ Error técnico: {str(e)}")
 
 
 async def handle_voice_message(update, context):
-  """Maneja las notas de voz recibidas en Telegram con Gemini AI de forma asíncrona."""
+  """Maneja las notas de voz, permitiendo que Gemini escuche la referencia y consulte el inventario."""
   user_id = update.effective_user.id
 
   await context.bot.send_chat_action(
@@ -128,11 +221,15 @@ async def handle_voice_message(update, context):
             types.Part.from_bytes(
                 data=bytes(audio_bytes), mime_type="audio/ogg"
             ),
-            "Por favor, responde a lo que se escucha en esta nota de voz.",
+            (
+                "Escucha esta nota de voz. Si el usuario está pidiendo consultar"
+                " el inventario o stock de una referencia o tela, utiliza la"
+                " herramienta de inventario para darle el reporte exacto."
+            ),
         ],
     )
 
-    await update.message.reply_text(response.text)
+    await update.message.reply_text(response.text, parse_mode="HTML")
 
   except Exception as e:
     logger.error(f"Error procesando nota de voz en Gemini: {e}")
