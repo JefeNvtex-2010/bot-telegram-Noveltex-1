@@ -82,6 +82,7 @@ def get_or_create_chat(user_id):
         system_instruction=SYSTEM_INSTRUCTION,
         temperature=0.7,
     )
+    # Usamos el modelo activo recomendado
     user_chats[user_id] = ai_client.chats.create(
         model="gemini-2.5-flash", config=config
     )
