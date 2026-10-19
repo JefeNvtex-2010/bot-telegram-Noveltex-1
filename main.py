@@ -100,15 +100,12 @@ async def handle_gemini_agent(update, context):
 
   try:
     chat_session = get_or_create_chat(user_id)
-    # Ejecutamos la llamada a Gemini en un hilo separado para no bloquear el bot
     response = await asyncio.to_thread(chat_session.send_message, user_text)
     await update.message.reply_text(response.text)
   except Exception as e:
-    logger.error(f"Error en agente Gemini (texto): {e}")
-    await update.message.reply_text(
-        "Ups, tuve un pequeño problema procesando tu mensaje. Inténtalo de"
-        " nuevo."
-    )
+    logger.error(f"DETALLE DEL ERROR GEMINI: {e}", exc_info=True)
+    # Mostramos el error técnico en el chat para diagnosticar inmediatamente
+    await update.message.reply_text(f"⚠️ Error técnico: {str(e)}")
 
 
 async def handle_voice_message(update, context):
@@ -125,7 +122,6 @@ async def handle_voice_message(update, context):
 
     chat_session = get_or_create_chat(user_id)
 
-    # Enviamos el audio a Gemini de forma asíncrona
     response = await asyncio.to_thread(
         chat_session.send_message,
         [
@@ -140,10 +136,7 @@ async def handle_voice_message(update, context):
 
   except Exception as e:
     logger.error(f"Error procesando nota de voz en Gemini: {e}")
-    await update.message.reply_text(
-        "No pude procesar bien tu nota de voz, ¿podrías intentarlo de nuevo o"
-        " escribirme por texto?"
-    )
+    await update.message.reply_text(f"⚠️ Error técnico voz: {str(e)}")
 
 
 class SimpleHandler(BaseHTTPRequestHandler):
