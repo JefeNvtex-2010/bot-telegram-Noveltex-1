@@ -1,399 +1,265 @@
+"""Comando /PG: trazabilidad de pedidos NOVELTEX (web service Oracle ORDS).
+
+Mismo flujo que /PV: número de pedido -> referencia -> color -> detalle.
+La diferencia es que los datos vienen en vivo del web service de Oracle.
+
+Uso en Telegram:
+    /PG 7374   -> consulta directa del pedido PV 7374
+    /PG        -> el bot pide el número de pedido y se escribe en el siguiente mensaje
+
+La clave NO va en el código (el repo es público): se lee de la variable de
+entorno NTEX_WS_ID_LLAVE (Render > Environment).
+"""
 import asyncio
-import datetime
 import logging
 import os
-from concurrent.futures import ThreadPoolExecutor
-from html import escape
+from datetime import date
+from urllib.parse import quote
 
 import requests
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
-from telegram.error import BadRequest
 from telegram.ext import ContextTypes, ConversationHandler
 
-import datos
+from handlers import (
+    MAX_BOTONES,
+    _agrupar,
+    _sesion_expirada,
+    _traducir_estado,
+    editar,
+    esc,
+    programar_borrado,
+    registrar_uso_bot,
+    responder,
+)
 
 logger = logging.getLogger(__name__)
 
-# Estados de la conversación de pedidos (/PV). Los estados de inventario usan 3-8
-# (así todos pueden convivir en UN solo ConversationHandler sin chocar).
-SELECCIONANDO_REFERENCIA, SELECCIONANDO_COLOR, ESPERANDO_DOCUMENTO_PV = 0, 1, 2
+# Estados 0-8 los usan /PV, /IN y /I (handlers.py, inventario_*_handlers.py).
+ESPERANDO_DOCUMENTO_PG, SELECCIONANDO_REF_PG, SELECCIONANDO_COLOR_PG = 9, 10, 11
 
-URL_WEB_APP_REPORTE = os.environ.get(
-    "URL_WEB_APP_REPORTE",
-    "https://script.google.com/macros/s/AKfycbztHKV4C8hqcPUVHq71gFmRzPSbtz36NByAgPfR-JEyDlNRF-LkRj-g2lEWHrf42AaE/exec",
+BASE_URL = (
+    "https://g6344c28e083a44-dbproyectos.adb.us-ashburn-1.oraclecloudapps.com/"
+    "ords/multiplantas/noveltex/ntex_ws_trazabilidad"
 )
-
-MI_TELEGRAM_ID = int(os.environ.get("MI_TELEGRAM_ID", "5655537446"))
-RENDER_DEPLOY_HOOK_URL = os.environ.get("RENDER_DEPLOY_HOOK_URL", "")
-SEGUNDOS_BORRADO = 24 * 60 * 60
-MAX_BOTONES = 60
+PAGE_SIZE = 500   # registros por bloque (la guía propone máximo 500)
+TIMEOUT = 60      # segundos
 
 
 # --------------------------------------------------------------------------- #
-# Utilidades
+# Servicio (Oracle ORDS)
 # --------------------------------------------------------------------------- #
-def esc(valor) -> str:
-    """Escapa texto para parse_mode=HTML (no se rompe con _ * ` [ < > &)."""
-    return escape(str(valor if valor is not None else "").strip())
+def _id_llave() -> str:
+    llave = os.environ.get("NTEX_WS_ID_LLAVE", "").strip()
+    if not llave:
+        raise RuntimeError("Falta la variable de entorno NTEX_WS_ID_LLAVE en Render.")
+    return llave
 
 
-escapar_markdown = esc  # alias por compatibilidad
+def _normalizar(item: dict) -> dict:
+    """Llaves en minúscula y con espacios (acepta 'nombre_tercero' o 'nombre tercero')."""
+    return {k.replace("_", " ").lower(): v for k, v in item.items() if k != "links"}
 
 
-def recortar(texto: str, limite: int = 3800) -> str:
-    """Telegram permite 4096 caracteres por mensaje; se corta en un salto de línea."""
-    if len(texto) <= limite:
-        return texto
-    return texto[:limite].rsplit("\n", 1)[0] + "\n… (resultado recortado)"
+def consultar_pedido(documento: str, tipo: str = "PV") -> list:
+    """Devuelve todas las líneas del pedido, pidiendo por bloques hasta que no haya más."""
+    documento = str(documento).strip()
+    llave = quote(_id_llave(), safe="!")
+    # Con tipo_orden y documento_pd informados el servicio ignora las fechas.
+    fecha_ini = "20200101"
+    fecha_fin = date.today().strftime("%Y%m%d")
 
-
-async def editar(query, texto: str, teclado=None) -> None:
-    try:
-        await query.edit_message_text(text=texto, reply_markup=teclado, parse_mode=ParseMode.HTML)
-    except BadRequest as e:
-        if "not modified" not in str(e).lower():  # doble clic en el mismo botón
-            raise
-
-
-async def _borrar_mensaje_job(context: ContextTypes.DEFAULT_TYPE) -> None:
-    datos_job = context.job.data
-    try:
-        await context.bot.delete_message(chat_id=datos_job["chat_id"], message_id=datos_job["message_id"])
-    except Exception as e:
-        logger.warning(f"No se pudo borrar el mensaje {datos_job['message_id']}: {e}")
-
-
-def programar_borrado(context: ContextTypes.DEFAULT_TYPE, mensaje) -> None:
-    if mensaje is None or context.job_queue is None:
-        return
-    context.job_queue.run_once(
-        _borrar_mensaje_job,
-        when=SEGUNDOS_BORRADO,
-        data={"chat_id": mensaje.chat_id, "message_id": mensaje.message_id},
-    )
-
-
-async def responder(update: Update, context: ContextTypes.DEFAULT_TYPE, texto: str, **kwargs):
-    kwargs.setdefault("parse_mode", ParseMode.HTML)
-    msg = await update.effective_message.reply_text(texto, **kwargs)
-    programar_borrado(context, msg)
-    return msg
-
-
-# --------------------------------------------------------------------------- #
-# Auditoría: se envía en un hilo aparte (ANTES bloqueaba el bot hasta 10 s)
-# --------------------------------------------------------------------------- #
-_pool_auditoria = ThreadPoolExecutor(max_workers=2, thread_name_prefix="auditoria")
-
-
-def _enviar_auditoria(payload: dict) -> None:
-    try:
-        requests.post(URL_WEB_APP_REPORTE, json=payload, timeout=10)
-    except Exception as e:
-        logger.error(f"Error auditoría: {e}")
-
-
-def registrar_uso_bot(update: Update, comando_usado: str) -> None:
-    user = update.effective_user
-    if not user:
-        return
-    nombre = f"{user.first_name or ''} {user.last_name or ''}".strip()
-    username = f"@{user.username}" if user.username else "Sin alias"
-    zona_horaria = datetime.timezone(datetime.timedelta(hours=-5))
-    hora_actual = datetime.datetime.now(zona_horaria).strftime("%Y-%m-%d %H:%M:%S")
-    logger.info(f"📊 [AUDITORÍA] {nombre} ({username}) [ID: {user.id}] -> {comando_usado} a las {hora_actual}")
-    if not URL_WEB_APP_REPORTE:
-        return
-    payload = {
-        "fecha": hora_actual,
-        "usuario": nombre,
-        "username": username,
-        "id": str(user.id),
-        "comando": comando_usado,
-    }
-    _pool_auditoria.submit(_enviar_auditoria, payload)  # no espera la respuesta
-
-
-# --------------------------------------------------------------------------- #
-# Menú y comandos generales
-# --------------------------------------------------------------------------- #
-def _teclado_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🛒 Inventario Vendedor", callback_data="start_vend")],
-        [InlineKeyboardButton("📦 Inventario SAP", callback_data="start_sap")],
-        [InlineKeyboardButton("📋 Pedidos (PV)", callback_data="start_pv")],
-        [InlineKeyboardButton("📋 Pedidos (PV)", callback_data="start_pg")],
-    ])
-
-
-async def menu_inicio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Sirve como comando suelto y como fallback dentro de la conversación (cierra la conversación)."""
-    texto = "👋 ¡Hola! Selecciona una opción del menú principal para comenzar:"
-    if update.callback_query:
-        query = update.callback_query
-        await query.answer()
-        await editar(query, texto, _teclado_menu())
-    else:
-        programar_borrado(context, update.message)
-        msg = await update.message.reply_text(texto, reply_markup=_teclado_menu())
-        programar_borrado(context, msg)
-    return ConversationHandler.END
-
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    programar_borrado(context, update.message)
-    user = update.effective_user
-    name = user.first_name if user else "allí"
-    await responder(update, context, f"¡Hola {esc(name)}! Soy WILLI-BOT y estoy aqui para ayudarte en tu día a día")
-
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    programar_borrado(context, update.message)
-    await responder(update, context, "Usa /inicio para desplegar el menú de opciones.")
-
-
-async def order_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    programar_borrado(context, update.message)
-    await responder(update, context, "📦 Escribe el nombre del producto:")
-
-
-async def _llamar_hook(url: str) -> None:
-    respuesta = await asyncio.to_thread(requests.post, url, timeout=10)
-    respuesta.raise_for_status()
-
-
-async def reiniciar_render(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    programar_borrado(context, update.message)
-    if update.effective_user.id != MI_TELEGRAM_ID:
-        await responder(update, context, "⛔ Sin permisos.")
-        return
-    if not RENDER_DEPLOY_HOOK_URL:
-        await responder(update, context, "⚠️ Falta la variable RENDER_DEPLOY_HOOK_URL.")
-        return
-    try:
-        await _llamar_hook(RENDER_DEPLOY_HOOK_URL)
-        await responder(update, context, "🔄 Reiniciando Render...")
-    except Exception as e:
-        await responder(update, context, f"⚠️ No se pudo reiniciar: <code>{esc(e)}</code>")
-
-
-async def limpiar_cache_y_deploy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    programar_borrado(context, update.message)
-    if update.effective_user.id != MI_TELEGRAM_ID:
-        await responder(update, context, "⛔ Sin permisos.")
-        return
-    datos.invalidar_todo()
-    if not RENDER_DEPLOY_HOOK_URL:
-        await responder(update, context, "🧹 Caché limpiada, pero falta RENDER_DEPLOY_HOOK_URL para desplegar.")
-        return
-    separador = "&" if "?" in RENDER_DEPLOY_HOOK_URL else "?"
-    try:
-        await _llamar_hook(f"{RENDER_DEPLOY_HOOK_URL}{separador}clearCache=true")
-        await responder(update, context, "🧹 Caché limpiada localmente y desplegando en Render...")
-    except Exception as e:
-        await responder(update, context, f"⚠️ No se pudo desplegar: <code>{esc(e)}</code>")
-
-
-async def refrescar_datos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/refrescar: recarga las hojas de Google ya mismo (sin redeploy). Solo el dueño."""
-    programar_borrado(context, update.message)
-    if update.effective_user.id != MI_TELEGRAM_ID:
-        await responder(update, context, "⛔ Sin permisos.")
-        return
-    await datos.refrescar_todo()
-    errores = [f for f in (datos.pedidos, datos.inventario) if f.ultimo_error]
-    if errores:
-        detalle = "\n".join(f"• {f.nombre}: <code>{esc(f.ultimo_error)}</code>" for f in errores)
-        await responder(update, context, f"⚠️ Recarga con errores:\n{detalle}")
-    else:
-        await responder(update, context, "✅ Datos recargados desde Google Sheets.")
-
-
-async def callback_expirado(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Botones viejos (por ejemplo, tras un reinicio del bot): avisa en vez de quedarse 'cargando'."""
-    query = update.callback_query
-    if query:
-        await query.answer("Esta opción ya no está disponible. Escribe /inicio.", show_alert=True)
-
-
-async def manejar_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.error("Excepción no controlada", exc_info=context.error)
-    if isinstance(update, Update) and update.effective_chat:
-        try:
-            await context.bot.send_message(
-                update.effective_chat.id,
-                "⚠️ Ocurrió un error inesperado. Intenta de nuevo o escribe /inicio.",
+    items = []
+    offset = 0
+    with requests.Session() as s:
+        while True:
+            url = (
+                f"{BASE_URL}/{llave}/{fecha_ini}/{fecha_fin}/"
+                f"{quote(tipo)}/{quote(documento)}/{offset}/{PAGE_SIZE}"
             )
-        except Exception:
-            pass
-
-
-async def _sesion_expirada(query) -> int:
-    await editar(query, "⌛ Esta consulta expiró. Escribe /inicio para empezar de nuevo.")
-    return ConversationHandler.END
+            resp = s.get(url, timeout=TIMEOUT, headers={"Accept": "application/json"})
+            resp.raise_for_status()
+            data = resp.json()
+            pagina = data.get("items", [])
+            items.extend(pagina)
+            if not pagina or not data.get("hasMore"):
+                break
+            offset += PAGE_SIZE
+    return [_normalizar(i) for i in items]
 
 
 # --------------------------------------------------------------------------- #
-# FLUJO PEDIDOS (PV)
+# Formato (igual que /PV)
 # --------------------------------------------------------------------------- #
-def _v(fila, columna: str) -> str:
-    return esc(fila.get(columna, "")) or "N/A"
+def _num(v) -> str:
+    if v is None:
+        return ""
+    if isinstance(v, (int, float)):
+        return f"{v:,.0f}" if float(v).is_integer() else f"{v:,.2f}"
+    return str(v)
 
 
-def _raw(fila, columna: str) -> str:
-    """Valor tal cual (en blanco si la celda está vacía), como se mostraba antes."""
-    return esc(fila.get(columna, "N/A"))
+def _fecha(v) -> str:
+    return str(v)[:10] if v else ""
 
 
-def _texto_detalle(fila) -> str:
-    tipo_pedido = str(fila.get("Clasificacion Pedido", "")).strip().lower()
+def _v(it: dict, clave: str) -> str:
+    return esc(it.get(clave)) or "N/A"
+
+
+def _raw(it: dict, clave: str) -> str:
+    return esc(it.get(clave))
+
+
+def _texto_detalle(it: dict) -> str:
+    contado = str(it.get("clasificacion pedido") or "").strip().lower() == "contado"
+
     campos_contado = ""
-    if tipo_pedido == "contado":
+    if contado:
         campos_contado = "-----------------------------------\n"
-        campos_contado += f"• <b>Fecha Vencimiento:</b> {_v(fila, 'Fecha Vencimiento')}\n"
-        num_proforma = esc(fila.get("Numero Proforma", ""))
+        campos_contado += f"• <b>Fecha Vencimiento:</b> {esc(_fecha(it.get('fecha vencimiento'))) or 'N/A'}\n"
+        num_proforma = esc(it.get("numero proforma"))
         if num_proforma:
             campos_contado += f"• <b>Número Proforma:</b> {num_proforma}\n"
+
+    # Datos que solo trae el web service: se muestran únicamente si tienen valor
+    extra = ""
+    for etiqueta, clave in (("Número Factura", "numero factura"), ("Número Guía", "numero guia")):
+        valor = esc(it.get(clave))
+        if valor:
+            extra += f"• <b>{etiqueta}:</b> {valor}\n"
+
+    fecha_despacho = _fecha(it.get("fecha despacho") or it.get("fecha factura"))
     return (
-        f"• <b>Estado del Pedido:</b> {_raw(fila, 'Estado Factura')}\n"
-        f"• <b>Ubicación:</b> {_raw(fila, 'Ubicación del Pedido')}\n"
-        f"• <b>Referencia:</b> {_raw(fila, 'Id Refer')}\n"
-        f"• <b>Color:</b> {_raw(fila, 'Color')}\n"
-        f"• <b>Estado Pedido:</b> {esc(_traducir_estado(fila.get('Document Status SAP', '')))}\n"
-        f"• <b>Estado Item:</b> {esc(_traducir_estado(fila.get('Line Status Sap', '')))}\n"
-        f"• <b>Cantidad pedida:</b> {_raw(fila, 'Cantidad Ped')}\n"
-        f"• <b>Cantidad alistada:</b> {_raw(fila, 'Cantidad Alistada')}\n"
-        f"• <b>Fecha Despacho:</b> {_raw(fila, 'Fecha Factura')}\n"
-        f"• <b>Operario:</b> {_raw(fila, 'Nombre Operario Asignado')}\n"
-        f"• <b>Tipo Pedido:</b> {_raw(fila, 'Clasificacion Pedido')}\n"
-        f"• <b>Observacion:</b> {_raw(fila, 'Observacion Adicional')}\n"
+        f"• <b>Estado del Pedido:</b> {_raw(it, 'estado factura')}\n"
+        f"• <b>Ubicación:</b> {_raw(it, 'ubicación del pedido')}\n"
+        f"• <b>Referencia:</b> {_raw(it, 'id refer')}\n"
+        f"• <b>Color:</b> {_raw(it, 'color')}\n"
+        f"• <b>Estado Pedido:</b> {esc(_traducir_estado(it.get('document status sap', '')))}\n"
+        f"• <b>Estado Item:</b> {esc(_traducir_estado(it.get('line status sap', '')))}\n"
+        f"• <b>Cantidad pedida:</b> {esc(_num(it.get('cantidad ped')))}\n"
+        f"• <b>Cantidad alistada:</b> {esc(_num(it.get('cantidad alistada')))}\n"
+        f"• <b>Fecha Despacho:</b> {esc(fecha_despacho)}\n"
+        f"{extra}"
+        f"• <b>Operario:</b> {_raw(it, 'nombre operario asignado')}\n"
+        f"• <b>Tipo Pedido:</b> {_raw(it, 'clasificacion pedido')}\n"
+        f"• <b>Observacion:</b> {_raw(it, 'observacion adicional')}\n"
         f"{campos_contado}"
     )
 
 
-def _agrupar(titulo: str, bloques: list, limite: int = 3800) -> list:
-    """Junta el título y los bloques en mensajes de hasta `limite` caracteres sin partir un bloque."""
-    partes, actual = [], titulo
-    for b in bloques:
-        if actual != titulo and len(actual) + len(b) > limite:
-            partes.append(actual)
-            actual = ""
-        actual += b
-    partes.append(actual)
-    return partes
-
-
-def _traducir_estado(valor) -> str:
-    return {"bost_Open": "Abierto", "bost_Close": "Cerrado"}.get(str(valor).strip(), str(valor).strip() or "N/A")
+def _colores(items: list, ref) -> list:
+    return list(dict.fromkeys(i.get("color") for i in items if i.get("id refer") == ref))
 
 
 def _pantalla_refs(d: dict):
-    primera = d["df"].iloc[0]
+    primera = d["items"][0]
     texto = (
         f"🔍 Documento <b>{esc(d['doc'])}</b>\n"
-        f"• <b>Vendedor:</b> {_v(primera, 'Nombre Vendedor')}\n"
-        f"• <b>Cliente:</b> {_v(primera, 'Nombre Tercero')}\n\n"
+        f"• <b>Vendedor:</b> {_v(primera, 'nombre vendedor')}\n"
+        f"• <b>Cliente:</b> {_v(primera, 'nombre tercero')}\n\n"
         f"Selecciona una referencia:"
     )
     teclado = InlineKeyboardMarkup([
-        [InlineKeyboardButton(ref or "(sin referencia)", callback_data=f"pv_ref_{i}")]
+        [InlineKeyboardButton(str(ref) if ref else "(sin referencia)", callback_data=f"pg_ref_{i}")]
         for i, ref in enumerate(d["refs"][:MAX_BOTONES])
     ])
     return texto, teclado
 
 
 def _pantalla_colores(d: dict):
-    df = d["df"]
-    df_ref = df[df["Id Refer"] == d["ref"]]
-    tiene_estado = "Line Status Sap" in df_ref.columns
-    filas = [[InlineKeyboardButton("📄 Ver todo", callback_data="pv_all")]]
+    items_ref = [i for i in d["items"] if i.get("id refer") == d["ref"]]
+    filas = [[InlineKeyboardButton("📄 Ver todo", callback_data="pg_all")]]
     for i, color in enumerate(d["colores"][:MAX_BOTONES]):
-        etiqueta = color or "(sin color)"
-        if tiene_estado:
-            estados = df_ref.loc[df_ref["Color"] == color, "Line Status Sap"].map(_traducir_estado).unique()
+        etiqueta = str(color) if color not in (None, "") else "(sin color)"
+        estados = list(dict.fromkeys(
+            _traducir_estado(x.get("line status sap", "")) for x in items_ref if x.get("color") == color
+        ))
+        if estados:
             etiqueta += f" - {' / '.join(estados)}"
-        filas.append([InlineKeyboardButton(etiqueta, callback_data=f"pv_col_{i}")])
-    filas.append([InlineKeyboardButton("🔙 Volver", callback_data="pv_back_refs")])
+        filas.append([InlineKeyboardButton(etiqueta, callback_data=f"pg_col_{i}")])
+    filas.append([InlineKeyboardButton("🔙 Volver", callback_data="pg_back_refs")])
     texto = f"Referencia seleccionada: <b>{esc(d['ref'])}</b>.\nSelecciona el color:"
     return texto, InlineKeyboardMarkup(filas)
 
 
-async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    if query:
-        await query.answer()
-        registrar_uso_bot(update, "BOTÓN_PV")
-        await editar(query, "📋 <b>Pedidos (PV)</b>\n\nEscribe el <b>número de documento</b> que deseas buscar:")
-        return ESPERANDO_DOCUMENTO_PV
-
-    registrar_uso_bot(update, "/PV")
+# --------------------------------------------------------------------------- #
+# Handlers de Telegram
+# --------------------------------------------------------------------------- #
+async def iniciar_pg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """/PG [número]: punto de entrada de la conversación."""
+    registrar_uso_bot(update, "/PG")
     programar_borrado(context, update.message)
 
     if not context.args:
         await responder(
             update, context,
-            "📋 <b>Pedidos (PV)</b>\n\nEscribe el <b>número de documento</b> que deseas buscar "
-            "(o usa <code>/PV 5270</code>):",
+            "🚚 <b>Trazabilidad de pedidos</b>\n\nEscribe el <b>número de pedido</b> que deseas buscar "
+            "(o usa <code>/PG 7374</code>):",
         )
-        return ESPERANDO_DOCUMENTO_PV
+        return ESPERANDO_DOCUMENTO_PG
 
-    return await ejecutar_busqueda_documento(update, context, context.args[0])
+    return await ejecutar_pg(update, context, context.args[0])
 
 
-async def recibir_texto_documento_pv(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def recibir_texto_pg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Número de pedido escrito en el mensaje siguiente a /PG (o para cambiar de pedido)."""
     programar_borrado(context, update.message)
-    return await ejecutar_busqueda_documento(update, context, update.message.text)
+    return await ejecutar_pg(update, context, update.message.text)
 
 
-async def ejecutar_busqueda_documento(update: Update, context: ContextTypes.DEFAULT_TYPE, doc_buscado: str) -> int:
-    doc_buscado = doc_buscado.strip().split(".")[0].strip()
-    if not doc_buscado:
-        await responder(update, context, "⚠️ Escribe el número de documento.")
-        return ESPERANDO_DOCUMENTO_PV
+async def ejecutar_pg(update: Update, context: ContextTypes.DEFAULT_TYPE, texto: str) -> int:
+    doc = texto.strip().split(".")[0].strip()
+    if not doc.isdigit():
+        await responder(
+            update, context,
+            "⚠️ Escribe solo el <b>número de pedido</b>, por ejemplo <code>7374</code>.",
+        )
+        return ESPERANDO_DOCUMENTO_PG
 
-    if datos.pedidos.df is None:  # solo ocurre en la primera carga tras arrancar
-        await responder(update, context, "⏳ Cargando datos, un momento…")
-
-    df = await datos.pedidos.obtener()
-    if df is None or df.empty:
-        detalle = f"\n<code>{esc(datos.pedidos.ultimo_error)}</code>" if datos.pedidos.ultimo_error else ""
-        await responder(update, context, f"⚠️ Error al conectar con Google Sheets o catálogo vacío.{detalle}")
+    espera = await responder(update, context, f"⏳ Consultando el pedido <b>{esc(doc)}</b>…")
+    try:
+        # requests es bloqueante: se corre en otro hilo para no frenar el bot
+        items = await asyncio.to_thread(consultar_pedido, doc)
+    except RuntimeError as e:  # falta la clave en el entorno
+        logger.error("Configuración de trazabilidad: %s", e)
+        await espera.edit_text(f"⚠️ {esc(e)}", parse_mode=ParseMode.HTML)
+        return ConversationHandler.END
+    except Exception:
+        logger.exception("Error consultando trazabilidad del pedido %s", doc)
+        await espera.edit_text("⚠️ No pude consultar la trazabilidad ahora. Intenta de nuevo en un momento.")
         return ConversationHandler.END
 
-    faltan = [c for c in ("Documento Pd", "Id Refer", "Color") if c not in df.columns]
-    if faltan:
-        await responder(update, context, f"⚠️ No se encontraron las columnas: {esc(', '.join(faltan))}.")
-        return ConversationHandler.END
-
-    resultado = df[df["Documento Pd"] == doc_buscado]
-    if resultado.empty:
-        await responder(update, context, f"❌ No se encontró el documento: <b>{esc(doc_buscado)}</b>.\nPuedes escribir otro número.")
-        return ESPERANDO_DOCUMENTO_PV
+    if not items:
+        await espera.edit_text(
+            f"❌ No se encontró el documento: <b>{esc(doc)}</b>.\nPuedes escribir otro número.",
+            parse_mode=ParseMode.HTML,
+        )
+        return ESPERANDO_DOCUMENTO_PG
 
     d = {
-        "doc": doc_buscado,
-        "df": resultado,
-        "refs": resultado["Id Refer"].unique().tolist(),
+        "doc": doc,
+        "items": items,
+        "refs": list(dict.fromkeys(i.get("id refer") for i in items)),
     }
-    context.user_data["pv"] = d
+    context.user_data["pg"] = d
 
     if len(d["refs"]) == 1:  # una sola referencia: salta directo a los colores
         d["ref"] = d["refs"][0]
-        d["colores"] = resultado.loc[resultado["Id Refer"] == d["ref"], "Color"].unique().tolist()
-        texto, teclado = _pantalla_colores(d)
-        await responder(update, context, texto, reply_markup=teclado)
-        return SELECCIONANDO_COLOR
+        d["colores"] = _colores(items, d["ref"])
+        texto_msg, teclado = _pantalla_colores(d)
+        await espera.edit_text(texto_msg, reply_markup=teclado, parse_mode=ParseMode.HTML)
+        return SELECCIONANDO_COLOR_PG
 
-    texto, teclado = _pantalla_refs(d)
-    await responder(update, context, texto, reply_markup=teclado)
-    return SELECCIONANDO_REFERENCIA
+    texto_msg, teclado = _pantalla_refs(d)
+    await espera.edit_text(texto_msg, reply_markup=teclado, parse_mode=ParseMode.HTML)
+    return SELECCIONANDO_REF_PG
 
 
-async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def seleccionar_referencia_pg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    d = context.user_data.get("pv")
+    d = context.user_data.get("pg")
     if not d:
         return await _sesion_expirada(query)
     try:
@@ -402,33 +268,32 @@ async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_T
         return await _sesion_expirada(query)
 
     d["ref"] = ref
-    d["colores"] = d["df"].loc[d["df"]["Id Refer"] == ref, "Color"].unique().tolist()
+    d["colores"] = _colores(d["items"], ref)
     texto, teclado = _pantalla_colores(d)
     await editar(query, texto, teclado)
-    return SELECCIONANDO_COLOR
+    return SELECCIONANDO_COLOR_PG
 
 
-async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def seleccionar_color_pg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    d = context.user_data.get("pv")
+    d = context.user_data.get("pg")
     if not d or "ref" not in d:
         return await _sesion_expirada(query)
     data = query.data
 
-    if data == "pv_back_refs":
+    if data == "pg_back_refs":
         texto, teclado = _pantalla_refs(d)
         await editar(query, texto, teclado)
-        return SELECCIONANDO_REFERENCIA
+        return SELECCIONANDO_REF_PG
 
-    if data == "pv_back_cols":
+    if data == "pg_back_cols":
         texto, teclado = _pantalla_colores(d)
         await editar(query, texto, teclado)
-        return SELECCIONANDO_COLOR
+        return SELECCIONANDO_COLOR_PG
 
-    df = d["df"]
-    base = df[df["Id Refer"] == d["ref"]]
-    if data == "pv_all":
+    base = [i for i in d["items"] if i.get("id refer") == d["ref"]]
+    if data == "pg_all":
         filas = base
         titulo = (
             f"🔍 <b>Detalle Completo - Referencia {esc(d['ref'])}</b> "
@@ -439,16 +304,16 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             color = d["colores"][int(data.rsplit("_", 1)[1])]
         except (ValueError, IndexError):
             return await _sesion_expirada(query)
-        filas = base[base["Color"] == color]
+        filas = [i for i in base if i.get("color") == color]
         titulo = (
             f"🔍 <b>Detalle del Documento {esc(d['doc'])}</b> "
             f"(Color {esc(color)}, Total ítems: {len(filas)}):\n"
         )
 
-    bloques = ["\n-----------------------------------\n" + _texto_detalle(fila) for _, fila in filas.iterrows()]
+    bloques = ["\n-----------------------------------\n" + _texto_detalle(it) for it in filas]
     partes = _agrupar(titulo, bloques)
 
-    teclado = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver a colores", callback_data="pv_back_cols")]])
+    teclado = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver a colores", callback_data="pg_back_cols")]])
     if len(partes) == 1:
         await editar(query, partes[0], teclado)
     else:  # detalle largo: se envía en varios mensajes y el original queda con el botón de volver
@@ -456,10 +321,4 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             msg = await query.message.reply_text(parte, parse_mode=ParseMode.HTML)
             programar_borrado(context, msg)
         await editar(query, "📌 Fin del detalle.", teclado)
-    return SELECCIONANDO_COLOR
-
-
-async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    programar_borrado(context, update.message)
-    await responder(update, context, "❌ Búsqueda cancelada.")
-    return ConversationHandler.END
+    return SELECCIONANDO_COLOR_PG
