@@ -63,6 +63,12 @@ from inventario_vendedor_handlers import (
     seleccionar_referencia_vendedor,
 )
 
+from geo_handlers import (
+    ESPERANDO_DOCUMENTO_PG,
+    iniciar_pg,
+    recibir_texto_pg,
+)
+
 logger = logging.getLogger(__name__)
 
 # --- CONFIGURACIÓN DE GEMINI AGENTE Y HERRAMIENTAS ---
@@ -286,6 +292,7 @@ def main() -> None:
       CommandHandler("pv", iniciar_busqueda),
       CommandHandler("in", iniciar_busqueda_sap),
       CommandHandler("i", iniciar_busqueda_vendedor),
+      CommandHandler("pg", iniciar_pg),
       CallbackQueryHandler(iniciar_busqueda, pattern="^start_pv$"),
       CallbackQueryHandler(iniciar_busqueda_sap, pattern="^start_sap$"),
       CallbackQueryHandler(iniciar_busqueda_vendedor, pattern="^start_vend$"),
@@ -299,6 +306,9 @@ def main() -> None:
   )
   texto_vend = MessageHandler(
       filters.TEXT & ~filters.COMMAND, recibir_texto_ref_vendedor
+  )
+  texto_pg = MessageHandler(
+      filters.TEXT & ~filters.COMMAND, recibir_texto_pg
   )
 
   estados = {
@@ -341,6 +351,7 @@ def main() -> None:
           ),
           texto_vend,
       ],
+      ESPERANDO_DOCUMENTO_PG: [texto_pg],
   }
 
   fallbacks = entradas + [
