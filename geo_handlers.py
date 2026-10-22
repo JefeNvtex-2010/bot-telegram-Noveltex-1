@@ -5,24 +5,33 @@ from datetime import date
 from urllib.parse import quote
 
 import requests
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes, ConversationHandler
 
-from handlers import esc, programar_borrado, registrar_uso_bot, responder
+from handlers import (
+    MAX_BOTONES,
+    _agrupar,
+    _sesion_expirada,
+    _traducir_estado,
+    editar,
+    esc,
+    programar_borrado,
+    registrar_uso_bot,
+    responder,
+)
 
 logger = logging.getLogger(__name__)
 
 # Estados 0-8 los usan /PV, /IN y /I (handlers.py, inventario_*_handlers.py).
-ESPERANDO_DOCUMENTO_PG = 9
+ESPERANDO_DOCUMENTO_PG, SELECCIONANDO_REF_PG, SELECCIONANDO_COLOR_PG = 9, 10, 11
 
 BASE_URL = (
     "https://g6344c28e083a44-dbproyectos.adb.us-ashburn-1.oraclecloudapps.com/"
     "ords/multiplantas/noveltex/ntex_ws_trazabilidad"
 )
-PAGE_SIZE = 500       # registros por bloque (la guía propone máximo 500)
-TIMEOUT = 60          # segundos
-TELEGRAM_MAX = 3800   # Telegram permite 4096 caracteres por mensaje
+PAGE_SIZE = 500   # registros por bloque (la guía propone máximo 500)
+TIMEOUT = 60      # segundos
 
 
 # --------------------------------------------------------------------------- #
@@ -68,65 +77,98 @@ def consultar_pedido(documento: str, tipo: str = "PV") -> list:
 
 
 # --------------------------------------------------------------------------- #
-# Formato del mensaje (HTML)
+# Formato (igual que /PV)
 # --------------------------------------------------------------------------- #
-def _n(v) -> str:
+def _num(v) -> str:
     if v is None:
-        return "-"
+        return ""
     if isinstance(v, (int, float)):
         return f"{v:,.0f}" if float(v).is_integer() else f"{v:,.2f}"
     return str(v)
 
 
-def _t(v) -> str:
-    return "-" if v in (None, "") else str(v)
-
-
 def _fecha(v) -> str:
-    return "-" if not v else str(v)[:10]
+    return str(v)[:10] if v else ""
 
 
-def formatear_pedido(documento: str, items: list, tipo: str = "PV") -> str:
-    h = items[0]
-    lineas = [
-        f"🚚 <b>Trazabilidad {esc(tipo)} {esc(documento)}</b>",
-        "",
-        f"👤 <b>Cliente:</b> {esc(_t(h.get('nombre tercero')))}",
-        f"🧑‍💼 <b>Vendedor:</b> {esc(_t(h.get('nombre vendedor')))}",
-        f"📍 <b>Ubicación:</b> {esc(_t(h.get('ubicación del pedido')))}  |  "
-        f"<b>Estado SAP:</b> {esc(_t(h.get('document status sap')))}",
-        f"🧾 <b>Proforma:</b> {esc(_t(h.get('numero proforma')))}  |  "
-        f"<b>Valor:</b> {esc(_n(h.get('valor proforma')))}  |  "
-        f"<b>Abonos:</b> {esc(_n(h.get('total abonos')))}",
-        f"📅 <b>Vence:</b> {esc(_fecha(h.get('fecha vencimiento')))}  |  "
-        f"<b>Último mov.:</b> {esc(_fecha(h.get('fecha de ultimo movimiento')))}",
-        f"📦 <b>Factura:</b> {esc(_t(h.get('numero factura')))}  |  "
-        f"<b>Guía:</b> {esc(_t(h.get('numero guia')))}  |  "
-        f"<b>Despacho:</b> {esc(_fecha(h.get('fecha despacho')))}",
-        "",
-        f"<b>Líneas ({len(items)}):</b>",
-    ]
-    for it in items:
-        lineas.append(
-            f"• <code>{esc(_t(it.get('id item')))}</code> {esc(_t(it.get('id refer')))} "
-            f"· color {esc(_t(it.get('color')))} · "
-            f"pedido {esc(_n(it.get('cantidad ped')))} / alistado {esc(_n(it.get('cantidad alistada')))} "
-            f"({esc(_t(it.get('estado factura')))})"
-        )
-    return "\n".join(lineas)
+def _v(it: dict, clave: str) -> str:
+    return esc(it.get(clave)) or "N/A"
 
 
-def _partir(texto: str, limite: int = TELEGRAM_MAX) -> list:
-    """Parte el texto en mensajes por saltos de línea (cada línea trae sus etiquetas completas)."""
-    bloques, actual = [], ""
-    for linea in texto.split("\n"):
-        if len(actual) + len(linea) + 1 > limite and actual:
-            bloques.append(actual.rstrip("\n"))
-            actual = ""
-        actual += linea + "\n"
-    if actual.strip():
-        bloques.append(actual.rstrip("\n"))
-    return bloques
+def _raw(it: dict, clave: str) -> str:
+    return esc(it.get(clave))
+
+
+def _texto_detalle(it: dict) -> str:
+    contado = str(it.get("clasificacion pedido") or "").strip().lower() == "contado"
+
+    campos_contado = ""
+    if contado:
+        campos_contado = "-----------------------------------\n"
+        campos_contado += f"• <b>Fecha Vencimiento:</b> {esc(_fecha(it.get('fecha vencimiento'))) or 'N/A'}\n"
+        num_proforma = esc(it.get("numero proforma"))
+        if num_proforma:
+            campos_contado += f"• <b>Número Proforma:</b> {num_proforma}\n"
+
+    # Datos que solo trae el web service: se muestran únicamente si tienen valor
+    extra = ""
+    for etiqueta, clave in (("Número Factura", "numero factura"), ("Número Guía", "numero guia")):
+        valor = esc(it.get(clave))
+        if valor:
+            extra += f"• <b>{etiqueta}:</b> {valor}\n"
+
+    fecha_despacho = _fecha(it.get("fecha despacho") or it.get("fecha factura"))
+    return (
+        f"• <b>Estado del Pedido:</b> {_raw(it, 'estado factura')}\n"
+        f"• <b>Ubicación:</b> {_raw(it, 'ubicación del pedido')}\n"
+        f"• <b>Referencia:</b> {_raw(it, 'id refer')}\n"
+        f"• <b>Color:</b> {_raw(it, 'color')}\n"
+        f"• <b>Estado Pedido:</b> {esc(_traducir_estado(it.get('document status sap', '')))}\n"
+        f"• <b>Estado Item:</b> {esc(_traducir_estado(it.get('line status sap', '')))}\n"
+        f"• <b>Cantidad pedida:</b> {esc(_num(it.get('cantidad ped')))}\n"
+        f"• <b>Cantidad alistada:</b> {esc(_num(it.get('cantidad alistada')))}\n"
+        f"• <b>Fecha Despacho:</b> {esc(fecha_despacho)}\n"
+        f"{extra}"
+        f"• <b>Operario:</b> {_raw(it, 'nombre operario asignado')}\n"
+        f"• <b>Tipo Pedido:</b> {_raw(it, 'clasificacion pedido')}\n"
+        f"• <b>Observacion:</b> {_raw(it, 'observacion adicional')}\n"
+        f"{campos_contado}"
+    )
+
+
+def _colores(items: list, ref) -> list:
+    return list(dict.fromkeys(i.get("color") for i in items if i.get("id refer") == ref))
+
+
+def _pantalla_refs(d: dict):
+    primera = d["items"][0]
+    texto = (
+        f"🔍 Documento <b>{esc(d['doc'])}</b>\n"
+        f"• <b>Vendedor:</b> {_v(primera, 'nombre vendedor')}\n"
+        f"• <b>Cliente:</b> {_v(primera, 'nombre tercero')}\n\n"
+        f"Selecciona una referencia:"
+    )
+    teclado = InlineKeyboardMarkup([
+        [InlineKeyboardButton(str(ref) if ref else "(sin referencia)", callback_data=f"pg_ref_{i}")]
+        for i, ref in enumerate(d["refs"][:MAX_BOTONES])
+    ])
+    return texto, teclado
+
+
+def _pantalla_colores(d: dict):
+    items_ref = [i for i in d["items"] if i.get("id refer") == d["ref"]]
+    filas = [[InlineKeyboardButton("📄 Ver todo", callback_data="pg_all")]]
+    for i, color in enumerate(d["colores"][:MAX_BOTONES]):
+        etiqueta = str(color) if color not in (None, "") else "(sin color)"
+        estados = list(dict.fromkeys(
+            _traducir_estado(x.get("line status sap", "")) for x in items_ref if x.get("color") == color
+        ))
+        if estados:
+            etiqueta += f" - {' / '.join(estados)}"
+        filas.append([InlineKeyboardButton(etiqueta, callback_data=f"pg_col_{i}")])
+    filas.append([InlineKeyboardButton("🔙 Volver", callback_data="pg_back_refs")])
+    texto = f"Referencia seleccionada: <b>{esc(d['ref'])}</b>.\nSelecciona el color:"
+    return texto, InlineKeyboardMarkup(filas)
 
 
 # --------------------------------------------------------------------------- #
@@ -149,7 +191,7 @@ async def iniciar_pg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 async def recibir_texto_pg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Número de pedido escrito en el mensaje siguiente a /PG."""
+    """Número de pedido escrito en el mensaje siguiente a /PG (o para cambiar de pedido)."""
     programar_borrado(context, update.message)
     return await ejecutar_pg(update, context, update.message.text)
 
@@ -178,13 +220,93 @@ async def ejecutar_pg(update: Update, context: ContextTypes.DEFAULT_TYPE, texto:
 
     if not items:
         await espera.edit_text(
-            f"❌ No se encontró el pedido <b>{esc(doc)}</b>.\nPuedes escribir otro número.",
+            f"❌ No se encontró el documento: <b>{esc(doc)}</b>.\nPuedes escribir otro número.",
             parse_mode=ParseMode.HTML,
         )
         return ESPERANDO_DOCUMENTO_PG
 
-    bloques = _partir(formatear_pedido(doc, items))
-    await espera.edit_text(bloques[0], parse_mode=ParseMode.HTML)
-    for b in bloques[1:]:
-        await responder(update, context, b)
-    return ConversationHandler.END
+    d = {
+        "doc": doc,
+        "items": items,
+        "refs": list(dict.fromkeys(i.get("id refer") for i in items)),
+    }
+    context.user_data["pg"] = d
+
+    if len(d["refs"]) == 1:  # una sola referencia: salta directo a los colores
+        d["ref"] = d["refs"][0]
+        d["colores"] = _colores(items, d["ref"])
+        texto_msg, teclado = _pantalla_colores(d)
+        await espera.edit_text(texto_msg, reply_markup=teclado, parse_mode=ParseMode.HTML)
+        return SELECCIONANDO_COLOR_PG
+
+    texto_msg, teclado = _pantalla_refs(d)
+    await espera.edit_text(texto_msg, reply_markup=teclado, parse_mode=ParseMode.HTML)
+    return SELECCIONANDO_REF_PG
+
+
+async def seleccionar_referencia_pg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    d = context.user_data.get("pg")
+    if not d:
+        return await _sesion_expirada(query)
+    try:
+        ref = d["refs"][int(query.data.rsplit("_", 1)[1])]
+    except (ValueError, IndexError):
+        return await _sesion_expirada(query)
+
+    d["ref"] = ref
+    d["colores"] = _colores(d["items"], ref)
+    texto, teclado = _pantalla_colores(d)
+    await editar(query, texto, teclado)
+    return SELECCIONANDO_COLOR_PG
+
+
+async def seleccionar_color_pg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    d = context.user_data.get("pg")
+    if not d or "ref" not in d:
+        return await _sesion_expirada(query)
+    data = query.data
+
+    if data == "pg_back_refs":
+        texto, teclado = _pantalla_refs(d)
+        await editar(query, texto, teclado)
+        return SELECCIONANDO_REF_PG
+
+    if data == "pg_back_cols":
+        texto, teclado = _pantalla_colores(d)
+        await editar(query, texto, teclado)
+        return SELECCIONANDO_COLOR_PG
+
+    base = [i for i in d["items"] if i.get("id refer") == d["ref"]]
+    if data == "pg_all":
+        filas = base
+        titulo = (
+            f"🔍 <b>Detalle Completo - Referencia {esc(d['ref'])}</b> "
+            f"(Documento {esc(d['doc'])}, Total ítems: {len(filas)}):\n"
+        )
+    else:
+        try:
+            color = d["colores"][int(data.rsplit("_", 1)[1])]
+        except (ValueError, IndexError):
+            return await _sesion_expirada(query)
+        filas = [i for i in base if i.get("color") == color]
+        titulo = (
+            f"🔍 <b>Detalle del Documento {esc(d['doc'])}</b> "
+            f"(Color {esc(color)}, Total ítems: {len(filas)}):\n"
+        )
+
+    bloques = ["\n-----------------------------------\n" + _texto_detalle(it) for it in filas]
+    partes = _agrupar(titulo, bloques)
+
+    teclado = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver a colores", callback_data="pg_back_cols")]])
+    if len(partes) == 1:
+        await editar(query, partes[0], teclado)
+    else:  # detalle largo: se envía en varios mensajes y el original queda con el botón de volver
+        for parte in partes:
+            msg = await query.message.reply_text(parte, parse_mode=ParseMode.HTML)
+            programar_borrado(context, msg)
+        await editar(query, "📌 Fin del detalle.", teclado)
+    return SELECCIONANDO_COLOR_PG
