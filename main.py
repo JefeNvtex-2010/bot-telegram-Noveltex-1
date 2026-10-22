@@ -65,8 +65,12 @@ from inventario_vendedor_handlers import (
 
 from geo_handlers import (
     ESPERANDO_DOCUMENTO_PG,
+    SELECCIONANDO_COLOR_PG,
+    SELECCIONANDO_REF_PG,
     iniciar_pg,
     recibir_texto_pg,
+    seleccionar_color_pg,
+    seleccionar_referencia_pg,
 )
 
 logger = logging.getLogger(__name__)
@@ -352,6 +356,19 @@ def main() -> None:
           texto_vend,
       ],
       ESPERANDO_DOCUMENTO_PG: [texto_pg],
+      SELECCIONANDO_REF_PG: [
+          CallbackQueryHandler(
+              seleccionar_referencia_pg, pattern=r"^pg_ref_\d+$"
+          ),
+          texto_pg,
+      ],
+      SELECCIONANDO_COLOR_PG: [
+          CallbackQueryHandler(
+              seleccionar_color_pg,
+              pattern=r"^pg_(col_\d+|all|back_refs|back_cols)$",
+          ),
+          texto_pg,
+      ],
   }
 
   fallbacks = entradas + [
