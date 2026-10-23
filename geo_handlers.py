@@ -175,7 +175,14 @@ def _pantalla_colores(d: dict):
 # Handlers de Telegram
 # --------------------------------------------------------------------------- #
 async def iniciar_pg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """/PG [número]: punto de entrada de la conversación."""
+    """/PG [número] o botón del menú: punto de entrada de la conversación."""
+    query = update.callback_query
+    if query:  # botón "Pedidos (PG)" del menú /inicio
+        await query.answer()
+        registrar_uso_bot(update, "BOTÓN_PG")
+        await editar(query, "🚚 <b>Trazabilidad de pedidos</b>\n\nEscribe el <b>número de pedido</b> que deseas buscar:")
+        return ESPERANDO_DOCUMENTO_PG
+
     registrar_uso_bot(update, "/PG")
     programar_borrado(context, update.message)
 
