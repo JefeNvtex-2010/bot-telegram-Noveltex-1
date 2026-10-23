@@ -125,6 +125,7 @@ def _teclado_menu() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("🧮 Inventario SAP", callback_data="start_sap")],
         [InlineKeyboardButton("📝 Pedidos", callback_data="start_pg")],
         [InlineKeyboardButton("🚚 Guías", callback_data="start_gu")],
+        [InlineKeyboardButton("🏷️ Etiquetas", callback_data="start_et")],  # NUEVO
     ])
 
 
