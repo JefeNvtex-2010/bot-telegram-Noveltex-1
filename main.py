@@ -300,6 +300,7 @@ def main() -> None:
       CallbackQueryHandler(iniciar_busqueda, pattern="^start_pv$"),
       CallbackQueryHandler(iniciar_busqueda_sap, pattern="^start_sap$"),
       CallbackQueryHandler(iniciar_busqueda_vendedor, pattern="^start_vend$"),
+      CallbackQueryHandler(iniciar_pg, pattern="^start_pg$"),
   ]
 
   texto_pv = MessageHandler(
