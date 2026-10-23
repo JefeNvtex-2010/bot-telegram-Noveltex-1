@@ -6,6 +6,8 @@ import os
 import re
 import threading
 import time
+from datetime import date, timedelta
+from urllib.parse import quote
 
 import requests
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -22,7 +24,7 @@ from handlers import (
     registrar_uso_bot,
     responder,
 )
-from geo_handlers import consultar_pedido
+from geo_handlers import BASE_URL, PAGE_SIZE, _id_llave, _normalizar, consultar_pedido
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +52,12 @@ MSG_CADUCADA = (
     "La sesión de Coordinadora caducó. Inicia sesión en el navegador, copia la cookie PHPSESSID "
     "y actualiza la variable COORD_PHPSESSID en Render."
 )
+
+# Búsqueda por factura (el servicio de trazabilidad se consulta por rango de fechas)
+DIAS_FACTURA = int(os.environ.get("NTEX_WS_DIAS_FACTURA", "90"))
+COMODIN = os.environ.get("NTEX_WS_COMODIN", "0")  # valor para tipo/documento cuando no se filtra por pedido
+CACHE_SEGUNDOS = 10 * 60
+MAX_PAGINAS = 80
 
 
 # --------------------------------------------------------------------------- #
@@ -160,12 +168,71 @@ def descargar_imagen_guia(guia: str):
 
 
 # --------------------------------------------------------------------------- #
-# Extraer guías únicas del pedido
+# Búsqueda por factura (rango de fechas del servicio de trazabilidad)
 # --------------------------------------------------------------------------- #
-def _limpiar_guia(v) -> str:
+def _solo_digitos(v) -> str:
     return re.sub(r"\D", "", str(v).split(".")[0]) if v not in (None, "") else ""
 
 
+_cache_rango = {"t": 0.0, "items": []}
+_lock_rango = threading.Lock()
+
+
+def _traer_rango() -> list:
+    """Líneas de los últimos DIAS_FACTURA días (con caché de unos minutos)."""
+    with _lock_rango:
+        if _cache_rango["items"] and time.time() - _cache_rango["t"] < CACHE_SEGUNDOS:
+            return _cache_rango["items"]
+
+        llave = quote(_id_llave(), safe="!")
+        hoy = date.today()
+        fecha_ini = (hoy - timedelta(days=DIAS_FACTURA)).strftime("%Y%m%d")
+        fecha_fin = hoy.strftime("%Y%m%d")
+
+        items, offset = [], 0
+        with requests.Session() as s:
+            for _ in range(MAX_PAGINAS):
+                url = (
+                    f"{BASE_URL}/{llave}/{fecha_ini}/{fecha_fin}/"
+                    f"{quote(COMODIN)}/{quote(COMODIN)}/{offset}/{PAGE_SIZE}"
+                )
+                resp = s.get(url, timeout=TIMEOUT, headers={"Accept": "application/json"})
+                resp.raise_for_status()
+                data = resp.json()
+                pagina = data.get("items", [])
+                items.extend(pagina)
+                if not pagina or not data.get("hasMore"):
+                    break
+                offset += PAGE_SIZE
+
+        items = [_normalizar(i) for i in items]
+        logger.info("Rango %s-%s (comodín %r): %s líneas", fecha_ini, fecha_fin, COMODIN, len(items))
+        if items:
+            _cache_rango.update(t=time.time(), items=items)
+        return items
+
+
+def buscar_por_factura(numero: str):
+    """Devuelve (líneas de esa factura, total de líneas del rango)."""
+    items = _traer_rango()
+    objetivo = _solo_digitos(numero)
+    filtradas = [i for i in items if _solo_digitos(i.get("numero factura")) == objetivo]
+    return filtradas, len(items)
+
+
+def _interpretar(texto: str):
+    """Devuelve (por_factura, numero). 'f 50460' / 'f50460' / 'factura 50460' fuerzan factura."""
+    t = (texto or "").strip()
+    m = re.match(r"^(?:factura|fac|f)[\s:#.\-]*(\d+)\s*$", t, re.I)
+    if m:
+        return True, m.group(1)
+    doc = t.split(".")[0].strip()
+    return False, (doc if doc.isdigit() else "")
+
+
+# --------------------------------------------------------------------------- #
+# Extraer guías únicas
+# --------------------------------------------------------------------------- #
 def _fecha(v) -> str:
     return str(v)[:10] if v else ""
 
@@ -174,7 +241,7 @@ def guias_unicas(items: list) -> list:
     """Una sola fila por guía; si se repite, queda la de fecha de factura más reciente."""
     por_guia = {}
     for it in items:
-        guia = _limpiar_guia(it.get("numero guia"))
+        guia = _solo_digitos(it.get("numero guia"))
         if not guia:
             continue
         fecha = _fecha(it.get("fecha factura") or it.get("fecha dcto") or it.get("fecha despacho"))
@@ -184,6 +251,7 @@ def guias_unicas(items: list) -> list:
                 "guia": guia,
                 "fecha": fecha,
                 "factura": str(it.get("numero factura") or "").strip(),
+                "pedido": str(it.get("documento pd") or "").strip(),
                 "cliente": it.get("nombre tercero") or "",
                 "vendedor": it.get("nombre vendedor") or "",
             }
@@ -193,6 +261,10 @@ def guias_unicas(items: list) -> list:
 # --------------------------------------------------------------------------- #
 # Pantallas
 # --------------------------------------------------------------------------- #
+def _tipo(d: dict) -> str:
+    return "Factura" if d.get("por") == "factura" else "Pedido"
+
+
 def _etiqueta(g: dict) -> str:
     partes = [f"Guía {g['guia']}"]
     if g["factura"]:
@@ -203,7 +275,7 @@ def _etiqueta(g: dict) -> str:
 
 
 def _pantalla_guias(d: dict):
-    texto = f"📦 Pedido <b>{esc(d['doc'])}</b> tiene varias guías.\nSelecciona una:"
+    texto = f"📦 {_tipo(d)} <b>{esc(d['doc'])}</b> tiene varias guías.\nSelecciona una:"
     teclado = InlineKeyboardMarkup([
         [InlineKeyboardButton(_etiqueta(g), callback_data=f"gu_sel_{i}")]
         for i, g in enumerate(d["guias"][:MAX_BOTONES])
@@ -212,8 +284,10 @@ def _pantalla_guias(d: dict):
 
 
 def _pantalla_acciones(d: dict, g: dict):
-    texto = (
-        f"📦 Pedido <b>{esc(d['doc'])}</b>\n"
+    texto = f"📦 {_tipo(d)} <b>{esc(d['doc'])}</b>\n"
+    if d.get("por") == "factura":
+        texto += f"• <b>Pedido:</b> {esc(g['pedido']) or 'N/A'}\n"
+    texto += (
         f"• <b>Cliente:</b> {esc(g['cliente']) or 'N/A'}\n"
         f"• <b>Vendedor:</b> {esc(g['vendedor']) or 'N/A'}\n"
         f"• <b>Factura:</b> {esc(g['factura']) or 'N/A'}\n"
@@ -232,25 +306,29 @@ def _pantalla_acciones(d: dict, g: dict):
 # --------------------------------------------------------------------------- #
 # Handlers de Telegram
 # --------------------------------------------------------------------------- #
+TEXTO_PEDIR = (
+    "📦 <b>Guías Coordinadora</b>\n\n"
+    "Escribe el <b>número de pedido</b> o de <b>factura</b>.\n"
+    "Para buscar solo por factura escribe, por ejemplo, <code>f 50460</code>."
+)
+
+
 async def iniciar_gu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """/GU [número] o botón del menú."""
     query = update.callback_query
     if query:
         await query.answer()
         registrar_uso_bot(update, "BOTÓN_GU")
-        await editar(query, "📦 <b>Guías Coordinadora</b>\n\nEscribe el <b>número de pedido</b>:")
+        await editar(query, TEXTO_PEDIR)
         return ESPERANDO_DOCUMENTO_GU
 
     registrar_uso_bot(update, "/GU")
     programar_borrado(context, update.message)
 
     if not context.args:
-        await responder(
-            update, context,
-            "📦 <b>Guías Coordinadora</b>\n\nEscribe el <b>número de pedido</b> (o usa <code>/GU 7374</code>):",
-        )
+        await responder(update, context, TEXTO_PEDIR + "\nTambién puedes usar <code>/GU 7374</code>.")
         return ESPERANDO_DOCUMENTO_GU
-    return await ejecutar_gu(update, context, context.args[0])
+    return await ejecutar_gu(update, context, " ".join(context.args))
 
 
 async def recibir_texto_gu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -259,39 +337,64 @@ async def recibir_texto_gu(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 
 async def ejecutar_gu(update: Update, context: ContextTypes.DEFAULT_TYPE, texto: str) -> int:
-    doc = texto.strip().split(".")[0].strip()
-    if not doc.isdigit():
-        await responder(update, context, "⚠️ Escribe solo el <b>número de pedido</b>, por ejemplo <code>7374</code>.")
+    por_factura, doc = _interpretar(texto)
+    if not doc:
+        await responder(
+            update, context,
+            "⚠️ Escribe solo el número, por ejemplo <code>7374</code> (pedido) o <code>f 50460</code> (factura).",
+        )
         return ESPERANDO_DOCUMENTO_GU
 
-    espera = await responder(update, context, f"⏳ Buscando la guía del pedido <b>{esc(doc)}</b>…")
+    espera = await responder(
+        update, context,
+        f"⏳ Buscando {'la factura' if por_factura else 'el pedido'} <b>{esc(doc)}</b>…",
+    )
+
+    items, por, total_rango = [], "pedido", None
     try:
-        items = await asyncio.to_thread(consultar_pedido, doc)
+        if not por_factura:
+            items = await asyncio.to_thread(consultar_pedido, doc)
+        if not items:
+            por = "factura"
+            items, total_rango = await asyncio.to_thread(buscar_por_factura, doc)
     except RuntimeError as e:
         logger.error("Configuración: %s", e)
         await espera.edit_text(f"⚠️ {esc(e)}", parse_mode=ParseMode.HTML)
         return ConversationHandler.END
     except Exception:
-        logger.exception("Error consultando pedido %s para guías", doc)
-        await espera.edit_text("⚠️ No pude consultar el pedido ahora. Intenta de nuevo en un momento.")
+        logger.exception("Error consultando %s para guías", doc)
+        await espera.edit_text("⚠️ No pude consultar el servicio ahora. Intenta de nuevo en un momento.")
         return ConversationHandler.END
 
     if not items:
-        await espera.edit_text(
-            f"❌ No se encontró el documento: <b>{esc(doc)}</b>.\nPuedes escribir otro número.",
-            parse_mode=ParseMode.HTML,
-        )
+        if total_rango == 0:
+            msg = (
+                "⚠️ El servicio no devolvió datos para buscar por factura. "
+                "Revisa la configuración (variable NTEX_WS_COMODIN)."
+            )
+        elif por_factura:
+            msg = (
+                f"❌ No encontré la factura <b>{esc(doc)}</b> en los últimos {DIAS_FACTURA} días.\n"
+                "Puedes escribir otro número."
+            )
+        else:
+            msg = (
+                f"❌ No encontré el pedido ni la factura <b>{esc(doc)}</b> "
+                f"(facturas de los últimos {DIAS_FACTURA} días).\nPuedes escribir otro número."
+            )
+        await espera.edit_text(msg, parse_mode=ParseMode.HTML)
         return ESPERANDO_DOCUMENTO_GU
 
     guias = guias_unicas(items)
     if not guias:
         await espera.edit_text(
-            f"ℹ️ El pedido <b>{esc(doc)}</b> todavía no tiene guía asignada.\nPuedes escribir otro número.",
+            f"ℹ️ {'La factura' if por == 'factura' else 'El pedido'} <b>{esc(doc)}</b> "
+            "todavía no tiene guía asignada.\nPuedes escribir otro número.",
             parse_mode=ParseMode.HTML,
         )
         return ESPERANDO_DOCUMENTO_GU
 
-    d = {"doc": doc, "guias": guias}
+    d = {"doc": doc, "por": por, "guias": guias}
     context.user_data["gu"] = d
 
     if len(guias) == 1:
@@ -354,7 +457,7 @@ async def acciones_gu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     msg = await query.message.reply_document(
         document=archivo,
         filename=f"guia_{g['guia']}.{ext}",
-        caption=f"📦 Guía {g['guia']} - Pedido {d['doc']}",
+        caption=f"📦 Guía {g['guia']} - {_tipo(d)} {d['doc']}",
     )
     programar_borrado(context, msg)
     return ACCIONES_GU
