@@ -122,9 +122,9 @@ def registrar_uso_bot(update: Update, comando_usado: str) -> None:
 def _teclado_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🛒 Inventario Vendedor", callback_data="start_vend")],
-        [InlineKeyboardButton("📦 Inventario SAP", callback_data="start_sap")],
-        [InlineKeyboardButton("🚚 Pedidos (PG)", callback_data="start_pg")],
-        [InlineKeyboardButton("📦 Guías (GU)", callback_data="start_gu")],
+        [InlineKeyboardButton("🧮 Inventario SAP", callback_data="start_sap")],
+        [InlineKeyboardButton("📝 Pedidos", callback_data="start_pg")],
+        [InlineKeyboardButton("🚚 Guías", callback_data="start_gu")],
     ])
 
 
