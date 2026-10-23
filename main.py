@@ -46,7 +46,7 @@ from inventario_handlers import (
     SELECCIONANDO_COLOR_SAP,
     SELECCIONANDO_REF_SAP,
     _num,
-    _primer_valor,  # <--- Corregido aquí
+    _primer_valor,
     iniciar_busqueda_sap,
     recibir_texto_ref_sap,
     seleccionar_color_sap,
@@ -71,6 +71,16 @@ from geo_handlers import (
     recibir_texto_pg,
     seleccionar_color_pg,
     seleccionar_referencia_pg,
+)
+
+from guias_handlers import (
+    ACCIONES_GU,
+    ESPERANDO_DOCUMENTO_GU,
+    SELECCIONANDO_GUIA_GU,
+    acciones_gu,
+    iniciar_gu,
+    recibir_texto_gu,
+    seleccionar_guia_gu,
 )
 
 logger = logging.getLogger(__name__)
@@ -297,10 +307,12 @@ def main() -> None:
       CommandHandler("in", iniciar_busqueda_sap),
       CommandHandler("i", iniciar_busqueda_vendedor),
       CommandHandler("pg", iniciar_pg),
+      CommandHandler("gu", iniciar_gu),
       CallbackQueryHandler(iniciar_busqueda, pattern="^start_pv$"),
       CallbackQueryHandler(iniciar_busqueda_sap, pattern="^start_sap$"),
       CallbackQueryHandler(iniciar_busqueda_vendedor, pattern="^start_vend$"),
       CallbackQueryHandler(iniciar_pg, pattern="^start_pg$"),
+      CallbackQueryHandler(iniciar_gu, pattern="^start_gu$"),
   ]
 
   texto_pv = MessageHandler(
@@ -314,6 +326,9 @@ def main() -> None:
   )
   texto_pg = MessageHandler(
       filters.TEXT & ~filters.COMMAND, recibir_texto_pg
+  )
+  texto_gu = MessageHandler(
+      filters.TEXT & ~filters.COMMAND, recibir_texto_gu
   )
 
   estados = {
@@ -369,6 +384,17 @@ def main() -> None:
               pattern=r"^pg_(col_\d+|all|back_refs|back_cols)$",
           ),
           texto_pg,
+      ],
+      ESPERANDO_DOCUMENTO_GU: [texto_gu],
+      SELECCIONANDO_GUIA_GU: [
+          CallbackQueryHandler(
+              seleccionar_guia_gu, pattern=r"^gu_sel_\d+$"
+          ),
+          texto_gu,
+      ],
+      ACCIONES_GU: [
+          CallbackQueryHandler(acciones_gu, pattern=r"^gu_(img|back)$"),
+          texto_gu,
       ],
   }
 
