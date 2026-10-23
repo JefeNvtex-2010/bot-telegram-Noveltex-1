@@ -6,15 +6,13 @@ import os
 import re
 import threading
 import time
-import unicodedata
-from concurrent.futures import ThreadPoolExecutor, wait
+from concurrent.futures import ThreadPoolExecutor
 
 import requests
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes, ConversationHandler
 
-import datos
 from handlers import (
     MAX_BOTONES,
     MI_TELEGRAM_ID,
@@ -54,8 +52,15 @@ MSG_CADUCADA = (
     "y actualiza la variable COORD_PHPSESSID en Render."
 )
 
-# Valores de "tipo de documento" que se prueban en el servicio poniendo la factura como documento
-TIPOS_FACTURA = ["FV", "FA", "FC", "FT", "FE", "F", "FACTURA", "13"]
+# Índice de facturas (se arma leyendo pedidos con el web service de trazabilidad)
+PEDIDO_DESDE = int(os.environ.get("NTEX_PEDIDO_DESDE", "4000"))
+PEDIDO_TOPE = int(os.environ.get("NTEX_PEDIDO_TOPE", "9000"))
+HILOS = int(os.environ.get("NTEX_SCAN_HILOS", "6"))
+BLOQUE = 200               # pedidos por bloque al armar el índice
+COLA_ATRAS = 400           # al refrescar se vuelven a leer los últimos pedidos...
+COLA_ADELANTE = 150        # ...y estos números nuevos por encima del máximo
+REFRESCO_SEGUNDOS = 20 * 60
+ESPERA_ENTRE_COLAS = 60    # mínimo entre lecturas rápidas disparadas por una búsqueda sin resultado
 
 
 # --------------------------------------------------------------------------- #
@@ -166,114 +171,174 @@ def descargar_imagen_guia(guia: str):
 
 
 # --------------------------------------------------------------------------- #
-# Búsqueda por factura
-#   1) hoja de pedidos (Google Sheets): factura -> pedido, y luego se consulta el pedido
-#   2) servicio de trazabilidad probando tipos de documento con la factura como documento
+# Búsqueda por factura: índice factura -> pedido -> guía armado con el web service
 # --------------------------------------------------------------------------- #
 def _solo_digitos(v) -> str:
     return re.sub(r"\D", "", str(v).split(".")[0]) if v not in (None, "") else ""
 
 
-def _norm(texto) -> str:
-    t = unicodedata.normalize("NFKD", str(texto)).encode("ascii", "ignore").decode()
-    return re.sub(r"\s+", " ", t.lower().replace("_", " ")).strip()
+CAMPOS = (
+    "numero factura", "numero guia", "fecha factura", "fecha dcto",
+    "fecha despacho", "nombre tercero", "nombre vendedor",
+)
+
+INDICE = {
+    "por_pedido": {},   # pedido(int) -> lista de líneas con factura
+    "listo": False,     # primera construcción terminada
+    "error": "",
+    "progreso": 0,      # último pedido leído en la construcción inicial
+    "max": 0,           # pedido más alto con datos
+    "t_cola": 0.0,      # última lectura rápida de pedidos recientes
+    "t_listo": 0.0,
+    "errores": 0,
+}
+_lock_ind = threading.Lock()
+_lock_escaneo = threading.Lock()  # una sola lectura masiva a la vez
 
 
-def _col_factura(df):
-    """Busca en la hoja la columna con el número de factura."""
-    norm = {c: _norm(c) for c in df.columns}
-    for p in ("numero factura", "numero de factura", "nro factura", "num factura", "no factura",
-              "n factura", "documento factura", "factura"):
-        for c, n in norm.items():
-            if n == p:
-                return c
-    for c, n in norm.items():
-        if "factura" in n and not any(x in n for x in ("fecha", "estado", "valor", "total", "url", "tipo")):
-            return c
-    return None
-
-
-async def _pedidos_por_factura_hoja(doc: str):
-    """Devuelve (lista de pedidos que tienen esa factura en la hoja, notas de diagnóstico)."""
+def _leer_pedido(n: int):
+    """Devuelve (n, None) si falló, o (n, (total_lineas, lineas_con_factura))."""
     try:
-        df = await datos.pedidos.obtener()
+        items = consultar_pedido(str(n))
     except Exception as e:
-        return [], [f"hoja: error {type(e).__name__}"]
-    if df is None or df.empty:
-        return [], ["hoja: sin datos"]
-    col = _col_factura(df)
-    if not col:
-        cands = [c for c in df.columns if "factura" in _norm(c)]
-        return [], [f"hoja: no hay columna con el número de factura (columnas con 'factura': {cands or 'ninguna'})"]
-    if "Documento Pd" not in df.columns:
-        return [], ["hoja: falta la columna Documento Pd"]
-
-    serie = df[col].astype(str).str.split(".").str[0].str.replace(r"\D", "", regex=True)
-    peds = df.loc[serie == _solo_digitos(doc), "Documento Pd"].astype(str).str.split(".").str[0].str.strip()
-    peds = [p for p in dict.fromkeys(peds) if p.isdigit()]
-    return peds, [f"hoja: columna {col!r}, {len(peds)} pedido(s) con esa factura"]
-
-
-_tipo_factura_ok = None
-
-
-def _probar_tipos_factura(doc: str):
-    """Prueba tipos de documento del servicio con la factura como documento (en paralelo)."""
-    global _tipo_factura_ok
-    objetivo = _solo_digitos(doc)
-    diag = []
-    tipos = [_tipo_factura_ok] if _tipo_factura_ok else TIPOS_FACTURA
-
-    ex = ThreadPoolExecutor(max_workers=len(tipos))
-    futs = {ex.submit(consultar_pedido, doc, t): t for t in tipos}
-    hechos, _ = wait(futs, timeout=30)
-    ex.shutdown(wait=False)
-
-    for f in hechos:
-        t = futs[f]
-        try:
-            its = f.result()
-        except Exception as e:
-            diag.append(f"servicio tipo {t!r}: error {type(e).__name__}")
+        logger.debug("Pedido %s: error %s", n, e)
+        return n, None
+    filas = []
+    for it in items:
+        fac = _solo_digitos(it.get("numero factura"))
+        if not fac:
             continue
-        coincide = [i for i in its if _solo_digitos(i.get("numero factura")) == objetivo]
-        diag.append(f"servicio tipo {t!r}: {len(its)} líneas, {len(coincide)} de esa factura")
-        if coincide:
-            _tipo_factura_ok = t
-            return coincide, diag
-    sin_resp = [futs[f] for f in futs if f not in hechos]
-    if sin_resp:
-        diag.append(f"servicio sin respuesta a tiempo: {sin_resp}")
-    return [], diag
+        fila = {k: it.get(k) for k in CAMPOS}
+        fila["numero factura"] = fac
+        fila["documento pd"] = str(n)
+        filas.append(fila)
+    return n, (len(items), filas)
 
 
-async def buscar_por_factura(doc: str):
-    """Devuelve (líneas de esa factura, notas de diagnóstico)."""
-    objetivo = _solo_digitos(doc)
-    peds, diag = await _pedidos_por_factura_hoja(doc)
+def _escanear_rango(desde: int, hasta: int):
+    """Lee los pedidos desde..hasta. Devuelve (máximo con datos, cantidad de errores)."""
+    nuevos, max_enc, errores = {}, 0, 0
+    with ThreadPoolExecutor(max_workers=max(1, HILOS)) as ex:
+        for n, res in ex.map(_leer_pedido, range(desde, hasta + 1)):
+            if res is None:
+                errores += 1
+                continue
+            total, filas = res
+            if total:
+                max_enc = max(max_enc, n)
+            nuevos[n] = filas
+    with _lock_ind:
+        INDICE["por_pedido"].update(nuevos)
+        INDICE["errores"] += errores
+    return max_enc, errores
 
-    items = []
-    for ped in peds[:5]:
+
+def _construir_indice() -> None:
+    """Construcción inicial: bloques desde PEDIDO_DESDE hasta que dejan de aparecer pedidos."""
+    inicio = time.time()
+    n, vacios, max_total, fallos_seguidos = PEDIDO_DESDE, 0, 0, 0
+    while n <= PEDIDO_TOPE:
+        fin = min(n + BLOQUE - 1, PEDIDO_TOPE)
+        mx, err = _escanear_rango(n, fin)
+        INDICE["progreso"] = fin
+        if err >= (fin - n + 1):
+            fallos_seguidos += 1
+            if fallos_seguidos >= 2:
+                INDICE["error"] = "el servicio de trazabilidad no respondió"
+                logger.error("Índice de facturas: el servicio no respondió, se cancela")
+                return
+        else:
+            fallos_seguidos = 0
+        if mx:
+            max_total = max(max_total, mx)
+            vacios = 0
+        else:
+            vacios += 1
+        if max_total and vacios >= 2:
+            break
+        n = fin + 1
+
+    with _lock_ind:
+        INDICE["max"] = max_total
+        INDICE["listo"] = True
+        INDICE["error"] = ""
+        INDICE["t_listo"] = time.time()
+        facturas = sum(len(v) for v in INDICE["por_pedido"].values())
+    logger.info(
+        "Índice de facturas listo: pedidos %s-%s, %s líneas con factura, %.0f s",
+        PEDIDO_DESDE, max_total, facturas, time.time() - inicio,
+    )
+
+
+def _refrescar_cola() -> None:
+    """Vuelve a leer los pedidos más recientes (nuevas facturas o guías recién asignadas)."""
+    if not _lock_escaneo.acquire(blocking=False):
+        return
+    try:
+        INDICE["t_cola"] = time.time()
+        desde = max(PEDIDO_DESDE, INDICE["max"] - COLA_ATRAS)
+        hasta = min(PEDIDO_TOPE, INDICE["max"] + COLA_ADELANTE)
+        mx, _ = _escanear_rango(desde, hasta)
+        if mx > INDICE["max"]:
+            INDICE["max"] = mx
+    except Exception:
+        logger.exception("Error refrescando el índice de facturas")
+    finally:
+        _lock_escaneo.release()
+
+
+def _bucle_indice() -> None:
+    time.sleep(45)  # deja arrancar el bot y los demás servicios
+    while True:
         try:
-            its = await asyncio.to_thread(consultar_pedido, ped)
-        except RuntimeError:
-            raise
-        except Exception as e:
-            diag.append(f"pedido {ped}: error {type(e).__name__}")
-            continue
-        propios = [i for i in its if _solo_digitos(i.get("numero factura")) == objetivo]
-        items.extend(propios or its)
-    if items:
-        return items, diag
-
-    its, d2 = await asyncio.to_thread(_probar_tipos_factura, doc)
-    return its, diag + d2
+            if not INDICE["listo"]:
+                with _lock_escaneo:
+                    _construir_indice()
+                if not INDICE["listo"]:
+                    time.sleep(120)  # reintenta más tarde
+                    continue
+            else:
+                _refrescar_cola()
+        except Exception:
+            logger.exception("Error en el índice de facturas")
+        time.sleep(REFRESCO_SEGUNDOS)
 
 
-def _bloque_diag(update: Update, diag: list) -> str:
+threading.Thread(target=_bucle_indice, name="indice-facturas", daemon=True).start()
+
+
+def _filtrar_factura(objetivo: str) -> list:
+    with _lock_ind:
+        listas = list(INDICE["por_pedido"].values())
+    return [f for filas in listas for f in filas if f["numero factura"] == objetivo]
+
+
+def buscar_por_factura(doc: str):
+    """Devuelve (líneas de esa factura, índice_listo)."""
+    if not INDICE["listo"]:
+        return [], False
+    objetivo = _solo_digitos(doc)
+    res = _filtrar_factura(objetivo)
+    if not res and time.time() - INDICE["t_cola"] > ESPERA_ENTRE_COLAS:
+        _refrescar_cola()  # puede ser una factura nueva
+        res = _filtrar_factura(objetivo)
+    return res, True
+
+
+def _estado_indice() -> str:
+    if INDICE["listo"]:
+        hace = int((time.time() - INDICE["t_listo"]) / 60)
+        return f"índice listo (pedidos {PEDIDO_DESDE}-{INDICE['max']}), armado hace {hace} min"
+    if INDICE["error"]:
+        return f"índice con error: {INDICE['error']}"
+    return f"índice en construcción (voy en el pedido {INDICE['progreso'] or PEDIDO_DESDE})"
+
+
+def _bloque_diag(update: Update) -> str:
     """El detalle técnico solo lo ve el dueño del bot."""
-    if diag and update.effective_user and update.effective_user.id == MI_TELEGRAM_ID:
-        return f"\n\n<b>Diagnóstico:</b>\n<pre>{esc(chr(10).join(diag))[:1500]}</pre>"
+    if update.effective_user and update.effective_user.id == MI_TELEGRAM_ID:
+        extra = f"\nconsultas fallidas: {INDICE['errores']}" if INDICE["errores"] else ""
+        return f"\n\n<b>Diagnóstico:</b>\n<pre>{esc(_estado_indice() + extra)}</pre>"
     return ""
 
 
@@ -445,13 +510,13 @@ async def ejecutar_gu(update: Update, context: ContextTypes.DEFAULT_TYPE, texto:
         f"⏳ Buscando {'la factura' if por_factura else 'el pedido'} <b>{esc(doc)}</b>…",
     )
 
-    items, por, diag = [], "pedido", []
+    items, por, indice_listo = [], "pedido", True
     try:
         if not por_factura:
             items = await asyncio.to_thread(consultar_pedido, doc)
         if not items and modo != "pedido":
             por = "factura"
-            items, diag = await buscar_por_factura(doc)
+            items, indice_listo = await asyncio.to_thread(buscar_por_factura, doc)
     except RuntimeError as e:
         logger.error("Configuración: %s", e)
         await espera.edit_text(f"⚠️ {esc(e)}", parse_mode=ParseMode.HTML)
@@ -461,18 +526,30 @@ async def ejecutar_gu(update: Update, context: ContextTypes.DEFAULT_TYPE, texto:
         await espera.edit_text("⚠️ No pude consultar el servicio ahora. Intenta de nuevo en un momento.")
         return ConversationHandler.END
 
-    if diag:
-        logger.info("Búsqueda de factura %s: %s", doc, " | ".join(diag))
-
     teclado_error = _teclado_cambiar() if modo else None
     if not items:
-        if por_factura:
-            msg = f"❌ No encontré la factura <b>{esc(doc)}</b>.\nPuedes escribir otro número."
+        if por == "factura" and not indice_listo:
+            msg = (
+                "⏳ Todavía estoy preparando el índice de facturas con el servicio de trazabilidad. "
+                "Tarda unos minutos después de cada reinicio. Inténtalo de nuevo en un rato "
+                "o busca por pedido."
+            )
+            if INDICE["error"]:
+                msg = (
+                    "⚠️ No pude armar el índice de facturas: el servicio de trazabilidad no respondió. "
+                    "Busca por pedido por ahora."
+                )
+        elif por_factura:
+            msg = (
+                f"❌ No encontré la factura <b>{esc(doc)}</b> entre los pedidos "
+                f"{PEDIDO_DESDE} a {INDICE['max']}.\nPuedes escribir otro número."
+            )
         elif modo == "pedido":
             msg = f"❌ No encontré el pedido <b>{esc(doc)}</b>.\nPuedes escribir otro número."
         else:
             msg = f"❌ No encontré el pedido ni la factura <b>{esc(doc)}</b>.\nPuedes escribir otro número."
-        msg += _bloque_diag(update, diag)
+        if por == "factura":
+            msg += _bloque_diag(update)
         await espera.edit_text(msg, parse_mode=ParseMode.HTML, reply_markup=teclado_error)
         return ESPERANDO_DOCUMENTO_GU
 
