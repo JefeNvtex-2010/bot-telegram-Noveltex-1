@@ -55,9 +55,16 @@ MSG_CADUCADA = (
 
 # Búsqueda por factura (el servicio de trazabilidad se consulta por rango de fechas)
 DIAS_FACTURA = int(os.environ.get("NTEX_WS_DIAS_FACTURA", "90"))
-COMODIN = os.environ.get("NTEX_WS_COMODIN", "0")  # valor para tipo/documento cuando no se filtra por pedido
 CACHE_SEGUNDOS = 10 * 60
+REINTENTO_FALLO_SEGUNDOS = 5 * 60
 MAX_PAGINAS = 80
+# Combinaciones (tipo, documento) que se prueban cuando no se filtra por pedido.
+# Se puede forzar una con la variable NTEX_WS_COMODIN (ej: "PV/0" o "0").
+CANDIDATOS_COMODIN = [
+    ("0", "0"), ("PV", "0"), ("-", "-"), ("PV", "-"),
+    ("null", "null"), ("PV", "null"), ("ALL", "ALL"), ("PV", "ALL"),
+    ("%", "%"), ("*", "*"), (" ", " "),
+]
 
 
 # --------------------------------------------------------------------------- #
@@ -176,39 +183,76 @@ def _solo_digitos(v) -> str:
 
 _cache_rango = {"t": 0.0, "items": []}
 _lock_rango = threading.Lock()
+_comodin_ok = None   # (tipo, documento) que funcionó
+_fallo_t = 0.0       # momento del último intento fallido de todas las combinaciones
+
+
+def _candidatos() -> list:
+    lista = []
+    cfg = os.environ.get("NTEX_WS_COMODIN", "").strip()
+    if cfg:
+        partes = [p.strip() for p in cfg.split("/")]
+        lista.append((partes[0], partes[1] if len(partes) > 1 else partes[0]))
+    lista += [c for c in CANDIDATOS_COMODIN if c not in lista]
+    return lista
+
+
+def _pedir(s: requests.Session, llave: str, ini: str, fin: str, tipo: str, doc: str, offset: int) -> dict:
+    url = f"{BASE_URL}/{llave}/{ini}/{fin}/{quote(tipo)}/{quote(doc)}/{offset}/{PAGE_SIZE}"
+    resp = s.get(url, timeout=TIMEOUT, headers={"Accept": "application/json"})
+    resp.raise_for_status()
+    return resp.json()
 
 
 def _traer_rango() -> list:
     """Líneas de los últimos DIAS_FACTURA días (con caché de unos minutos)."""
+    global _comodin_ok, _fallo_t
     with _lock_rango:
         if _cache_rango["items"] and time.time() - _cache_rango["t"] < CACHE_SEGUNDOS:
             return _cache_rango["items"]
+        if _comodin_ok is None and time.time() - _fallo_t < REINTENTO_FALLO_SEGUNDOS:
+            return []  # se probó hace poco y ninguna combinación sirvió
 
         llave = quote(_id_llave(), safe="!")
         hoy = date.today()
-        fecha_ini = (hoy - timedelta(days=DIAS_FACTURA)).strftime("%Y%m%d")
-        fecha_fin = hoy.strftime("%Y%m%d")
+        ini = (hoy - timedelta(days=DIAS_FACTURA)).strftime("%Y%m%d")
+        fin = hoy.strftime("%Y%m%d")
 
-        items, offset = [], 0
         with requests.Session() as s:
+            pares = [_comodin_ok] if _comodin_ok else _candidatos()
+            primera, elegido = None, None
+            for tipo, doc in pares:
+                try:
+                    data = _pedir(s, llave, ini, fin, tipo, doc, 0)
+                except requests.RequestException as e:
+                    logger.warning("Rango con comodín (%r, %r): error %s", tipo, doc, e)
+                    continue
+                n = len(data.get("items", []))
+                logger.info("Rango %s-%s con comodín (%r, %r): %s líneas en la primera página", ini, fin, tipo, doc, n)
+                if n:
+                    primera, elegido = data, (tipo, doc)
+                    break
+
+            if not elegido:
+                _comodin_ok = None
+                _fallo_t = time.time()
+                return []
+
+            _comodin_ok = elegido
+            items = list(primera.get("items", []))
+            hay_mas, offset = bool(primera.get("hasMore")), PAGE_SIZE
             for _ in range(MAX_PAGINAS):
-                url = (
-                    f"{BASE_URL}/{llave}/{fecha_ini}/{fecha_fin}/"
-                    f"{quote(COMODIN)}/{quote(COMODIN)}/{offset}/{PAGE_SIZE}"
-                )
-                resp = s.get(url, timeout=TIMEOUT, headers={"Accept": "application/json"})
-                resp.raise_for_status()
-                data = resp.json()
+                if not hay_mas:
+                    break
+                data = _pedir(s, llave, ini, fin, elegido[0], elegido[1], offset)
                 pagina = data.get("items", [])
                 items.extend(pagina)
-                if not pagina or not data.get("hasMore"):
-                    break
+                hay_mas = bool(pagina) and bool(data.get("hasMore"))
                 offset += PAGE_SIZE
 
         items = [_normalizar(i) for i in items]
-        logger.info("Rango %s-%s (comodín %r): %s líneas", fecha_ini, fecha_fin, COMODIN, len(items))
-        if items:
-            _cache_rango.update(t=time.time(), items=items)
+        logger.info("Rango listo con comodín %r: %s líneas", elegido, len(items))
+        _cache_rango.update(t=time.time(), items=items)
         return items
 
 
@@ -408,8 +452,8 @@ async def ejecutar_gu(update: Update, context: ContextTypes.DEFAULT_TYPE, texto:
     if not items:
         if total_rango == 0:
             msg = (
-                "⚠️ El servicio no devolvió datos para buscar por factura. "
-                "Revisa la configuración (variable NTEX_WS_COMODIN)."
+                "⚠️ No pude buscar por factura: el servicio de trazabilidad no devolvió datos "
+                "al consultar por fechas (probé varias combinaciones). Revisa los logs de Render."
             )
         elif por_factura:
             msg = (
