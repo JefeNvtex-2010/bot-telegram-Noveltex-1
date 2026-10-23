@@ -54,16 +54,16 @@ MSG_CADUCADA = (
 )
 
 # Búsqueda por factura (el servicio de trazabilidad se consulta por rango de fechas)
-DIAS_FACTURA = int(os.environ.get("NTEX_WS_DIAS_FACTURA", "90"))
+DIAS_FACTURA = int(os.environ.get("NTEX_WS_DIAS_FACTURA", "150"))
 CACHE_SEGUNDOS = 10 * 60
-REINTENTO_FALLO_SEGUNDOS = 5 * 60
+REINTENTO_FALLO_SEGUNDOS = 60
 MAX_PAGINAS = 80
-# Combinaciones (tipo, documento) que se prueban cuando no se filtra por pedido.
-# Se puede forzar una con la variable NTEX_WS_COMODIN (ej: "PV/0" o "0").
-CANDIDATOS_COMODIN = [
+# Segmentos de la dirección que van entre la fecha final y el offset cuando no se filtra por pedido.
+# Se prueban en orden; se puede forzar uno con NTEX_WS_COMODIN (ej: "PV/0", "0" o "SIN").
+CANDIDATOS = [
     ("0", "0"), ("PV", "0"), ("-", "-"), ("PV", "-"),
     ("null", "null"), ("PV", "null"), ("ALL", "ALL"), ("PV", "ALL"),
-    ("%", "%"), ("*", "*"), (" ", " "),
+    ("%", "%"), ("*", "*"), (" ", " "), ("", ""), (),
 ]
 
 
@@ -183,57 +183,79 @@ def _solo_digitos(v) -> str:
 
 _cache_rango = {"t": 0.0, "items": []}
 _lock_rango = threading.Lock()
-_comodin_ok = None   # (tipo, documento) que funcionó
-_fallo_t = 0.0       # momento del último intento fallido de todas las combinaciones
+_comodin_ok = None   # segmentos que funcionaron (tupla)
+_fallo_t = 0.0       # momento del último intento fallido con todas las combinaciones
+_ultimo_diag = []    # resumen de lo que respondió el servicio con cada combinación
+
+
+def _nombre_segs(segs: tuple) -> str:
+    if not segs:
+        return "(sin tipo/documento)"
+    if all(x == "" for x in segs):
+        return "(vacíos //)"
+    return "/".join(repr(x) for x in segs)
 
 
 def _candidatos() -> list:
     lista = []
     cfg = os.environ.get("NTEX_WS_COMODIN", "").strip()
     if cfg:
-        partes = [p.strip() for p in cfg.split("/")]
-        lista.append((partes[0], partes[1] if len(partes) > 1 else partes[0]))
-    lista += [c for c in CANDIDATOS_COMODIN if c not in lista]
+        if cfg.upper() == "SIN":
+            lista.append(())
+        else:
+            partes = tuple(p.strip() for p in cfg.split("/"))
+            lista.append(partes if len(partes) > 1 else (partes[0], partes[0]))
+    lista += [c for c in CANDIDATOS if c not in lista]
     return lista
 
 
-def _pedir(s: requests.Session, llave: str, ini: str, fin: str, tipo: str, doc: str, offset: int) -> dict:
-    url = f"{BASE_URL}/{llave}/{ini}/{fin}/{quote(tipo)}/{quote(doc)}/{offset}/{PAGE_SIZE}"
-    resp = s.get(url, timeout=TIMEOUT, headers={"Accept": "application/json"})
-    resp.raise_for_status()
-    return resp.json()
+def _pedir(s: requests.Session, llave: str, ini: str, fin: str, segs: tuple, offset: int) -> requests.Response:
+    partes = [BASE_URL, llave, ini, fin, *[quote(x) for x in segs], str(offset), str(PAGE_SIZE)]
+    return s.get("/".join(partes), timeout=TIMEOUT, headers={"Accept": "application/json"})
+
+
+def diagnostico() -> str:
+    return "\n".join(_ultimo_diag)
 
 
 def _traer_rango() -> list:
     """Líneas de los últimos DIAS_FACTURA días (con caché de unos minutos)."""
-    global _comodin_ok, _fallo_t
+    global _comodin_ok, _fallo_t, _ultimo_diag
     with _lock_rango:
         if _cache_rango["items"] and time.time() - _cache_rango["t"] < CACHE_SEGUNDOS:
             return _cache_rango["items"]
         if _comodin_ok is None and time.time() - _fallo_t < REINTENTO_FALLO_SEGUNDOS:
-            return []  # se probó hace poco y ninguna combinación sirvió
+            return []  # se probó hace muy poco y ninguna combinación sirvió
 
         llave = quote(_id_llave(), safe="!")
         hoy = date.today()
         ini = (hoy - timedelta(days=DIAS_FACTURA)).strftime("%Y%m%d")
         fin = hoy.strftime("%Y%m%d")
 
+        diag = [f"Rango {ini}-{fin}"]
         with requests.Session() as s:
-            pares = [_comodin_ok] if _comodin_ok else _candidatos()
+            pares = [_comodin_ok] if _comodin_ok is not None else _candidatos()
             primera, elegido = None, None
-            for tipo, doc in pares:
+            for segs in pares:
+                nombre = _nombre_segs(segs)
                 try:
-                    data = _pedir(s, llave, ini, fin, tipo, doc, 0)
-                except requests.RequestException as e:
-                    logger.warning("Rango con comodín (%r, %r): error %s", tipo, doc, e)
+                    resp = _pedir(s, llave, ini, fin, segs, 0)
+                    n, data = 0, {}
+                    if resp.ok:
+                        data = resp.json()
+                        n = len(data.get("items", []))
+                    diag.append(f"{nombre}: HTTP {resp.status_code}, {n} líneas")
+                except Exception as e:
+                    diag.append(f"{nombre}: error {type(e).__name__}")
+                    logger.warning("Rango con %s: error %s: %s", nombre, type(e).__name__, e)
                     continue
-                n = len(data.get("items", []))
-                logger.info("Rango %s-%s con comodín (%r, %r): %s líneas en la primera página", ini, fin, tipo, doc, n)
+                logger.info("Rango con %s: HTTP %s, %s líneas en la primera página", nombre, resp.status_code, n)
                 if n:
-                    primera, elegido = data, (tipo, doc)
+                    primera, elegido = data, segs
                     break
 
-            if not elegido:
+            _ultimo_diag = diag
+            if elegido is None:
                 _comodin_ok = None
                 _fallo_t = time.time()
                 return []
@@ -244,14 +266,16 @@ def _traer_rango() -> list:
             for _ in range(MAX_PAGINAS):
                 if not hay_mas:
                     break
-                data = _pedir(s, llave, ini, fin, elegido[0], elegido[1], offset)
+                resp = _pedir(s, llave, ini, fin, elegido, offset)
+                resp.raise_for_status()
+                data = resp.json()
                 pagina = data.get("items", [])
                 items.extend(pagina)
                 hay_mas = bool(pagina) and bool(data.get("hasMore"))
                 offset += PAGE_SIZE
 
         items = [_normalizar(i) for i in items]
-        logger.info("Rango listo con comodín %r: %s líneas", elegido, len(items))
+        logger.info("Rango listo con %s: %s líneas", _nombre_segs(elegido), len(items))
         _cache_rango.update(t=time.time(), items=items)
         return items
 
@@ -453,8 +477,11 @@ async def ejecutar_gu(update: Update, context: ContextTypes.DEFAULT_TYPE, texto:
         if total_rango == 0:
             msg = (
                 "⚠️ No pude buscar por factura: el servicio de trazabilidad no devolvió datos "
-                "al consultar por fechas (probé varias combinaciones). Revisa los logs de Render."
+                "al consultar por fechas."
             )
+            # El detalle técnico solo lo ve el dueño del bot
+            if update.effective_user and update.effective_user.id == MI_TELEGRAM_ID:
+                msg += f"\n\n<b>Diagnóstico:</b>\n<pre>{esc(diagnostico())[:1500]}</pre>"
         elif por_factura:
             msg = (
                 f"❌ No encontré la factura <b>{esc(doc)}</b> en los últimos {DIAS_FACTURA} días.\n"
