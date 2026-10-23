@@ -1,11 +1,10 @@
 import asyncio
 import io
+import json
 import logging
 import os
 import re
 import threading
-from html.parser import HTMLParser
-from urllib.parse import urljoin
 
 import requests
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -28,8 +27,11 @@ logger = logging.getLogger(__name__)
 # Estados 0-11 ya están en uso (/PV, /IN, /I, /PG).
 ESPERANDO_DOCUMENTO_GU, SELECCIONANDO_GUIA_GU, ACCIONES_GU = 12, 13, 14
 
-LOGIN_URL = "https://guias.coordinadora.com/site/index.php"
-IMAGEN_URL = "https://guias.coordinadora.com/site/getimagen.php?codigo_remision={guia}"
+BASE_GUIAS = "https://guias.coordinadora.com/site"
+LOGIN_URL = f"{BASE_GUIAS}/index.php"
+MAIN_URL = f"{BASE_GUIAS}/main.php"
+SERVER_URL = f"{BASE_GUIAS}/srv/server.php"
+IMAGEN_URL = f"{BASE_GUIAS}/getimagen.php?codigo_remision={{guia}}"
 RASTREO_URL = (
     "https://coordinadora.com/rastreo/rastreo-de-guia/detalle-de-rastreo-de-guia/?guia={guia}"
 )
@@ -40,29 +42,6 @@ UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.3
 # --------------------------------------------------------------------------- #
 # Login en guias.coordinadora.com (sesión reutilizable)
 # --------------------------------------------------------------------------- #
-class _FormParser(HTMLParser):
-    """Recoge los formularios de la página de login con sus inputs."""
-
-    def __init__(self):
-        super().__init__()
-        self.forms = []
-        self._actual = None
-
-    def handle_starttag(self, tag, attrs):
-        a = dict(attrs)
-        if tag == "form":
-            self._actual = {"action": a.get("action", ""), "method": a.get("method", "get"), "inputs": []}
-            self.forms.append(self._actual)
-        elif tag == "input" and self._actual is not None:
-            self._actual["inputs"].append(
-                {"name": a.get("name"), "type": (a.get("type") or "text").lower(), "value": a.get("value", "")}
-            )
-
-    def handle_endtag(self, tag):
-        if tag == "form":
-            self._actual = None
-
-
 _lock = threading.Lock()
 _sesion = None
 
@@ -76,49 +55,49 @@ def _credenciales() -> tuple:
 
 
 def _login() -> requests.Session:
+    """Login por JSON-RPC (agwSesion.start), igual que hace el botón 'Entrar' de la página."""
     usuario, clave = _credenciales()
     s = requests.Session()
     s.headers.update(UA)
+
+    # 1) Abrir la página de login para recibir la cookie de sesión (PHPSESSID)
     r = s.get(LOGIN_URL, timeout=TIMEOUT)
-    logger.info("Login Coordinadora: GET %s -> HTTP %s (%s bytes)", LOGIN_URL, r.status_code, len(r.text))
+    logger.info("Login Coordinadora: GET index.php -> HTTP %s, cookies=%s", r.status_code, list(s.cookies.keys()))
     r.raise_for_status()
 
-    parser = _FormParser()
-    parser.feed(r.text)
-    for f in parser.forms:
-        logger.info(
-            "Login Coordinadora: form action=%r method=%r inputs=%s",
-            f["action"], f["method"], [(i["name"], i["type"]) for i in f["inputs"]],
-        )
-    form = next((f for f in parser.forms if any(i["type"] == "password" for i in f["inputs"])), None)
-    if not form:
-        logger.warning("Login Coordinadora: sin formulario con contraseña. HTML: %s", r.text[:1500])
-        raise RuntimeError("No encontré el formulario de login (la página puede usar JavaScript para entrar).")
-
-    datos, campo_user = {}, None
-    for i in form["inputs"]:
-        if not i["name"]:
-            continue
-        if i["type"] == "password":
-            datos[i["name"]] = clave
-        elif i["type"] == "text" and campo_user is None:
-            campo_user = i["name"]
-            datos[i["name"]] = usuario
-        elif i["type"] == "hidden":
-            datos[i["name"]] = i["value"]
-
-    destino = urljoin(r.url, form["action"]) if form["action"] else r.url
-    resp = s.post(destino, data=datos, timeout=TIMEOUT, allow_redirects=True)
-    logger.info(
-        "Login Coordinadora: POST %s campos=%s -> HTTP %s, url final %s, cookies=%s",
-        destino, list(datos.keys()), resp.status_code, resp.url, list(s.cookies.keys()),
-    )
-    logger.info("Login Coordinadora: respuesta (inicio): %s", resp.text[:500].replace("\n", " "))
+    # 2) Iniciar sesión
+    payload = {
+        "method": "agwSesion.start",
+        "params": {"usuario": usuario, "clave": clave, "recaptcha_response": ""},
+    }
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "X-Requested-With": "XMLHttpRequest",
+        "Origin": "https://guias.coordinadora.com",
+        "Referer": LOGIN_URL,
+        "Accept": "*/*",
+    }
+    resp = s.post(SERVER_URL, data=json.dumps(payload), headers=headers, timeout=TIMEOUT)
+    logger.info("Login Coordinadora: POST server.php -> HTTP %s, respuesta: %s", resp.status_code, resp.text[:300])
     resp.raise_for_status()
 
-    # Si la respuesta sigue mostrando el campo de contraseña, el login fue rechazado
-    if 'type="password"' in resp.text.lower() or "type='password'" in resp.text.lower():
-        raise RuntimeError("Coordinadora rechazó el login (revisa usuario/contraseña o el captcha).")
+    try:
+        data = resp.json()
+    except ValueError:
+        raise RuntimeError("Coordinadora respondió algo que no es JSON al iniciar sesión.")
+
+    resultado = data.get("result") or {}
+    if data.get("error") or not resultado.get("autorizado"):
+        motivo = data.get("error") or "sesión no autorizada (¿usuario/clave o captcha?)"
+        if isinstance(motivo, dict):
+            motivo = motivo.get("message") or json.dumps(motivo, ensure_ascii=False)
+        raise RuntimeError(f"Coordinadora rechazó el login: {str(motivo)[:200]}")
+
+    # 3) Entrar a la página principal (el navegador lo hace después del login)
+    try:
+        s.get(MAIN_URL, timeout=TIMEOUT, headers={"Referer": LOGIN_URL})
+    except requests.RequestException:
+        logger.warning("Login Coordinadora: no se pudo abrir main.php (se continúa igual)")
     return s
 
 
@@ -134,7 +113,7 @@ def descargar_imagen_guia(guia: str):
     """Devuelve (bytes, content_type). Reintenta una vez con login nuevo si la sesión expiró."""
     for intento in (0, 1):
         s = _obtener_sesion(forzar=bool(intento))
-        r = s.get(IMAGEN_URL.format(guia=guia), timeout=TIMEOUT)
+        r = s.get(IMAGEN_URL.format(guia=guia), timeout=TIMEOUT, headers={"Referer": MAIN_URL})
         tipo = r.headers.get("Content-Type", "").lower()
         if r.ok and (tipo.startswith("image/") or "pdf" in tipo) and r.content:
             return r.content, tipo
@@ -142,7 +121,7 @@ def descargar_imagen_guia(guia: str):
             "Imagen guía %s intento %s: HTTP %s, tipo %s, inicio: %s",
             guia, intento, r.status_code, tipo, r.text[:300].replace("\n", " "),
         )
-    raise RuntimeError("Coordinadora no devolvió la imagen (login rechazado o guía sin imagen).")
+    raise RuntimeError("Coordinadora no devolvió la imagen (la guía puede no tener imagen disponible).")
 
 
 # --------------------------------------------------------------------------- #
