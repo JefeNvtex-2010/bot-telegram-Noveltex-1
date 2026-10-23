@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import threading
+import time
 
 import requests
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -13,6 +14,7 @@ from telegram.ext import ContextTypes, ConversationHandler
 
 from handlers import (
     MAX_BOTONES,
+    MI_TELEGRAM_ID,
     _sesion_expirada,
     editar,
     esc,
@@ -28,7 +30,6 @@ logger = logging.getLogger(__name__)
 ESPERANDO_DOCUMENTO_GU, SELECCIONANDO_GUIA_GU, ACCIONES_GU = 12, 13, 14
 
 BASE_GUIAS = "https://guias.coordinadora.com/site"
-LOGIN_URL = f"{BASE_GUIAS}/index.php"
 MAIN_URL = f"{BASE_GUIAS}/main.php"
 SERVER_URL = f"{BASE_GUIAS}/srv/server.php"
 IMAGEN_URL = f"{BASE_GUIAS}/getimagen.php?codigo_remision={{guia}}"
@@ -36,92 +37,126 @@ RASTREO_URL = (
     "https://coordinadora.com/rastreo/rastreo-de-guia/detalle-de-rastreo-de-guia/?guia={guia}"
 )
 TIMEOUT = 60
+KEEPALIVE_SEGUNDOS = 8 * 60  # cada cuánto el bot "toca" Coordinadora para que no cierre la sesión
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36"}
+HEADERS_RPC = {
+    "Content-Type": "application/x-www-form-urlencoded",
+    "X-Requested-With": "XMLHttpRequest",
+    "Origin": "https://guias.coordinadora.com",
+    "Referer": MAIN_URL,
+    "Accept": "*/*",
+}
+MSG_CADUCADA = (
+    "La sesión de Coordinadora caducó. Inicia sesión en el navegador, copia la cookie PHPSESSID "
+    "y actualiza la variable COORD_PHPSESSID en Render."
+)
 
 
 # --------------------------------------------------------------------------- #
-# Login en guias.coordinadora.com (sesión reutilizable)
+# Sesión de Coordinadora (cookie PHPSESSID copiada del navegador + keep-alive)
 # --------------------------------------------------------------------------- #
 _lock = threading.Lock()
 _sesion = None
+_vivo = None  # None = desconocido, True = activa, False = caducada
 
 
-def _credenciales() -> tuple:
-    usuario = os.environ.get("COORD_USUARIO", "").strip()
-    clave = os.environ.get("COORD_CLAVE", "").strip()
-    if not usuario or not clave:
-        raise RuntimeError("Faltan las variables de entorno COORD_USUARIO y COORD_CLAVE en Render.")
-    return usuario, clave
+def _cookie() -> str:
+    valor = os.environ.get("COORD_PHPSESSID", "").strip()
+    if not valor:
+        raise RuntimeError("Falta la variable COORD_PHPSESSID en Render (cookie de la sesión de Coordinadora).")
+    if valor.upper().startswith("PHPSESSID="):  # por si se pegó con el nombre
+        valor = valor.split("=", 1)[1]
+    return valor.strip()
 
 
-def _login() -> requests.Session:
-    """Login por JSON-RPC (agwSesion.start), igual que hace el botón 'Entrar' de la página."""
-    usuario, clave = _credenciales()
-    s = requests.Session()
-    s.headers.update(UA)
-
-    # 1) Abrir la página de login para recibir la cookie de sesión (PHPSESSID)
-    r = s.get(LOGIN_URL, timeout=TIMEOUT)
-    logger.info("Login Coordinadora: GET index.php -> HTTP %s, cookies=%s", r.status_code, list(s.cookies.keys()))
-    r.raise_for_status()
-
-    # 2) Iniciar sesión
-    payload = {
-        "method": "agwSesion.start",
-        "params": {"usuario": usuario, "clave": clave, "recaptcha_response": ""},
-    }
-    headers = {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "X-Requested-With": "XMLHttpRequest",
-        "Origin": "https://guias.coordinadora.com",
-        "Referer": LOGIN_URL,
-        "Accept": "*/*",
-    }
-    resp = s.post(SERVER_URL, data=json.dumps(payload), headers=headers, timeout=TIMEOUT)
-    logger.info("Login Coordinadora: POST server.php -> HTTP %s, respuesta: %s", resp.status_code, resp.text[:300])
-    resp.raise_for_status()
-
-    try:
-        data = resp.json()
-    except ValueError:
-        raise RuntimeError("Coordinadora respondió algo que no es JSON al iniciar sesión.")
-
-    resultado = data.get("result") or {}
-    if data.get("error") or not resultado.get("autorizado"):
-        motivo = data.get("error") or "sesión no autorizada (¿usuario/clave o captcha?)"
-        if isinstance(motivo, dict):
-            motivo = motivo.get("message") or json.dumps(motivo, ensure_ascii=False)
-        raise RuntimeError(f"Coordinadora rechazó el login: {str(motivo)[:200]}")
-
-    # 3) Entrar a la página principal (el navegador lo hace después del login)
-    try:
-        s.get(MAIN_URL, timeout=TIMEOUT, headers={"Referer": LOGIN_URL})
-    except requests.RequestException:
-        logger.warning("Login Coordinadora: no se pudo abrir main.php (se continúa igual)")
-    return s
-
-
-def _obtener_sesion(forzar: bool = False) -> requests.Session:
+def _obtener_sesion() -> requests.Session:
     global _sesion
     with _lock:
-        if _sesion is None or forzar:
-            _sesion = _login()
+        if _sesion is None:
+            s = requests.Session()
+            s.headers.update(UA)
+            s.cookies.set("PHPSESSID", _cookie(), domain="guias.coordinadora.com", path="/")
+            _sesion = s
         return _sesion
 
 
-def descargar_imagen_guia(guia: str):
-    """Devuelve (bytes, content_type). Reintenta una vez con login nuevo si la sesión expiró."""
-    for intento in (0, 1):
-        s = _obtener_sesion(forzar=bool(intento))
-        r = s.get(IMAGEN_URL.format(guia=guia), timeout=TIMEOUT, headers={"Referer": MAIN_URL})
-        tipo = r.headers.get("Content-Type", "").lower()
-        if r.ok and (tipo.startswith("image/") or "pdf" in tipo) and r.content:
-            return r.content, tipo
-        logger.warning(
-            "Imagen guía %s intento %s: HTTP %s, tipo %s, inicio: %s",
-            guia, intento, r.status_code, tipo, r.text[:300].replace("\n", " "),
+def _sesion_activa(s: requests.Session):
+    """True si Coordinadora reconoce la sesión, False si no, None si no se pudo comprobar (red)."""
+    try:
+        r = s.post(
+            SERVER_URL,
+            data=json.dumps({"method": "agwSettings.values", "params": {}}),
+            headers=HEADERS_RPC,
+            timeout=TIMEOUT,
         )
-    raise RuntimeError("Coordinadora no devolvió la imagen (la guía puede no tener imagen disponible).")
+        data = r.json()
+    except Exception as e:
+        logger.warning("Keep-alive Coordinadora: no se pudo comprobar la sesión (%s: %s)", type(e).__name__, e)
+        return None
+    activa = (not data.get("error")) and bool(data.get("result"))
+    if not activa:
+        logger.warning("Keep-alive Coordinadora: sesión no válida. Respuesta: %s", str(data)[:300])
+    return activa
+
+
+def _avisar_dueno(texto: str) -> None:
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    if not token:
+        return
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": MI_TELEGRAM_ID, "text": texto},
+            timeout=15,
+        )
+    except Exception as e:
+        logger.warning("No se pudo avisar al dueño: %s", e)
+
+
+def _registrar_estado(activa) -> None:
+    """Guarda el estado y avisa por Telegram una sola vez cuando la sesión se cae."""
+    global _vivo
+    if activa is None:
+        return
+    if activa is False and _vivo is not False:
+        _avisar_dueno("⚠️ La sesión de Coordinadora caducó. " + MSG_CADUCADA)
+    if activa is True and _vivo is False:
+        _avisar_dueno("✅ La sesión de Coordinadora volvió a estar activa.")
+    _vivo = activa
+
+
+def _bucle_keepalive() -> None:
+    time.sleep(30)  # deja arrancar el bot
+    while True:
+        try:
+            if os.environ.get("COORD_PHPSESSID", "").strip():
+                _registrar_estado(_sesion_activa(_obtener_sesion()))
+        except Exception:
+            logger.exception("Error en el keep-alive de Coordinadora")
+        time.sleep(KEEPALIVE_SEGUNDOS)
+
+
+threading.Thread(target=_bucle_keepalive, name="coord-keepalive", daemon=True).start()
+
+
+def descargar_imagen_guia(guia: str):
+    """Devuelve (bytes, content_type) usando la sesión guardada."""
+    s = _obtener_sesion()
+    r = s.get(IMAGEN_URL.format(guia=guia), timeout=TIMEOUT, headers={"Referer": MAIN_URL})
+    tipo = r.headers.get("Content-Type", "").lower()
+    if r.ok and (tipo.startswith("image/") or "pdf" in tipo) and r.content:
+        _registrar_estado(True)
+        return r.content, tipo
+
+    logger.warning(
+        "Imagen guía %s: HTTP %s, tipo %s, inicio: %s",
+        guia, r.status_code, tipo, r.text[:300].replace("\n", " "),
+    )
+    activa = _sesion_activa(s)
+    _registrar_estado(activa)
+    if activa is False:
+        raise RuntimeError(MSG_CADUCADA)
+    raise RuntimeError("Coordinadora no devolvió la imagen de esta guía (puede no tener imagen disponible).")
 
 
 # --------------------------------------------------------------------------- #
