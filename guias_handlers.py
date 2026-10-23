@@ -6,14 +6,15 @@ import os
 import re
 import threading
 import time
-from datetime import date, timedelta
-from urllib.parse import quote
+import unicodedata
+from concurrent.futures import ThreadPoolExecutor, wait
 
 import requests
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes, ConversationHandler
 
+import datos
 from handlers import (
     MAX_BOTONES,
     MI_TELEGRAM_ID,
@@ -24,7 +25,7 @@ from handlers import (
     registrar_uso_bot,
     responder,
 )
-from geo_handlers import BASE_URL, PAGE_SIZE, _id_llave, _normalizar, consultar_pedido
+from geo_handlers import consultar_pedido
 
 logger = logging.getLogger(__name__)
 
@@ -53,18 +54,8 @@ MSG_CADUCADA = (
     "y actualiza la variable COORD_PHPSESSID en Render."
 )
 
-# Búsqueda por factura (el servicio de trazabilidad se consulta por rango de fechas)
-DIAS_FACTURA = int(os.environ.get("NTEX_WS_DIAS_FACTURA", "150"))
-CACHE_SEGUNDOS = 10 * 60
-REINTENTO_FALLO_SEGUNDOS = 60
-MAX_PAGINAS = 80
-# Segmentos de la dirección que van entre la fecha final y el offset cuando no se filtra por pedido.
-# Se prueban en orden; se puede forzar uno con NTEX_WS_COMODIN (ej: "PV/0", "0" o "SIN").
-CANDIDATOS = [
-    ("0", "0"), ("PV", "0"), ("-", "-"), ("PV", "-"),
-    ("null", "null"), ("PV", "null"), ("ALL", "ALL"), ("PV", "ALL"),
-    ("%", "%"), ("*", "*"), (" ", " "), ("", ""), (),
-]
+# Valores de "tipo de documento" que se prueban en el servicio poniendo la factura como documento
+TIPOS_FACTURA = ["FV", "FA", "FC", "FT", "FE", "F", "FACTURA", "13"]
 
 
 # --------------------------------------------------------------------------- #
@@ -175,117 +166,115 @@ def descargar_imagen_guia(guia: str):
 
 
 # --------------------------------------------------------------------------- #
-# Búsqueda por factura (rango de fechas del servicio de trazabilidad)
+# Búsqueda por factura
+#   1) hoja de pedidos (Google Sheets): factura -> pedido, y luego se consulta el pedido
+#   2) servicio de trazabilidad probando tipos de documento con la factura como documento
 # --------------------------------------------------------------------------- #
 def _solo_digitos(v) -> str:
     return re.sub(r"\D", "", str(v).split(".")[0]) if v not in (None, "") else ""
 
 
-_cache_rango = {"t": 0.0, "items": []}
-_lock_rango = threading.Lock()
-_comodin_ok = None   # segmentos que funcionaron (tupla)
-_fallo_t = 0.0       # momento del último intento fallido con todas las combinaciones
-_ultimo_diag = []    # resumen de lo que respondió el servicio con cada combinación
+def _norm(texto) -> str:
+    t = unicodedata.normalize("NFKD", str(texto)).encode("ascii", "ignore").decode()
+    return re.sub(r"\s+", " ", t.lower().replace("_", " ")).strip()
 
 
-def _nombre_segs(segs: tuple) -> str:
-    if not segs:
-        return "(sin tipo/documento)"
-    if all(x == "" for x in segs):
-        return "(vacíos //)"
-    return "/".join(repr(x) for x in segs)
+def _col_factura(df):
+    """Busca en la hoja la columna con el número de factura."""
+    norm = {c: _norm(c) for c in df.columns}
+    for p in ("numero factura", "numero de factura", "nro factura", "num factura", "no factura",
+              "n factura", "documento factura", "factura"):
+        for c, n in norm.items():
+            if n == p:
+                return c
+    for c, n in norm.items():
+        if "factura" in n and not any(x in n for x in ("fecha", "estado", "valor", "total", "url", "tipo")):
+            return c
+    return None
 
 
-def _candidatos() -> list:
-    lista = []
-    cfg = os.environ.get("NTEX_WS_COMODIN", "").strip()
-    if cfg:
-        if cfg.upper() == "SIN":
-            lista.append(())
-        else:
-            partes = tuple(p.strip() for p in cfg.split("/"))
-            lista.append(partes if len(partes) > 1 else (partes[0], partes[0]))
-    lista += [c for c in CANDIDATOS if c not in lista]
-    return lista
+async def _pedidos_por_factura_hoja(doc: str):
+    """Devuelve (lista de pedidos que tienen esa factura en la hoja, notas de diagnóstico)."""
+    try:
+        df = await datos.pedidos.obtener()
+    except Exception as e:
+        return [], [f"hoja: error {type(e).__name__}"]
+    if df is None or df.empty:
+        return [], ["hoja: sin datos"]
+    col = _col_factura(df)
+    if not col:
+        cands = [c for c in df.columns if "factura" in _norm(c)]
+        return [], [f"hoja: no hay columna con el número de factura (columnas con 'factura': {cands or 'ninguna'})"]
+    if "Documento Pd" not in df.columns:
+        return [], ["hoja: falta la columna Documento Pd"]
+
+    serie = df[col].astype(str).str.split(".").str[0].str.replace(r"\D", "", regex=True)
+    peds = df.loc[serie == _solo_digitos(doc), "Documento Pd"].astype(str).str.split(".").str[0].str.strip()
+    peds = [p for p in dict.fromkeys(peds) if p.isdigit()]
+    return peds, [f"hoja: columna {col!r}, {len(peds)} pedido(s) con esa factura"]
 
 
-def _pedir(s: requests.Session, llave: str, ini: str, fin: str, segs: tuple, offset: int) -> requests.Response:
-    partes = [BASE_URL, llave, ini, fin, *[quote(x) for x in segs], str(offset), str(PAGE_SIZE)]
-    return s.get("/".join(partes), timeout=TIMEOUT, headers={"Accept": "application/json"})
+_tipo_factura_ok = None
 
 
-def diagnostico() -> str:
-    return "\n".join(_ultimo_diag)
+def _probar_tipos_factura(doc: str):
+    """Prueba tipos de documento del servicio con la factura como documento (en paralelo)."""
+    global _tipo_factura_ok
+    objetivo = _solo_digitos(doc)
+    diag = []
+    tipos = [_tipo_factura_ok] if _tipo_factura_ok else TIPOS_FACTURA
+
+    ex = ThreadPoolExecutor(max_workers=len(tipos))
+    futs = {ex.submit(consultar_pedido, doc, t): t for t in tipos}
+    hechos, _ = wait(futs, timeout=30)
+    ex.shutdown(wait=False)
+
+    for f in hechos:
+        t = futs[f]
+        try:
+            its = f.result()
+        except Exception as e:
+            diag.append(f"servicio tipo {t!r}: error {type(e).__name__}")
+            continue
+        coincide = [i for i in its if _solo_digitos(i.get("numero factura")) == objetivo]
+        diag.append(f"servicio tipo {t!r}: {len(its)} líneas, {len(coincide)} de esa factura")
+        if coincide:
+            _tipo_factura_ok = t
+            return coincide, diag
+    sin_resp = [futs[f] for f in futs if f not in hechos]
+    if sin_resp:
+        diag.append(f"servicio sin respuesta a tiempo: {sin_resp}")
+    return [], diag
 
 
-def _traer_rango() -> list:
-    """Líneas de los últimos DIAS_FACTURA días (con caché de unos minutos)."""
-    global _comodin_ok, _fallo_t, _ultimo_diag
-    with _lock_rango:
-        if _cache_rango["items"] and time.time() - _cache_rango["t"] < CACHE_SEGUNDOS:
-            return _cache_rango["items"]
-        if _comodin_ok is None and time.time() - _fallo_t < REINTENTO_FALLO_SEGUNDOS:
-            return []  # se probó hace muy poco y ninguna combinación sirvió
+async def buscar_por_factura(doc: str):
+    """Devuelve (líneas de esa factura, notas de diagnóstico)."""
+    objetivo = _solo_digitos(doc)
+    peds, diag = await _pedidos_por_factura_hoja(doc)
 
-        llave = quote(_id_llave(), safe="!")
-        hoy = date.today()
-        ini = (hoy - timedelta(days=DIAS_FACTURA)).strftime("%Y%m%d")
-        fin = hoy.strftime("%Y%m%d")
+    items = []
+    for ped in peds[:5]:
+        try:
+            its = await asyncio.to_thread(consultar_pedido, ped)
+        except RuntimeError:
+            raise
+        except Exception as e:
+            diag.append(f"pedido {ped}: error {type(e).__name__}")
+            continue
+        propios = [i for i in its if _solo_digitos(i.get("numero factura")) == objetivo]
+        items.extend(propios or its)
+    if items:
+        return items, diag
 
-        diag = [f"Rango {ini}-{fin}"]
-        with requests.Session() as s:
-            pares = [_comodin_ok] if _comodin_ok is not None else _candidatos()
-            primera, elegido = None, None
-            for segs in pares:
-                nombre = _nombre_segs(segs)
-                try:
-                    resp = _pedir(s, llave, ini, fin, segs, 0)
-                    n, data = 0, {}
-                    if resp.ok:
-                        data = resp.json()
-                        n = len(data.get("items", []))
-                    diag.append(f"{nombre}: HTTP {resp.status_code}, {n} líneas")
-                except Exception as e:
-                    diag.append(f"{nombre}: error {type(e).__name__}")
-                    logger.warning("Rango con %s: error %s: %s", nombre, type(e).__name__, e)
-                    continue
-                logger.info("Rango con %s: HTTP %s, %s líneas en la primera página", nombre, resp.status_code, n)
-                if n:
-                    primera, elegido = data, segs
-                    break
-
-            _ultimo_diag = diag
-            if elegido is None:
-                _comodin_ok = None
-                _fallo_t = time.time()
-                return []
-
-            _comodin_ok = elegido
-            items = list(primera.get("items", []))
-            hay_mas, offset = bool(primera.get("hasMore")), PAGE_SIZE
-            for _ in range(MAX_PAGINAS):
-                if not hay_mas:
-                    break
-                resp = _pedir(s, llave, ini, fin, elegido, offset)
-                resp.raise_for_status()
-                data = resp.json()
-                pagina = data.get("items", [])
-                items.extend(pagina)
-                hay_mas = bool(pagina) and bool(data.get("hasMore"))
-                offset += PAGE_SIZE
-
-        items = [_normalizar(i) for i in items]
-        logger.info("Rango listo con %s: %s líneas", _nombre_segs(elegido), len(items))
-        _cache_rango.update(t=time.time(), items=items)
-        return items
+    its, d2 = await asyncio.to_thread(_probar_tipos_factura, doc)
+    return its, diag + d2
 
 
-def buscar_por_factura(numero: str):
-    """Devuelve (líneas de esa factura, total de líneas del rango)."""
-    items = _traer_rango()
-    objetivo = _solo_digitos(numero)
-    filtradas = [i for i in items if _solo_digitos(i.get("numero factura")) == objetivo]
-    return filtradas, len(items)
+def _bloque_diag(update: Update, diag: list) -> str:
+    """El detalle técnico solo lo ve el dueño del bot."""
+    if diag and update.effective_user and update.effective_user.id == MI_TELEGRAM_ID:
+        return f"\n\n<b>Diagnóstico:</b>\n<pre>{esc(chr(10).join(diag))[:1500]}</pre>"
+    return ""
 
 
 def _interpretar(texto: str, modo=None):
@@ -456,13 +445,13 @@ async def ejecutar_gu(update: Update, context: ContextTypes.DEFAULT_TYPE, texto:
         f"⏳ Buscando {'la factura' if por_factura else 'el pedido'} <b>{esc(doc)}</b>…",
     )
 
-    items, por, total_rango = [], "pedido", None
+    items, por, diag = [], "pedido", []
     try:
         if not por_factura:
             items = await asyncio.to_thread(consultar_pedido, doc)
         if not items and modo != "pedido":
             por = "factura"
-            items, total_rango = await asyncio.to_thread(buscar_por_factura, doc)
+            items, diag = await buscar_por_factura(doc)
     except RuntimeError as e:
         logger.error("Configuración: %s", e)
         await espera.edit_text(f"⚠️ {esc(e)}", parse_mode=ParseMode.HTML)
@@ -472,28 +461,18 @@ async def ejecutar_gu(update: Update, context: ContextTypes.DEFAULT_TYPE, texto:
         await espera.edit_text("⚠️ No pude consultar el servicio ahora. Intenta de nuevo en un momento.")
         return ConversationHandler.END
 
+    if diag:
+        logger.info("Búsqueda de factura %s: %s", doc, " | ".join(diag))
+
     teclado_error = _teclado_cambiar() if modo else None
     if not items:
-        if total_rango == 0:
-            msg = (
-                "⚠️ No pude buscar por factura: el servicio de trazabilidad no devolvió datos "
-                "al consultar por fechas."
-            )
-            # El detalle técnico solo lo ve el dueño del bot
-            if update.effective_user and update.effective_user.id == MI_TELEGRAM_ID:
-                msg += f"\n\n<b>Diagnóstico:</b>\n<pre>{esc(diagnostico())[:1500]}</pre>"
-        elif por_factura:
-            msg = (
-                f"❌ No encontré la factura <b>{esc(doc)}</b> en los últimos {DIAS_FACTURA} días.\n"
-                "Puedes escribir otro número."
-            )
+        if por_factura:
+            msg = f"❌ No encontré la factura <b>{esc(doc)}</b>.\nPuedes escribir otro número."
         elif modo == "pedido":
             msg = f"❌ No encontré el pedido <b>{esc(doc)}</b>.\nPuedes escribir otro número."
         else:
-            msg = (
-                f"❌ No encontré el pedido ni la factura <b>{esc(doc)}</b> "
-                f"(facturas de los últimos {DIAS_FACTURA} días).\nPuedes escribir otro número."
-            )
+            msg = f"❌ No encontré el pedido ni la factura <b>{esc(doc)}</b>.\nPuedes escribir otro número."
+        msg += _bloque_diag(update, diag)
         await espera.edit_text(msg, parse_mode=ParseMode.HTML, reply_markup=teclado_error)
         return ESPERANDO_DOCUMENTO_GU
 
