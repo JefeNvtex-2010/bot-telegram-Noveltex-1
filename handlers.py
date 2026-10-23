@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 # Estados de la conversación de pedidos (/PV). Los estados de inventario usan 3-8
 # (así todos pueden convivir en UN solo ConversationHandler sin chocar).
+# /PG usa 9-11 y /GU (guías) usa 12-14.
 SELECCIONANDO_REFERENCIA, SELECCIONANDO_COLOR, ESPERANDO_DOCUMENTO_PV = 0, 1, 2
 
 URL_WEB_APP_REPORTE = os.environ.get(
@@ -124,6 +125,7 @@ def _teclado_menu() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("📦 Inventario SAP", callback_data="start_sap")],
         [InlineKeyboardButton("📋 Pedidos (PV)", callback_data="start_pv")],
         [InlineKeyboardButton("🚚 Pedidos (PG)", callback_data="start_pg")],
+        [InlineKeyboardButton("📦 Guías (GU)", callback_data="start_gu")],
     ])
 
 
@@ -315,151 +317,4 @@ def _pantalla_colores(d: dict):
             etiqueta += f" - {' / '.join(estados)}"
         filas.append([InlineKeyboardButton(etiqueta, callback_data=f"pv_col_{i}")])
     filas.append([InlineKeyboardButton("🔙 Volver", callback_data="pv_back_refs")])
-    texto = f"Referencia seleccionada: <b>{esc(d['ref'])}</b>.\nSelecciona el color:"
-    return texto, InlineKeyboardMarkup(filas)
-
-
-async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    if query:
-        await query.answer()
-        registrar_uso_bot(update, "BOTÓN_PV")
-        await editar(query, "📋 <b>Pedidos (PV)</b>\n\nEscribe el <b>número de documento</b> que deseas buscar:")
-        return ESPERANDO_DOCUMENTO_PV
-
-    registrar_uso_bot(update, "/PV")
-    programar_borrado(context, update.message)
-
-    if not context.args:
-        await responder(
-            update, context,
-            "📋 <b>Pedidos (PV)</b>\n\nEscribe el <b>número de documento</b> que deseas buscar "
-            "(o usa <code>/PV 5270</code>):",
-        )
-        return ESPERANDO_DOCUMENTO_PV
-
-    return await ejecutar_busqueda_documento(update, context, context.args[0])
-
-
-async def recibir_texto_documento_pv(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    programar_borrado(context, update.message)
-    return await ejecutar_busqueda_documento(update, context, update.message.text)
-
-
-async def ejecutar_busqueda_documento(update: Update, context: ContextTypes.DEFAULT_TYPE, doc_buscado: str) -> int:
-    doc_buscado = doc_buscado.strip().split(".")[0].strip()
-    if not doc_buscado:
-        await responder(update, context, "⚠️ Escribe el número de documento.")
-        return ESPERANDO_DOCUMENTO_PV
-
-    if datos.pedidos.df is None:  # solo ocurre en la primera carga tras arrancar
-        await responder(update, context, "⏳ Cargando datos, un momento…")
-
-    df = await datos.pedidos.obtener()
-    if df is None or df.empty:
-        detalle = f"\n<code>{esc(datos.pedidos.ultimo_error)}</code>" if datos.pedidos.ultimo_error else ""
-        await responder(update, context, f"⚠️ Error al conectar con Google Sheets o catálogo vacío.{detalle}")
-        return ConversationHandler.END
-
-    faltan = [c for c in ("Documento Pd", "Id Refer", "Color") if c not in df.columns]
-    if faltan:
-        await responder(update, context, f"⚠️ No se encontraron las columnas: {esc(', '.join(faltan))}.")
-        return ConversationHandler.END
-
-    resultado = df[df["Documento Pd"] == doc_buscado]
-    if resultado.empty:
-        await responder(update, context, f"❌ No se encontró el documento: <b>{esc(doc_buscado)}</b>.\nPuedes escribir otro número.")
-        return ESPERANDO_DOCUMENTO_PV
-
-    d = {
-        "doc": doc_buscado,
-        "df": resultado,
-        "refs": resultado["Id Refer"].unique().tolist(),
-    }
-    context.user_data["pv"] = d
-
-    if len(d["refs"]) == 1:  # una sola referencia: salta directo a los colores
-        d["ref"] = d["refs"][0]
-        d["colores"] = resultado.loc[resultado["Id Refer"] == d["ref"], "Color"].unique().tolist()
-        texto, teclado = _pantalla_colores(d)
-        await responder(update, context, texto, reply_markup=teclado)
-        return SELECCIONANDO_COLOR
-
-    texto, teclado = _pantalla_refs(d)
-    await responder(update, context, texto, reply_markup=teclado)
-    return SELECCIONANDO_REFERENCIA
-
-
-async def seleccionar_referencia(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    d = context.user_data.get("pv")
-    if not d:
-        return await _sesion_expirada(query)
-    try:
-        ref = d["refs"][int(query.data.rsplit("_", 1)[1])]
-    except (ValueError, IndexError):
-        return await _sesion_expirada(query)
-
-    d["ref"] = ref
-    d["colores"] = d["df"].loc[d["df"]["Id Refer"] == ref, "Color"].unique().tolist()
-    texto, teclado = _pantalla_colores(d)
-    await editar(query, texto, teclado)
-    return SELECCIONANDO_COLOR
-
-
-async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    d = context.user_data.get("pv")
-    if not d or "ref" not in d:
-        return await _sesion_expirada(query)
-    data = query.data
-
-    if data == "pv_back_refs":
-        texto, teclado = _pantalla_refs(d)
-        await editar(query, texto, teclado)
-        return SELECCIONANDO_REFERENCIA
-
-    if data == "pv_back_cols":
-        texto, teclado = _pantalla_colores(d)
-        await editar(query, texto, teclado)
-        return SELECCIONANDO_COLOR
-
-    df = d["df"]
-    base = df[df["Id Refer"] == d["ref"]]
-    if data == "pv_all":
-        filas = base
-        titulo = (
-            f"🔍 <b>Detalle Completo - Referencia {esc(d['ref'])}</b> "
-            f"(Documento {esc(d['doc'])}, Total ítems: {len(filas)}):\n"
-        )
-    else:
-        try:
-            color = d["colores"][int(data.rsplit("_", 1)[1])]
-        except (ValueError, IndexError):
-            return await _sesion_expirada(query)
-        filas = base[base["Color"] == color]
-        titulo = (
-            f"🔍 <b>Detalle del Documento {esc(d['doc'])}</b> "
-            f"(Color {esc(color)}, Total ítems: {len(filas)}):\n"
-        )
-
-    bloques = ["\n-----------------------------------\n" + _texto_detalle(fila) for _, fila in filas.iterrows()]
-    partes = _agrupar(titulo, bloques)
-
-    teclado = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver a colores", callback_data="pv_back_cols")]])
-    if len(partes) == 1:
-        await editar(query, partes[0], teclado)
-    else:  # detalle largo: se envía en varios mensajes y el original queda con el botón de volver
-        for parte in partes:
-            msg = await query.message.reply_text(parte, parse_mode=ParseMode.HTML)
-            programar_borrado(context, msg)
-        await editar(query, "📌 Fin del detalle.", teclado)
-    return SELECCIONANDO_COLOR
-
-
-async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    programar_borrado(context, update.message)
-    await responder(update, context, "❌ Búsqueda cancelada.")
-    return ConversationHandler.END
+    texto = f"Referencia seleccionada: <b>{esc(d['ref'])}</b>.\nSelecciona el
