@@ -83,6 +83,8 @@ from guias_handlers import (
     seleccionar_guia_gu,
 )
 
+from etiquetas_handlers import etiqueta_cmd  # NUEVO: impresión de etiquetas Zebra
+
 logger = logging.getLogger(__name__)
 
 # --- CONFIGURACIÓN DE GEMINI AGENTE Y HERRAMIENTAS ---
@@ -418,6 +420,7 @@ def main() -> None:
   application.add_handler(CommandHandler("reiniciar", reiniciar_render))
   application.add_handler(CommandHandler("actualizar", limpiar_cache_y_deploy))
   application.add_handler(CommandHandler("refrescar", refrescar_datos))
+  application.add_handler(CommandHandler("etiqueta", etiqueta_cmd))  # NUEVO
   application.add_handler(CommandHandler(["inicio", "menu"], menu_inicio))
 
   application.add_handler(
