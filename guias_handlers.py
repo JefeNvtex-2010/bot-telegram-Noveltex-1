@@ -51,7 +51,7 @@ class _FormParser(HTMLParser):
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
         if tag == "form":
-            self._actual = {"action": a.get("action", ""), "inputs": []}
+            self._actual = {"action": a.get("action", ""), "method": a.get("method", "get"), "inputs": []}
             self.forms.append(self._actual)
         elif tag == "input" and self._actual is not None:
             self._actual["inputs"].append(
@@ -80,13 +80,20 @@ def _login() -> requests.Session:
     s = requests.Session()
     s.headers.update(UA)
     r = s.get(LOGIN_URL, timeout=TIMEOUT)
+    logger.info("Login Coordinadora: GET %s -> HTTP %s (%s bytes)", LOGIN_URL, r.status_code, len(r.text))
     r.raise_for_status()
 
     parser = _FormParser()
     parser.feed(r.text)
+    for f in parser.forms:
+        logger.info(
+            "Login Coordinadora: form action=%r method=%r inputs=%s",
+            f["action"], f["method"], [(i["name"], i["type"]) for i in f["inputs"]],
+        )
     form = next((f for f in parser.forms if any(i["type"] == "password" for i in f["inputs"])), None)
     if not form:
-        raise RuntimeError("No encontré el formulario de login de Coordinadora.")
+        logger.warning("Login Coordinadora: sin formulario con contraseña. HTML: %s", r.text[:1500])
+        raise RuntimeError("No encontré el formulario de login (la página puede usar JavaScript para entrar).")
 
     datos, campo_user = {}, None
     for i in form["inputs"]:
@@ -97,13 +104,21 @@ def _login() -> requests.Session:
         elif i["type"] == "text" and campo_user is None:
             campo_user = i["name"]
             datos[i["name"]] = usuario
-        elif i["type"] in ("hidden",):
+        elif i["type"] == "hidden":
             datos[i["name"]] = i["value"]
 
     destino = urljoin(r.url, form["action"]) if form["action"] else r.url
     resp = s.post(destino, data=datos, timeout=TIMEOUT, allow_redirects=True)
+    logger.info(
+        "Login Coordinadora: POST %s campos=%s -> HTTP %s, url final %s, cookies=%s",
+        destino, list(datos.keys()), resp.status_code, resp.url, list(s.cookies.keys()),
+    )
+    logger.info("Login Coordinadora: respuesta (inicio): %s", resp.text[:500].replace("\n", " "))
     resp.raise_for_status()
-    logger.info("Login Coordinadora: HTTP %s, url final %s", resp.status_code, resp.url)
+
+    # Si la respuesta sigue mostrando el campo de contraseña, el login fue rechazado
+    if 'type="password"' in resp.text.lower() or "type='password'" in resp.text.lower():
+        raise RuntimeError("Coordinadora rechazó el login (revisa usuario/contraseña o el captcha).")
     return s
 
 
@@ -123,7 +138,10 @@ def descargar_imagen_guia(guia: str):
         tipo = r.headers.get("Content-Type", "").lower()
         if r.ok and (tipo.startswith("image/") or "pdf" in tipo) and r.content:
             return r.content, tipo
-        logger.warning("Imagen guía %s intento %s: HTTP %s, tipo %s", guia, intento, r.status_code, tipo)
+        logger.warning(
+            "Imagen guía %s intento %s: HTTP %s, tipo %s, inicio: %s",
+            guia, intento, r.status_code, tipo, r.text[:300].replace("\n", " "),
+        )
     raise RuntimeError("Coordinadora no devolvió la imagen (login rechazado o guía sin imagen).")
 
 
@@ -308,11 +326,13 @@ async def acciones_gu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     try:
         contenido, tipo = await asyncio.to_thread(descargar_imagen_guia, g["guia"])
     except RuntimeError as e:
+        logger.error("Imagen guía %s: %s", g["guia"], e)
         await query.message.reply_text(f"⚠️ {e}")
         return ACCIONES_GU
-    except Exception:
+    except Exception as e:
         logger.exception("Error descargando imagen de la guía %s", g["guia"])
-        await query.message.reply_text("⚠️ No pude descargar la imagen ahora. Intenta de nuevo en un momento.")
+        detalle = f"{type(e).__name__}: {e}"[:300]
+        await query.message.reply_text(f"⚠️ No pude descargar la imagen.\nDetalle: {detalle}")
         return ACCIONES_GU
 
     ext = "pdf" if "pdf" in tipo else ("png" if "png" in tipo else "jpg")
