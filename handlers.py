@@ -123,7 +123,6 @@ def _teclado_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🛒 Inventario Vendedor", callback_data="start_vend")],
         [InlineKeyboardButton("📦 Inventario SAP", callback_data="start_sap")],
-        [InlineKeyboardButton("📋 Pedidos (PV)", callback_data="start_pv")],
         [InlineKeyboardButton("🚚 Pedidos (PG)", callback_data="start_pg")],
         [InlineKeyboardButton("📦 Guías (GU)", callback_data="start_gu")],
     ])
