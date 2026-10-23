@@ -29,7 +29,7 @@ from geo_handlers import BASE_URL, PAGE_SIZE, _id_llave, _normalizar, consultar_
 logger = logging.getLogger(__name__)
 
 # Estados 0-11 ya están en uso (/PV, /IN, /I, /PG).
-ESPERANDO_DOCUMENTO_GU, SELECCIONANDO_GUIA_GU, ACCIONES_GU = 12, 13, 14
+ESPERANDO_DOCUMENTO_GU, SELECCIONANDO_GUIA_GU, ACCIONES_GU, ELIGIENDO_TIPO_GU = 12, 13, 14, 15
 
 BASE_GUIAS = "https://guias.coordinadora.com/site"
 MAIN_URL = f"{BASE_GUIAS}/main.php"
@@ -220,14 +220,16 @@ def buscar_por_factura(numero: str):
     return filtradas, len(items)
 
 
-def _interpretar(texto: str):
-    """Devuelve (por_factura, numero). 'f 50460' / 'f50460' / 'factura 50460' fuerzan factura."""
+def _interpretar(texto: str, modo=None):
+    """Devuelve (por_factura, numero).
+    modo = 'pedido' / 'factura' (elegido con los botones) o None (atajo /gu 7374: automático).
+    En automático, 'f 50460' / 'f50460' / 'factura 50460' fuerzan factura."""
     t = (texto or "").strip()
     m = re.match(r"^(?:factura|fac|f)[\s:#.\-]*(\d+)\s*$", t, re.I)
-    if m:
+    if m and modo != "pedido":
         return True, m.group(1)
     doc = t.split(".")[0].strip()
-    return False, (doc if doc.isdigit() else "")
+    return modo == "factura", (doc if doc.isdigit() else "")
 
 
 # --------------------------------------------------------------------------- #
@@ -261,6 +263,26 @@ def guias_unicas(items: list) -> list:
 # --------------------------------------------------------------------------- #
 # Pantallas
 # --------------------------------------------------------------------------- #
+TEXTO_TIPO = "📦 <b>Guías Coordinadora</b>\n\n¿Cómo quieres buscar la guía?"
+
+
+def _teclado_tipo() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("📦 Por pedido", callback_data="gu_tipo_pedido"),
+        InlineKeyboardButton("🧾 Por factura", callback_data="gu_tipo_factura"),
+    ]])
+
+
+def _teclado_cambiar() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cambiar (pedido / factura)", callback_data="gu_tipo_menu")]])
+
+
+def _texto_pedir(modo: str) -> str:
+    if modo == "factura":
+        return "🧾 <b>Búsqueda por factura</b>\n\nEscribe el <b>número de factura</b>:"
+    return "📦 <b>Búsqueda por pedido</b>\n\nEscribe el <b>número de pedido</b>:"
+
+
 def _tipo(d: dict) -> str:
     return "Factura" if d.get("por") == "factura" else "Pedido"
 
@@ -300,48 +322,64 @@ def _pantalla_acciones(d: dict, g: dict):
     ]
     if len(d["guias"]) > 1:
         filas.append([InlineKeyboardButton("🔙 Volver a guías", callback_data="gu_back")])
+    filas.append([InlineKeyboardButton("🔎 Nueva búsqueda", callback_data="gu_nuevo")])
     return texto, InlineKeyboardMarkup(filas)
 
 
 # --------------------------------------------------------------------------- #
 # Handlers de Telegram
 # --------------------------------------------------------------------------- #
-TEXTO_PEDIR = (
-    "📦 <b>Guías Coordinadora</b>\n\n"
-    "Escribe el <b>número de pedido</b> o de <b>factura</b>.\n"
-    "Para buscar solo por factura escribe, por ejemplo, <code>f 50460</code>."
-)
-
-
 async def iniciar_gu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """/GU [número] o botón del menú."""
+    """/GU [número] o botón del menú. Sin número muestra los botones Pedido / Factura."""
     query = update.callback_query
+    context.user_data["gu_modo"] = None
     if query:
         await query.answer()
         registrar_uso_bot(update, "BOTÓN_GU")
-        await editar(query, TEXTO_PEDIR)
-        return ESPERANDO_DOCUMENTO_GU
+        await editar(query, TEXTO_TIPO, _teclado_tipo())
+        return ELIGIENDO_TIPO_GU
 
     registrar_uso_bot(update, "/GU")
     programar_borrado(context, update.message)
 
     if not context.args:
-        await responder(update, context, TEXTO_PEDIR + "\nTambién puedes usar <code>/GU 7374</code>.")
-        return ESPERANDO_DOCUMENTO_GU
-    return await ejecutar_gu(update, context, " ".join(context.args))
+        await responder(update, context, TEXTO_TIPO, reply_markup=_teclado_tipo())
+        return ELIGIENDO_TIPO_GU
+    # Atajo: /GU 7374 o /GU f 50460 (búsqueda automática)
+    return await ejecutar_gu(update, context, " ".join(context.args), None)
+
+
+async def elegir_tipo_gu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Botones 'Por pedido' / 'Por factura' / 'Cambiar'."""
+    query = update.callback_query
+    await query.answer()
+    accion = query.data.rsplit("_", 1)[1]  # pedido | factura | menu
+
+    if accion == "menu":
+        context.user_data["gu_modo"] = None
+        await editar(query, TEXTO_TIPO, _teclado_tipo())
+        return ELIGIENDO_TIPO_GU
+
+    context.user_data["gu_modo"] = accion
+    await editar(query, _texto_pedir(accion), _teclado_cambiar())
+    return ESPERANDO_DOCUMENTO_GU
 
 
 async def recibir_texto_gu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     programar_borrado(context, update.message)
-    return await ejecutar_gu(update, context, update.message.text)
+    modo = context.user_data.get("gu_modo")
+    return await ejecutar_gu(update, context, update.message.text, modo)
 
 
-async def ejecutar_gu(update: Update, context: ContextTypes.DEFAULT_TYPE, texto: str) -> int:
-    por_factura, doc = _interpretar(texto)
+async def ejecutar_gu(update: Update, context: ContextTypes.DEFAULT_TYPE, texto: str, modo=None) -> int:
+    por_factura, doc = _interpretar(texto, modo)
     if not doc:
         await responder(
             update, context,
+            "⚠️ Escribe solo el número, por ejemplo <code>7374</code>."
+            if modo else
             "⚠️ Escribe solo el número, por ejemplo <code>7374</code> (pedido) o <code>f 50460</code> (factura).",
+            reply_markup=_teclado_cambiar() if modo else None,
         )
         return ESPERANDO_DOCUMENTO_GU
 
@@ -354,7 +392,7 @@ async def ejecutar_gu(update: Update, context: ContextTypes.DEFAULT_TYPE, texto:
     try:
         if not por_factura:
             items = await asyncio.to_thread(consultar_pedido, doc)
-        if not items:
+        if not items and modo != "pedido":
             por = "factura"
             items, total_rango = await asyncio.to_thread(buscar_por_factura, doc)
     except RuntimeError as e:
@@ -366,6 +404,7 @@ async def ejecutar_gu(update: Update, context: ContextTypes.DEFAULT_TYPE, texto:
         await espera.edit_text("⚠️ No pude consultar el servicio ahora. Intenta de nuevo en un momento.")
         return ConversationHandler.END
 
+    teclado_error = _teclado_cambiar() if modo else None
     if not items:
         if total_rango == 0:
             msg = (
@@ -377,12 +416,14 @@ async def ejecutar_gu(update: Update, context: ContextTypes.DEFAULT_TYPE, texto:
                 f"❌ No encontré la factura <b>{esc(doc)}</b> en los últimos {DIAS_FACTURA} días.\n"
                 "Puedes escribir otro número."
             )
+        elif modo == "pedido":
+            msg = f"❌ No encontré el pedido <b>{esc(doc)}</b>.\nPuedes escribir otro número."
         else:
             msg = (
                 f"❌ No encontré el pedido ni la factura <b>{esc(doc)}</b> "
                 f"(facturas de los últimos {DIAS_FACTURA} días).\nPuedes escribir otro número."
             )
-        await espera.edit_text(msg, parse_mode=ParseMode.HTML)
+        await espera.edit_text(msg, parse_mode=ParseMode.HTML, reply_markup=teclado_error)
         return ESPERANDO_DOCUMENTO_GU
 
     guias = guias_unicas(items)
@@ -391,6 +432,7 @@ async def ejecutar_gu(update: Update, context: ContextTypes.DEFAULT_TYPE, texto:
             f"ℹ️ {'La factura' if por == 'factura' else 'El pedido'} <b>{esc(doc)}</b> "
             "todavía no tiene guía asignada.\nPuedes escribir otro número.",
             parse_mode=ParseMode.HTML,
+            reply_markup=teclado_error,
         )
         return ESPERANDO_DOCUMENTO_GU
 
@@ -426,6 +468,15 @@ async def seleccionar_guia_gu(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def acciones_gu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
+
+    if query.data == "gu_nuevo":
+        await query.answer()
+        context.user_data["gu_modo"] = None
+        # El mensaje con la guía se conserva: la nueva búsqueda sale en un mensaje aparte
+        msg = await query.message.reply_text(TEXTO_TIPO, reply_markup=_teclado_tipo(), parse_mode=ParseMode.HTML)
+        programar_borrado(context, msg)
+        return ELIGIENDO_TIPO_GU
+
     d = context.user_data.get("gu")
     if not d or "sel" not in d:
         await query.answer()
