@@ -21,8 +21,7 @@ from handlers import (
     registrar_uso_bot,
     responder,
 )
-# Ajusta el nombre del módulo al archivo donde tienes consultar_pedido (el de /PG)
-from pg_handlers import consultar_pedido
+from geo_handlers import consultar_pedido
 
 logger = logging.getLogger(__name__)
 
