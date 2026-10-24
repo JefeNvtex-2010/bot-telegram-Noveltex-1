@@ -86,11 +86,13 @@ from guias_handlers import (
 )
 
 from etiquetas_handlers import (  # NUEVO: impresión de etiquetas Zebra
+    ESPERANDO_COPIAS_ET,
     ESPERANDO_METROS_ET,
     ESPERANDO_REF_ET,
     SELECCIONANDO_COLOR_ET,
     SELECCIONANDO_REF_ET,
     iniciar_etiqueta,
+    recibir_copias_et,
     recibir_metros_et,
     recibir_texto_ref_et,
     seleccionar_color_et,
@@ -352,6 +354,9 @@ def main() -> None:
   texto_metros_et = MessageHandler(  # NUEVO
       filters.TEXT & ~filters.COMMAND, recibir_metros_et
   )
+  texto_copias_et = MessageHandler(  # NUEVO
+      filters.TEXT & ~filters.COMMAND, recibir_copias_et
+  )
   botones_tipo_gu = CallbackQueryHandler(
       elegir_tipo_gu, pattern=r"^gu_tipo_(pedido|factura|menu)$"
   )
@@ -437,6 +442,7 @@ def main() -> None:
           texto_ref_et,
       ],
       ESPERANDO_METROS_ET: [texto_metros_et],
+      ESPERANDO_COPIAS_ET: [texto_copias_et],
   }
 
   fallbacks = entradas + [
