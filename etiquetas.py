@@ -1,25 +1,31 @@
 """Etiquetas Zebra Noveltex (10x5 cm, 203 dpi).
 
 Dos modos, según las variables de entorno:
-  * COLA    (si existe URL_COLA): el bot deja el trabajo en la cola (Apps Script) y el
-            agente del local lo imprime. Úsalo si el bot corre en Render.
+  * COLA    (si existe URL_COLA): el bot deja el trabajo en la cola (Apps Script) y un
+            agente en la red del local lo imprime. Úsalo si la Zebra NO es alcanzable
+            desde internet.
   * DIRECTO (si NO existe URL_COLA): el bot envía el ZPL por socket a la Zebra.
-            Úsalo si el bot corre en un equipo de la misma red que la impresora.
+            Úsalo si la impresora es alcanzable desde donde corre el bot (por ejemplo,
+            Render con la IP pública abierta en el puerto 9100).
 
 Variables de entorno:
   ZEBRA_IP     IP de la impresora (por defecto 147.120.0.181)
-  ZEBRA_PORT   puerto RAW (por defecto 6101)
+  ZEBRA_PORT   puerto RAW (por defecto 9100)
   URL_COLA     URL /exec del Apps Script (solo modo cola)
   TOKEN_COLA   token del Apps Script (solo modo cola)
 """
 import datetime
 import os
 import socket
+import time
 
-ZEBRA_IP = os.environ.get("ZEBRA_IP", "147.120.0.183")
+ZEBRA_IP = os.environ.get("ZEBRA_IP", "147.120.0.181")
 ZEBRA_PORT = int(os.environ.get("ZEBRA_PORT", "9100"))
 URL_COLA = os.environ.get("URL_COLA", "")
 TOKEN_COLA = os.environ.get("TOKEN_COLA", "")
+
+REINTENTOS = 3
+ESPERA_ENTRE_REINTENTOS = 2  # segundos
 
 
 def _limpiar(texto) -> str:
@@ -68,9 +74,24 @@ def generar_zpl_noveltex(item, ref, color, metros, centimetros, copias=1) -> str
 
 
 def enviar_a_zebra(zpl: str) -> None:
-    """Envía ZPL a la impresora por red. Lo usan el modo directo, el agente y las pruebas."""
-    with socket.create_connection((ZEBRA_IP, ZEBRA_PORT), timeout=10) as s:
-        s.sendall(zpl.encode("utf-8"))
+    """Envía ZPL a la impresora por red, con reintentos.
+
+    Lo usan el modo directo, el agente y las pruebas.
+    """
+    ultimo_error = None
+    for intento in range(1, REINTENTOS + 1):
+        try:
+            with socket.create_connection((ZEBRA_IP, ZEBRA_PORT), timeout=10) as s:
+                s.sendall(zpl.encode("utf-8"))
+            return
+        except OSError as e:
+            ultimo_error = e
+            if intento < REINTENTOS:
+                time.sleep(ESPERA_ENTRE_REINTENTOS)
+    raise ConnectionError(
+        f"No se pudo conectar a la Zebra en {ZEBRA_IP}:{ZEBRA_PORT} "
+        f"después de {REINTENTOS} intentos: {ultimo_error}"
+    )
 
 
 def _encolar(item, referencia, color, metros, centimetros, copias) -> None:
@@ -101,4 +122,6 @@ def imprimir_etiqueta(item, referencia, color, metros, centimetros, copias=1) ->
     if URL_COLA:
         _encolar(item, referencia, color, metros, centimetros, copias)
     else:
-        enviar_a_zebra(generar_zpl_noveltex(item, referencia, color, metros, centimetros, copias))
+        enviar_a_zebra(
+            generar_zpl_noveltex(item, referencia, color, metros, centimetros, copias)
+        )
