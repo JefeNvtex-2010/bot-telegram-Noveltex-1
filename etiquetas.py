@@ -17,7 +17,7 @@ import os
 import socket
 
 ZEBRA_IP = os.environ.get("ZEBRA_IP", "147.120.0.181")
-ZEBRA_PORT = int(os.environ.get("ZEBRA_PORT", "6101"))
+ZEBRA_PORT = int(os.environ.get("ZEBRA_PORT", "9100"))
 URL_COLA = os.environ.get("URL_COLA", "")
 TOKEN_COLA = os.environ.get("TOKEN_COLA", "")
 
