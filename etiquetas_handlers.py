@@ -1,7 +1,7 @@
-"""Flujo guiado /etiqueta: referencia -> color -> metros -> imprime en la Zebra."""
+"""Flujo guiado /etiqueta: referencia -> color -> cantidad (metros.centímetros) -> nº de etiquetas."""
 import asyncio
 import logging
-import math
+import re
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes, ConversationHandler
@@ -17,9 +17,11 @@ ESPERANDO_REF_ET = "et_esperando_ref"
 SELECCIONANDO_REF_ET = "et_seleccionando_ref"
 SELECCIONANDO_COLOR_ET = "et_seleccionando_color"
 ESPERANDO_METROS_ET = "et_esperando_metros"
+ESPERANDO_COPIAS_ET = "et_esperando_copias"
 
 MAX_BOTONES = 40
-MAX_METROS = 10000
+MAX_METROS = 999
+MAX_COPIAS = 50
 
 
 async def _responder(update: Update, texto: str, markup=None) -> None:
@@ -35,16 +37,40 @@ async def _responder(update: Update, texto: str, markup=None) -> None:
     await update.effective_message.reply_text(texto, reply_markup=markup)
 
 
-def _formatear_metros(m: float) -> str:
-    if m == int(m):
-        return f"{int(m)} m"
-    return f"{m:.2f}".rstrip("0").rstrip(".").replace(".", ",") + " m"
+def _entero(texto: str, minimo: int, maximo: int):
+    """Convierte '61', '61 m' o '5 cm' en entero dentro del rango; None si no es válido."""
+    t = texto.strip().lower()
+    for sufijo in ("mts", "cm", "m"):
+        t = t.removesuffix(sufijo).strip()
+    if not t.isdigit():
+        return None
+    n = int(t)
+    return n if minimo <= n <= maximo else None
+
+
+def _formato_color(color: str) -> str:
+    """Si el color es un código numérico, lo completa a 3 dígitos (21 -> 021)."""
+    c = str(color).strip()
+    return c.zfill(3) if c.isdigit() else c
+
+
+def _item_de(df, ref: str, color: str) -> str:
+    """Código de artículo (item) de la referencia, tomado del inventario."""
+    if "Artículo" not in df.columns:
+        return ""
+    filas = df[(df["_ref"] == ref) & (df["_color"] == color)]
+    if filas.empty:
+        filas = df[df["_ref"] == ref]
+    if filas.empty:
+        return ""
+    valor = str(filas.iloc[0]["Artículo"]).strip()
+    return valor.zfill(4) if valor.isdigit() else valor
 
 
 async def iniciar_etiqueta(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
     registrar_uso_bot(update, "BOTÓN_ETIQUETA" if update.callback_query else "/ETIQUETA")
     context.user_data["et"] = {}
-    await _responder(update, "🏷️ Etiqueta Zebra\n\nEscribe la referencia (o parte de ella):")
+    await _responder(update, "🏷️ Etiqueta Zebra\n\nEscribe la referencia:")
     return ESPERANDO_REF_ET
 
 
@@ -93,7 +119,7 @@ async def recibir_texto_ref_et(update: Update, context: ContextTypes.DEFAULT_TYP
     botones = [[InlineKeyboardButton(r, callback_data=f"et_ref_{i}")] for i, r in enumerate(mostradas)]
     texto = f"Encontré {len(refs)} referencias, elige una:"
     if len(refs) > len(mostradas):
-        texto += f"\n(Se muestran las primeras {len(mostradas)}; sé más específico para filtrar.)"
+        texto += f"\nSe muestran las primeras {len(mostradas)}, sé más específico para filtrar."
     await update.message.reply_text(texto, reply_markup=InlineKeyboardMarkup(botones))
     return SELECCIONANDO_REF_ET
 
@@ -117,7 +143,7 @@ async def seleccionar_color_et(update: Update, context: ContextTypes.DEFAULT_TYP
     q = update.callback_query
     if q.data == "et_back":
         context.user_data["et"] = {}
-        await _responder(update, "Escribe la referencia (o parte de ella):")
+        await _responder(update, "Escribe la referencia:")
         return ESPERANDO_REF_ET
 
     et = context.user_data.get("et", {})
@@ -127,36 +153,75 @@ async def seleccionar_color_et(update: Update, context: ContextTypes.DEFAULT_TYP
         await q.answer("Opción no válida. Escribe la referencia de nuevo.", show_alert=True)
         return ESPERANDO_REF_ET
 
-    et["color"] = colores[idx]
+    df = await datos.inventario.obtener()
+    if df is None:
+        await q.answer("Inventario no disponible, intenta en un momento.", show_alert=True)
+        return ESPERANDO_REF_ET
+
+    color = colores[idx]
+    item = _item_de(df, et["ref"], color)
+    if not item:
+        await q.answer("No encontré el código de artículo de esta referencia.", show_alert=True)
+        return SELECCIONANDO_COLOR_ET
+
+    et["color"] = _formato_color(color)
+    et["item"] = item
     await _responder(
         update,
-        f"Referencia: {et['ref']}\nColor: {et['color']}\n\n"
-        "¿Cuántos metros lleva la etiqueta? (ejemplo: 50 o 48,5)",
+        f"Referencia: {et['ref']}\nItem: {item}\nColor: {et['color']}\n\n"
+        "Introduce la cantidad:",
     )
     return ESPERANDO_METROS_ET
 
 
-async def recibir_metros_et(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
-    texto = update.message.text.strip().lower().replace(",", ".")
-    texto = texto.removesuffix("m").removesuffix("mts").strip()
-    try:
-        metros = float(texto)
-    except ValueError:
-        metros = None
+_RE_CANTIDAD = re.compile(r"^(\d{1,3})(?:[.,](\d{1,2}))?$")
 
-    if metros is None or not math.isfinite(metros) or not (0 < metros <= MAX_METROS):
-        await update.message.reply_text("⚠️ Escribe un número de metros válido, por ejemplo 50 o 48,5:")
+
+def _parsear_cantidad(texto: str):
+    """'50' -> (50, 0) | '50.5' -> (50, 50) | '50,25' -> (50, 25). None si no es válido."""
+    t = texto.strip().lower()
+    for sufijo in ("mts", "m"):
+        t = t.removesuffix(sufijo).strip()
+    m = _RE_CANTIDAD.match(t)
+    if not m:
+        return None
+    metros = int(m.group(1))
+    cm = int((m.group(2) or "0").ljust(2, "0"))  # '5' -> 50 cm, '05' -> 5 cm
+    if metros == 0 and cm == 0:
+        return None
+    return metros, cm
+
+
+async def recibir_metros_et(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
+    cantidad = _parsear_cantidad(update.message.text)
+    if cantidad is None:
+        await update.message.reply_text("⚠️ Cantidad no válida. Introduce la cantidad:")
         return ESPERANDO_METROS_ET
 
+    metros, cm = cantidad
+    context.user_data.setdefault("et", {}).update({"metros": metros, "cm": cm})
+    await update.message.reply_text(
+        f"Cantidad: {metros:03d}.{cm:02d}\n\nIntroduce el número de etiquetas:"
+    )
+    return ESPERANDO_COPIAS_ET
+
+
+async def recibir_copias_et(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
+    copias = _entero(update.message.text, 1, MAX_COPIAS)
+    if copias is None:
+        await update.message.reply_text(f"⚠️ Escribe un número de etiquetas entre 1 y {MAX_COPIAS}:")
+        return ESPERANDO_COPIAS_ET
+
     et = context.user_data.get("et", {})
-    ref, color = et.get("ref"), et.get("color")
-    if not ref or not color:
+    campos = ("ref", "item", "color", "metros", "cm")
+    if any(k not in et for k in campos):
         await update.message.reply_text("⚠️ Se perdió la selección. Escribe /etiqueta para empezar de nuevo.")
         return ConversationHandler.END
 
-    metros_txt = _formatear_metros(metros)
     try:
-        await asyncio.to_thread(imprimir_etiqueta, ref, color, metros_txt)
+        await asyncio.to_thread(
+            imprimir_etiqueta, et["item"], et["ref"], et["color"], et["metros"], et["cm"], copias
+        )
     except Exception:
         logger.exception("No se pudo imprimir la etiqueta")
         await update.message.reply_text(
@@ -164,6 +229,10 @@ async def recibir_metros_et(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         )
         return ConversationHandler.END
 
+    cant = f"{et['metros']:03d}.{et['cm']:02d}"
     context.user_data.pop("et", None)
-    await update.message.reply_text(f"✅ Etiqueta enviada:\n{ref} · {color} · {metros_txt}")
+    await update.message.reply_text(
+        f"✅ Etiqueta enviada:\nItem {et['item']} · {et['ref']} · Color {et['color']}\n"
+        f"Cantidad {cant} · Etiquetas {copias}"
+    )
     return ConversationHandler.END
