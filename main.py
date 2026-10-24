@@ -17,6 +17,7 @@ from telegram.ext import (
 )
 
 import datos
+from acceso import configurar_comandos, miid, recargar_accesos_cmd, requiere_acceso
 from config import load_settings
 from logging_config import configure_logging
 
@@ -85,7 +86,7 @@ from guias_handlers import (
     seleccionar_guia_gu,
 )
 
-from etiquetas_handlers import (  # NUEVO: impresión de etiquetas Zebra
+from etiquetas_handlers import (  # impresión de etiquetas Zebra
     ESPERANDO_COPIAS_ET,
     ESPERANDO_METROS_ET,
     ESPERANDO_REF_ET,
@@ -100,6 +101,15 @@ from etiquetas_handlers import (  # NUEVO: impresión de etiquetas Zebra
 )
 
 logger = logging.getLogger(__name__)
+
+# --- CONTROL DE ACCESO POR MÓDULO ---
+# Se protege el punto de entrada de cada flujo (comando y botón del menú).
+# /PV ya está protegido en handlers.py y /iv en inventario_vendedor_handlers.py.
+# Los nombres de permiso deben coincidir con los de la pestaña PERMISOS.
+iniciar_busqueda_sap = requiere_acceso("inventario")(iniciar_busqueda_sap)
+iniciar_pg = requiere_acceso("PG")(iniciar_pg)
+iniciar_gu = requiere_acceso("guias")(iniciar_gu)
+iniciar_etiqueta = requiere_acceso("etiquetas")(iniciar_etiqueta)
 
 # --- CONFIGURACIÓN DE GEMINI AGENTE Y HERRAMIENTAS ---
 ai_client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
@@ -208,6 +218,7 @@ def get_or_create_chat(user_id):
   return user_chats[user_id]
 
 
+@requiere_acceso("inventario")  # el agente consulta TODO el inventario SAP
 async def handle_gemini_agent(update, context):
   """Maneja las conversaciones y ejecución automática de herramientas (Function Calling)."""
   user_id = update.effective_user.id
@@ -233,6 +244,7 @@ async def handle_gemini_agent(update, context):
     await update.message.reply_text(f"⚠️ Error técnico: {str(e)}")
 
 
+@requiere_acceso("inventario")  # igual que el agente de texto
 async def handle_voice_message(update, context):
   """Maneja las notas de voz, permitiendo que Gemini escuche la referencia y consulte el inventario."""
   user_id = update.effective_user.id
@@ -291,6 +303,7 @@ def run_dummy_server():
 
 async def _post_init(application) -> None:
   await datos.iniciar(application)
+  await configurar_comandos(application)  # lee la hoja de accesos y fija la lista "/"
 
 
 async def _post_shutdown(application) -> None:
@@ -321,16 +334,16 @@ def main() -> None:
   entradas = [
       CommandHandler("pv", iniciar_busqueda),
       CommandHandler("in", iniciar_busqueda_sap),
-      CommandHandler("i", iniciar_busqueda_vendedor),
+      CommandHandler("iv", iniciar_busqueda_vendedor),
       CommandHandler("pg", iniciar_pg),
       CommandHandler("gu", iniciar_gu),
-      CommandHandler("etiqueta", iniciar_etiqueta),  # NUEVO
+      CommandHandler("etiqueta", iniciar_etiqueta),
       CallbackQueryHandler(iniciar_busqueda, pattern="^start_pv$"),
       CallbackQueryHandler(iniciar_busqueda_sap, pattern="^start_sap$"),
       CallbackQueryHandler(iniciar_busqueda_vendedor, pattern="^start_vend$"),
       CallbackQueryHandler(iniciar_pg, pattern="^start_pg$"),
       CallbackQueryHandler(iniciar_gu, pattern="^start_gu$"),
-      CallbackQueryHandler(iniciar_etiqueta, pattern="^start_et$"),  # NUEVO
+      CallbackQueryHandler(iniciar_etiqueta, pattern="^start_et$"),
   ]
 
   texto_pv = MessageHandler(
@@ -348,13 +361,13 @@ def main() -> None:
   texto_gu = MessageHandler(
       filters.TEXT & ~filters.COMMAND, recibir_texto_gu
   )
-  texto_ref_et = MessageHandler(  # NUEVO
+  texto_ref_et = MessageHandler(
       filters.TEXT & ~filters.COMMAND, recibir_texto_ref_et
   )
-  texto_metros_et = MessageHandler(  # NUEVO
+  texto_metros_et = MessageHandler(
       filters.TEXT & ~filters.COMMAND, recibir_metros_et
   )
-  texto_copias_et = MessageHandler(  # NUEVO
+  texto_copias_et = MessageHandler(
       filters.TEXT & ~filters.COMMAND, recibir_copias_et
   )
   botones_tipo_gu = CallbackQueryHandler(
@@ -427,7 +440,7 @@ def main() -> None:
           CallbackQueryHandler(acciones_gu, pattern=r"^gu_(img|back|nuevo)$"),
           texto_gu,
       ],
-      # NUEVO: flujo de etiquetas (referencia -> color -> metros)
+      # Flujo de etiquetas (referencia -> color -> metros)
       ESPERANDO_REF_ET: [texto_ref_et],
       SELECCIONANDO_REF_ET: [
           CallbackQueryHandler(
@@ -447,7 +460,8 @@ def main() -> None:
 
   fallbacks = entradas + [
       CommandHandler("cancelar", cancelar),
-      CommandHandler(["inicio", "menu"], menu_inicio),
+      # /i es el menú; /inicio y /menu quedan como alias ocultos
+      CommandHandler(["i", "inicio", "menu"], menu_inicio),
   ]
 
   application.add_handler(
@@ -465,7 +479,9 @@ def main() -> None:
   application.add_handler(CommandHandler("reiniciar", reiniciar_render))
   application.add_handler(CommandHandler("actualizar", limpiar_cache_y_deploy))
   application.add_handler(CommandHandler("refrescar", refrescar_datos))
-  application.add_handler(CommandHandler(["inicio", "menu"], menu_inicio))
+  application.add_handler(CommandHandler("miid", miid))
+  application.add_handler(CommandHandler("accesos", recargar_accesos_cmd))
+  application.add_handler(CommandHandler(["i", "inicio", "menu"], menu_inicio))
 
   application.add_handler(
       MessageHandler(filters.TEXT & ~filters.COMMAND, handle_gemini_agent)
