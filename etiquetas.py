@@ -1,4 +1,4 @@
-"""Etiquetas Zebra (10x5 cm, 203 dpi).
+"""Etiquetas Zebra Noveltex (10x5 cm, 203 dpi).
 
 Dos modos, según las variables de entorno:
   * COLA    (si existe URL_COLA): el bot deja el trabajo en la cola (Apps Script) y el
@@ -12,10 +12,9 @@ Variables de entorno:
   URL_COLA     URL /exec del Apps Script (solo modo cola)
   TOKEN_COLA   token del Apps Script (solo modo cola)
 """
+import datetime
 import os
 import socket
-
-import requests
 
 ZEBRA_IP = os.environ.get("ZEBRA_IP", "147.120.0.181")
 ZEBRA_PORT = int(os.environ.get("ZEBRA_PORT", "6101"))
@@ -23,43 +22,71 @@ URL_COLA = os.environ.get("URL_COLA", "")
 TOKEN_COLA = os.environ.get("TOKEN_COLA", "")
 
 
-def _limpiar(texto: str) -> str:
+def _limpiar(texto) -> str:
     return str(texto).replace("^", " ").replace("~", " ").strip()
 
 
-def generar_zpl(referencia: str, color: str, metros: str = "", copias: int = 1) -> str:
-    ref = _limpiar(referencia)
-    col = _limpiar(color)
-    mts = _limpiar(metros)
+def generar_zpl_noveltex(item, ref, color, metros, centimetros, copias=1) -> str:
+    """Etiqueta de rollo de tela: item, referencia, color, cantidad, fecha y lote."""
+    tz = datetime.timezone(datetime.timedelta(hours=-5))  # Colombia (Render corre en UTC)
+    ahora = datetime.datetime.now(tz)
+    fecha = ahora.strftime("%d/%m/%Y %H:%M")
+    lote = ahora.strftime("%d%m%Y")
+
+    item, color = _limpiar(item), _limpiar(color)
+    ref = _limpiar(ref)[:20]
+    m, cm = int(metros), int(centimetros)
+    cant = f"{m:03d}.{cm:02d}"
+    codigo = f"{item}{color}{m:03d}{cm:02d}"  # ej. 0615 + 600 + 061 + 00 = 061560006100
+
+    # El nombre vertical se achica si es largo para que quepa en el alto de la etiqueta
+    ancho_ref = max(14, min(30, 340 // max(len(ref), 1)))
+
+    # Nota: el logo va como texto provisional hasta incrustar la imagen (^GFA).
     return f"""^XA
 ^PW799
 ^LL408
 ^LH0,0
 ^CI28
 ^PQ{max(1, int(copias))}
-^FO30,20^A0N,80,80^FB740,1,0,L^FD{ref}^FS
-^FO30,110^A0N,55,55^FB740,1,0,L^FD{col}^FS
-^FO30,185^BY3^BCN,100,Y,N,N^FD{ref}^FS
-^FO30,330^A0N,65,65^FB740,1,0,L^FD{mts}^FS
+^FO30,20^BQN,2,5^FDQA,{codigo}^FS
+^FO270,35^A0N,60,60^FDNOVELTEX S.A.S^FS
+^FO230,140^A0N,24,24^FDTELEFONO 4442659 - CALI^FS
+^FO30,180^A0N,38,38^FDITEM^FS
+^FO190,180^A0N,38,38^FD{item}^FS
+^FO30,222^A0N,38,38^FDREF.^FS
+^FO190,222^A0N,42,42^FD{ref}^FS
+^FO30,264^A0N,38,38^FDCOLOR^FS
+^FO190,264^A0N,38,38^FD{color}^FS
+^FO30,312^A0N,55,55^FDCANT.^FS
+^FO210,312^A0N,55,55^FD{cant}^FS
+^FO30,380^A0N,22,22^FD{fecha}^FS
+^FO270,372^A0N,34,34^FDLOTE :  {lote}^FS
+^FO690,390^A0B,48,28^FD{codigo}^FS
+^FO745,390^A0B,45,{ancho_ref}^FD{ref}^FS
 ^XZ"""
 
 
 def enviar_a_zebra(zpl: str) -> None:
-    """Envía ZPL a la impresora por red. Lo usan el modo directo y el agente."""
+    """Envía ZPL a la impresora por red. Lo usan el modo directo, el agente y las pruebas."""
     with socket.create_connection((ZEBRA_IP, ZEBRA_PORT), timeout=10) as s:
         s.sendall(zpl.encode("utf-8"))
 
 
-def _encolar(referencia: str, color: str, metros: str, copias: int) -> None:
+def _encolar(item, referencia, color, metros, centimetros, copias) -> None:
+    import requests  # solo hace falta en modo cola
+
     r = requests.post(
         URL_COLA,
         json={
             "token": TOKEN_COLA,
             "accion": "encolar",
+            "item": str(item),
             "referencia": referencia,
-            "color": color,
-            "metros": metros,
-            "copias": copias,
+            "color": str(color),
+            "metros": int(metros),
+            "centimetros": int(centimetros),
+            "copias": int(copias),
         },
         timeout=20,
     )
@@ -69,9 +96,9 @@ def _encolar(referencia: str, color: str, metros: str, copias: int) -> None:
         raise RuntimeError(f"La cola rechazó el trabajo: {datos.get('error')}")
 
 
-def imprimir_etiqueta(referencia: str, color: str, metros: str = "", copias: int = 1) -> None:
+def imprimir_etiqueta(item, referencia, color, metros, centimetros, copias=1) -> None:
     """Imprime (o encola) la etiqueta. Bloqueante: llamar con asyncio.to_thread."""
     if URL_COLA:
-        _encolar(referencia, color, metros, copias)
+        _encolar(item, referencia, color, metros, centimetros, copias)
     else:
-        enviar_a_zebra(generar_zpl(referencia, color, metros, copias))
+        enviar_a_zebra(generar_zpl_noveltex(item, referencia, color, metros, centimetros, copias))
