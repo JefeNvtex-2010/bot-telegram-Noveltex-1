@@ -85,6 +85,18 @@ from guias_handlers import (
     seleccionar_guia_gu,
 )
 
+from etiquetas_handlers import (  # NUEVO: impresión de etiquetas Zebra
+    ESPERANDO_METROS_ET,
+    ESPERANDO_REF_ET,
+    SELECCIONANDO_COLOR_ET,
+    SELECCIONANDO_REF_ET,
+    iniciar_etiqueta,
+    recibir_metros_et,
+    recibir_texto_ref_et,
+    seleccionar_color_et,
+    seleccionar_referencia_et,
+)
+
 logger = logging.getLogger(__name__)
 
 # --- CONFIGURACIÓN DE GEMINI AGENTE Y HERRAMIENTAS ---
@@ -310,11 +322,13 @@ def main() -> None:
       CommandHandler("i", iniciar_busqueda_vendedor),
       CommandHandler("pg", iniciar_pg),
       CommandHandler("gu", iniciar_gu),
+      CommandHandler("etiqueta", iniciar_etiqueta),  # NUEVO
       CallbackQueryHandler(iniciar_busqueda, pattern="^start_pv$"),
       CallbackQueryHandler(iniciar_busqueda_sap, pattern="^start_sap$"),
       CallbackQueryHandler(iniciar_busqueda_vendedor, pattern="^start_vend$"),
       CallbackQueryHandler(iniciar_pg, pattern="^start_pg$"),
       CallbackQueryHandler(iniciar_gu, pattern="^start_gu$"),
+      CallbackQueryHandler(iniciar_etiqueta, pattern="^start_et$"),  # NUEVO
   ]
 
   texto_pv = MessageHandler(
@@ -331,6 +345,12 @@ def main() -> None:
   )
   texto_gu = MessageHandler(
       filters.TEXT & ~filters.COMMAND, recibir_texto_gu
+  )
+  texto_ref_et = MessageHandler(  # NUEVO
+      filters.TEXT & ~filters.COMMAND, recibir_texto_ref_et
+  )
+  texto_metros_et = MessageHandler(  # NUEVO
+      filters.TEXT & ~filters.COMMAND, recibir_metros_et
   )
   botones_tipo_gu = CallbackQueryHandler(
       elegir_tipo_gu, pattern=r"^gu_tipo_(pedido|factura|menu)$"
@@ -402,6 +422,21 @@ def main() -> None:
           CallbackQueryHandler(acciones_gu, pattern=r"^gu_(img|back|nuevo)$"),
           texto_gu,
       ],
+      # NUEVO: flujo de etiquetas (referencia -> color -> metros)
+      ESPERANDO_REF_ET: [texto_ref_et],
+      SELECCIONANDO_REF_ET: [
+          CallbackQueryHandler(
+              seleccionar_referencia_et, pattern=r"^et_ref_\d+$"
+          ),
+          texto_ref_et,
+      ],
+      SELECCIONANDO_COLOR_ET: [
+          CallbackQueryHandler(
+              seleccionar_color_et, pattern=r"^et_(col_\d+|back)$"
+          ),
+          texto_ref_et,
+      ],
+      ESPERANDO_METROS_ET: [texto_metros_et],
   }
 
   fallbacks = entradas + [
