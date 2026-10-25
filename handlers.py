@@ -42,6 +42,7 @@ OPCIONES_MENU = [
     ("📝 Pedidos..", "start_pg", "PG"),
     ("🚚 Guías", "start_gu", "guias"),
     ("🏷️ Etiquetas", "start_et", "etiquetas"),
+    ("📍 Ubicaciones", "start_ub", "ubicaciones"),
 ]
 
 
