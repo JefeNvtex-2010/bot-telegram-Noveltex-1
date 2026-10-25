@@ -12,6 +12,7 @@ from telegram.error import BadRequest
 from telegram.ext import ContextTypes, ConversationHandler
 
 import datos
+from acceso import ADMIN_IDS, requiere_acceso, tiene_acceso
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,19 @@ MI_TELEGRAM_ID = int(os.environ.get("MI_TELEGRAM_ID", "5655537446"))
 RENDER_DEPLOY_HOOK_URL = os.environ.get("RENDER_DEPLOY_HOOK_URL", "")
 SEGUNDOS_BORRADO = 24 * 60 * 60
 MAX_BOTONES = 60
+
+# El dueño del bot siempre es administrador (acceso a todo).
+ADMIN_IDS.add(MI_TELEGRAM_ID)
+
+# Botones del menú principal: (texto, callback_data, permiso requerido).
+# Los nombres de permiso deben coincidir con los de @requiere_acceso(...).
+OPCIONES_MENU = [
+    ("🛒 Inventario Vendedor", "start_vend", "inventario_vendedor"),
+    ("🧮 Inventario SAP", "start_sap", "inventario"),
+    ("📝 Pedidos", "start_pg", "PG"),
+    ("🚚 Guías", "start_gu", "guias"),
+    ("🏷️ Etiquetas", "start_et", "etiquetas"),
+]
 
 
 # --------------------------------------------------------------------------- #
@@ -119,26 +133,37 @@ def registrar_uso_bot(update: Update, comando_usado: str) -> None:
 # --------------------------------------------------------------------------- #
 # Menú y comandos generales
 # --------------------------------------------------------------------------- #
-def _teclado_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🛒 Inventario Vendedor", callback_data="start_vend")],
-        [InlineKeyboardButton("🧮 Inventario SAP", callback_data="start_sap")],
-        [InlineKeyboardButton("📝 Pedidos", callback_data="start_pg")],
-        [InlineKeyboardButton("🚚 Guías", callback_data="start_gu")],
-        [InlineKeyboardButton("🏷️ Etiquetas", callback_data="start_et")],  # NUEVO
-    ])
+def _teclado_menu(user_id=None):
+    """Teclado del menú principal.
+
+    Con user_id muestra solo los botones a los que esa persona tiene acceso.
+    Sin user_id (otros módulos que lo llamen sin argumentos) muestra todos.
+    Devuelve None si no queda ningún botón.
+    """
+    filas = [
+        [InlineKeyboardButton(texto, callback_data=cb)]
+        for texto, cb, permiso in OPCIONES_MENU
+        if user_id is None or tiene_acceso(user_id, permiso)
+    ]
+    return InlineKeyboardMarkup(filas) if filas else None
 
 
 async def menu_inicio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Sirve como comando suelto y como fallback dentro de la conversación (cierra la conversación)."""
-    texto = "👋 ¡Hola! Selecciona una opción del menú principal para comenzar:"
+    user = update.effective_user
+    teclado = _teclado_menu(user.id if user else 0)
+    if teclado is None:
+        texto = "⛔ Todavía no tienes funciones habilitadas. Escribe /miid y pásale tu ID al administrador."
+    else:
+        texto = "👋 ¡Hola! Selecciona una opción del menú principal para comenzar:"
+
     if update.callback_query:
         query = update.callback_query
         await query.answer()
-        await editar(query, texto, _teclado_menu())
+        await editar(query, texto, teclado)
     else:
         programar_borrado(context, update.message)
-        msg = await update.message.reply_text(texto, reply_markup=_teclado_menu())
+        msg = await update.message.reply_text(texto, reply_markup=teclado)
         programar_borrado(context, msg)
     return ConversationHandler.END
 
@@ -152,7 +177,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     programar_borrado(context, update.message)
-    await responder(update, context, "Usa /inicio para desplegar el menú de opciones.")
+    await responder(update, context, "Usa /i para desplegar el menú de opciones.")
 
 
 async def order_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -216,7 +241,7 @@ async def callback_expirado(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     """Botones viejos (por ejemplo, tras un reinicio del bot): avisa en vez de quedarse 'cargando'."""
     query = update.callback_query
     if query:
-        await query.answer("Esta opción ya no está disponible. Escribe /inicio.", show_alert=True)
+        await query.answer("Esta opción ya no está disponible. Escribe /i.", show_alert=True)
 
 
 async def manejar_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -225,14 +250,14 @@ async def manejar_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
         try:
             await context.bot.send_message(
                 update.effective_chat.id,
-                "⚠️ Ocurrió un error inesperado. Intenta de nuevo o escribe /inicio.",
+                "⚠️ Ocurrió un error inesperado. Intenta de nuevo o escribe /i.",
             )
         except Exception:
             pass
 
 
 async def _sesion_expirada(query) -> int:
-    await editar(query, "⌛ Esta consulta expiró. Escribe /inicio para empezar de nuevo.")
+    await editar(query, "⌛ Esta consulta expiró. Escribe /i para empezar de nuevo.")
     return ConversationHandler.END
 
 
@@ -321,6 +346,7 @@ def _pantalla_colores(d: dict):
     return texto, InlineKeyboardMarkup(filas)
 
 
+@requiere_acceso("PV")
 async def iniciar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     if query:
