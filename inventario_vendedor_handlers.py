@@ -5,6 +5,7 @@ from telegram.constants import ParseMode
 from telegram.ext import ContextTypes, ConversationHandler
 
 import datos
+from acceso import requiere_acceso
 from handlers import editar, esc, programar_borrado, registrar_uso_bot, responder
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,7 @@ def _texto_compartir(d: dict) -> str:
     return f"🔍 Referencia: <b>{esc(d['ref'])}</b> (Bodega 01)\n\n" + "\n".join(lineas)
 
 
+@requiere_acceso("inventario_vendedor")
 async def iniciar_busqueda_vendedor(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     if query:
@@ -62,7 +64,7 @@ async def iniciar_busqueda_vendedor(update: Update, context: ContextTypes.DEFAUL
         )
         return ESPERANDO_REF_VEND
 
-    registrar_uso_bot(update, "/i")
+    registrar_uso_bot(update, "/iv")
     programar_borrado(context, update.message)
 
     if not context.args:
@@ -70,7 +72,7 @@ async def iniciar_busqueda_vendedor(update: Update, context: ContextTypes.DEFAUL
             update,
             context,
             "🛒 <b>Inventario Vendedor (Bodega 01)</b>\n\nEscribe la <b>referencia</b> que deseas buscar "
-            "(o usa <code>/i VERMONT</code>):",
+            "(o usa <code>/iv VERMONT</code>):",
         )
         return ESPERANDO_REF_VEND
 
@@ -121,7 +123,7 @@ async def ejecutar_busqueda_vendedor(update: Update, context: ContextTypes.DEFAU
 
 
 async def _expirada(query) -> int:
-    await editar(query, "⌛ Esta consulta expiró. Escribe /inicio para empezar de nuevo.")
+    await editar(query, "⌛ Esta consulta expiró. Escribe /i para empezar de nuevo.")
     return ConversationHandler.END
 
 
