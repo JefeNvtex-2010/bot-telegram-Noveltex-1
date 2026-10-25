@@ -100,15 +100,19 @@ from etiquetas_handlers import (  # impresión de etiquetas Zebra
     seleccionar_referencia_et,
 )
 
-from ubicacion import (  # NUEVO: ubicaciones de bodega
-    UB_ESPERANDO_CODIGO,
+from ubicacion import (  # ubicaciones de bodega (por referencia y color)
+    UB_ESPERANDO_REF,
     UB_ESPERANDO_UBICACION,
     UB_MENU,
+    UB_SELECCIONANDO_COLOR,
+    UB_SELECCIONANDO_REF,
     botones_ub,
     iniciar_ubicaciones,
-    recibir_codigo_ub,
+    recibir_ref_ub,
     recibir_ubicacion_ub,
     recordar_botones_ub,
+    seleccionar_color_ub,
+    seleccionar_ref_ub,
 )
 
 logger = logging.getLogger(__name__)
@@ -387,16 +391,22 @@ def main() -> None:
   botones_tipo_gu = CallbackQueryHandler(
       elegir_tipo_gu, pattern=r"^gu_tipo_(pedido|factura|menu)$"
   )
-  # Ubicaciones de bodega (NUEVO)
+  # Ubicaciones de bodega
   botones_ub_cb = CallbackQueryHandler(
       botones_ub,
       pattern=r"^ub_(menu|consultar|modificar|reemplazar|agregar)$",
   )
+  ub_ref_cb = CallbackQueryHandler(
+      seleccionar_ref_ub, pattern=r"^ub_ref_\d+$"
+  )
+  ub_color_cb = CallbackQueryHandler(
+      seleccionar_color_ub, pattern=r"^ub_(col_\d+|back_refs|back_cols)$"
+  )
   texto_ub_menu = MessageHandler(
       filters.TEXT & ~filters.COMMAND, recordar_botones_ub
   )
-  texto_ub_codigo = MessageHandler(
-      filters.TEXT & ~filters.COMMAND, recibir_codigo_ub
+  texto_ub_ref = MessageHandler(
+      filters.TEXT & ~filters.COMMAND, recibir_ref_ub
   )
   texto_ub_ubicacion = MessageHandler(
       filters.TEXT & ~filters.COMMAND, recibir_ubicacion_ub
@@ -484,10 +494,12 @@ def main() -> None:
       ],
       ESPERANDO_METROS_ET: [texto_metros_et],
       ESPERANDO_COPIAS_ET: [texto_copias_et],
-      # Ubicaciones de bodega (menú -> código de barras -> ubicación)
+      # Ubicaciones de bodega (menú -> referencia -> color -> ubicación)
       UB_MENU: [botones_ub_cb, texto_ub_menu],
-      UB_ESPERANDO_CODIGO: [botones_ub_cb, texto_ub_codigo],
-      UB_ESPERANDO_UBICACION: [botones_ub_cb, texto_ub_ubicacion],
+      UB_ESPERANDO_REF: [botones_ub_cb, texto_ub_ref],
+      UB_SELECCIONANDO_REF: [ub_ref_cb, botones_ub_cb, texto_ub_ref],
+      UB_SELECCIONANDO_COLOR: [ub_color_cb, botones_ub_cb, texto_ub_ref],
+      UB_ESPERANDO_UBICACION: [ub_color_cb, botones_ub_cb, texto_ub_ubicacion],
   }
 
   fallbacks = entradas + [
