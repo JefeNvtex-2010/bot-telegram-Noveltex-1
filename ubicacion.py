@@ -1,32 +1,3 @@
-"""Módulo de ubicaciones de bodega (/ub).
-
-Flujo:
-  1) Menú: Consultar ubicación | Modificar ubicación.
-
-  2) CONSULTAR (por nombre): se escribe la REFERENCIA (ej. SATIN), se elige la
-     referencia si hay varias y luego el COLOR, igual que en Inventario SAP.
-     Muestra las ubicaciones registradas del artículo.
-
-  3) MODIFICAR (siempre por código): Registrar y borrar | Agregar.
-     Se escanea (o se escribe) el código de barras del rollo, de 12 dígitos:
-        001820005225  ->  artículo 0018-200  +  cantidad 05225 (se descarta)
-     También se acepta el código del artículo solo (0018-200).
-     El bot busca el artículo en el inventario SAP (código y descripción), pide la
-     ubicación y la guarda.
-        - Registrar y borrar: elimina todas las ubicaciones del artículo y deja la nueva.
-        - Agregar: suma otra ubicación sin borrar las que ya tiene.
-
-Las ubicaciones se guardan en la pestaña "UBICACIONES BODEGA" del Google Sheet
-AUDITORIA_BOT (FECHA | UBICACIÓN | CODIGO | DESCRIPCIÓN | NOMBRE), una fila por
-cada ubicación del artículo. La escritura/lectura se hace a través de un Apps Script
-(ver ubicaciones_apps_script.gs).
-
-Variables de entorno (Render):
-  URL_UBICACIONES     URL /exec del Apps Script de ubicaciones.
-  TOKEN_UBICACIONES   Token (el mismo que la propiedad TOKEN del Apps Script).
-
-Permiso: "ubicaciones" (en la hoja PERMISOS: la frase "ubicaciones" o /ub).
-"""
 import asyncio
 import logging
 import os
