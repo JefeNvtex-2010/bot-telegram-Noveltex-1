@@ -39,7 +39,7 @@ ADMIN_IDS.add(MI_TELEGRAM_ID)
 OPCIONES_MENU = [
     ("🛒 Inventario Vendedor", "start_vend", "inventario_vendedor"),
     ("🧮 Inventario SAP", "start_sap", "inventario"),
-    ("📝 Pedidos", "start_pg", "PG"),
+    ("📝 Pedidos..", "start_pg", "PG"),
     ("🚚 Guías", "start_gu", "guias"),
     ("🏷️ Etiquetas", "start_et", "etiquetas"),
 ]
@@ -153,7 +153,7 @@ async def menu_inicio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     user = update.effective_user
     teclado = _teclado_menu(user.id if user else 0)
     if teclado is None:
-        texto = "⛔ Todavía no tienes funciones habilitadas. Escribe /miid y pásale tu ID al administrador."
+        texto = "⛔ Todavía no tienes funciones habilitadas. Escribe /miid y pásale tu ID al administrador para que te habilite tu usuario y que podamos trabajar."
     else:
         texto = "👋 ¡Hola! Selecciona una opción del menú principal para comenzar:"
 
