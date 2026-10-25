@@ -1,13 +1,3 @@
-"""Capa de datos compartida para el bot.
-
-Qué resuelve:
-  * Las hojas de Google Sheets se descargan en SEGUNDO PLANO cada INTERVALO_REFRESCO
-    segundos. Los handlers nunca esperan una descarga (salvo la primerísima carga).
-  * Las hojas se preparan UNA sola vez al descargarlas (columnas limpias, números
-    convertidos, bodega 01 marcada), no en cada búsqueda.
-  * El inventario SAP y el de vendedor usan la misma hoja: se descarga una sola vez.
-  * La descarga corre en un hilo (asyncio.to_thread) para no congelar el bot.
-"""
 import asyncio
 import io
 import logging
