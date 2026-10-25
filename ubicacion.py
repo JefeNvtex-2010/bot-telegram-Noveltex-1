@@ -166,12 +166,37 @@ def _indice_articulos(df) -> dict:
     return indice
 
 
-async def _buscar_articulo(codigo7: str):
-    """Por código: (código SAP, descripción) o None si no está en el inventario."""
+async def _indice_inventario() -> dict:
+    """Índice {clave: (código SAP, descripción)} del inventario SAP actual."""
     df = await datos.inventario.obtener()
     if df is None:
         raise RuntimeError(datos.inventario.ultimo_error or "No se pudo acceder al inventario")
-    return _indice_articulos(df).get(codigo7)
+    return _indice_articulos(df)
+
+
+def _similares(indice: dict, codigo7: str, maximo: int = 8):
+    """Artículos del mismo ítem (primeros 4 dígitos): (lista limitada, total)."""
+    prefijo = codigo7[:4]
+    coincidencias = sorted(
+        (cod, desc) for k, (cod, desc) in indice.items() if k.startswith(prefijo)
+    )
+    return coincidencias[:maximo], len(coincidencias)
+
+
+def _texto_no_encontrado(codigo7: str, indice: dict) -> str:
+    """Mensaje cuando el código no está en SAP, con pistas de qué sí hay del mismo ítem."""
+    texto = f"❌ No encontré el artículo <b>{_formatear(codigo7)}</b> en el inventario SAP."
+    similares, total = _similares(indice, codigo7)
+    if similares:
+        lineas = []
+        for cod, desc in similares:
+            lineas.append(f"• <code>{esc(cod)}</code>" + (f" — {esc(desc)}" if desc else ""))
+        texto += f"\n\nDel ítem <b>{codigo7[:4]}</b> sí hay en SAP:\n" + "\n".join(lineas)
+        if total > len(similares):
+            texto += f"\n… y {total - len(similares)} más"
+    else:
+        texto += f"\n\nNo hay ningún artículo del ítem <b>{codigo7[:4]}</b> en el inventario SAP."
+    return texto + "\n\nEscanea otro código."
 
 
 def _articulo_de(df, ref: str, color: str):
@@ -566,7 +591,7 @@ async def recibir_codigo_ub(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await responder(update, context, "⏳ Cargando inventario, un momento…")
 
     try:
-        articulo = await _buscar_articulo(codigo7)
+        indice = await _indice_inventario()
     except Exception as e:
         logger.error(f"Ubicaciones: error buscando el artículo {codigo7}: {e}", exc_info=True)
         await responder(
@@ -576,11 +601,15 @@ async def recibir_codigo_ub(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         )
         return UB_ESPERANDO_CODIGO
 
+    articulo = indice.get(codigo7)
     if articulo is None:
+        logger.warning(
+            f"Ubicaciones: el artículo {_formatear(codigo7)} no está en el inventario SAP "
+            f"({len(indice)} artículos cargados)"
+        )
         await responder(
             update, context,
-            f"❌ No encontré el artículo <b>{_formatear(codigo7)}</b> en el inventario SAP.\n"
-            "Escanea otro código.",
+            _texto_no_encontrado(codigo7, indice),
             reply_markup=_teclado_volver(),
         )
         return UB_ESPERANDO_CODIGO
