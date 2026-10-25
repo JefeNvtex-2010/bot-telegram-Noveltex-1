@@ -100,11 +100,23 @@ from etiquetas_handlers import (  # impresión de etiquetas Zebra
     seleccionar_referencia_et,
 )
 
+from ubicacion import (  # NUEVO: ubicaciones de bodega
+    UB_ESPERANDO_CODIGO,
+    UB_ESPERANDO_UBICACION,
+    UB_MENU,
+    botones_ub,
+    iniciar_ubicaciones,
+    recibir_codigo_ub,
+    recibir_ubicacion_ub,
+    recordar_botones_ub,
+)
+
 logger = logging.getLogger(__name__)
 
 # --- CONTROL DE ACCESO POR MÓDULO ---
 # Se protege el punto de entrada de cada flujo (comando y botón del menú).
-# /PV ya está protegido en handlers.py y /iv en inventario_vendedor_handlers.py.
+# /PV ya está protegido en handlers.py, /iv en inventario_vendedor_handlers.py
+# y /ub en ubicacion.py.
 # Los nombres de permiso deben coincidir con los de la pestaña PERMISOS.
 iniciar_busqueda_sap = requiere_acceso("inventario")(iniciar_busqueda_sap)
 iniciar_pg = requiere_acceso("PG")(iniciar_pg)
@@ -338,12 +350,14 @@ def main() -> None:
       CommandHandler("pg", iniciar_pg),
       CommandHandler("gu", iniciar_gu),
       CommandHandler("etiqueta", iniciar_etiqueta),
+      CommandHandler("ub", iniciar_ubicaciones),  # NUEVO
       CallbackQueryHandler(iniciar_busqueda, pattern="^start_pv$"),
       CallbackQueryHandler(iniciar_busqueda_sap, pattern="^start_sap$"),
       CallbackQueryHandler(iniciar_busqueda_vendedor, pattern="^start_vend$"),
       CallbackQueryHandler(iniciar_pg, pattern="^start_pg$"),
       CallbackQueryHandler(iniciar_gu, pattern="^start_gu$"),
       CallbackQueryHandler(iniciar_etiqueta, pattern="^start_et$"),
+      CallbackQueryHandler(iniciar_ubicaciones, pattern="^start_ub$"),  # NUEVO
   ]
 
   texto_pv = MessageHandler(
@@ -372,6 +386,20 @@ def main() -> None:
   )
   botones_tipo_gu = CallbackQueryHandler(
       elegir_tipo_gu, pattern=r"^gu_tipo_(pedido|factura|menu)$"
+  )
+  # Ubicaciones de bodega (NUEVO)
+  botones_ub_cb = CallbackQueryHandler(
+      botones_ub,
+      pattern=r"^ub_(menu|consultar|modificar|reemplazar|agregar)$",
+  )
+  texto_ub_menu = MessageHandler(
+      filters.TEXT & ~filters.COMMAND, recordar_botones_ub
+  )
+  texto_ub_codigo = MessageHandler(
+      filters.TEXT & ~filters.COMMAND, recibir_codigo_ub
+  )
+  texto_ub_ubicacion = MessageHandler(
+      filters.TEXT & ~filters.COMMAND, recibir_ubicacion_ub
   )
 
   estados = {
@@ -456,6 +484,10 @@ def main() -> None:
       ],
       ESPERANDO_METROS_ET: [texto_metros_et],
       ESPERANDO_COPIAS_ET: [texto_copias_et],
+      # Ubicaciones de bodega (menú -> código de barras -> ubicación)
+      UB_MENU: [botones_ub_cb, texto_ub_menu],
+      UB_ESPERANDO_CODIGO: [botones_ub_cb, texto_ub_codigo],
+      UB_ESPERANDO_UBICACION: [botones_ub_cb, texto_ub_ubicacion],
   }
 
   fallbacks = entradas + [
