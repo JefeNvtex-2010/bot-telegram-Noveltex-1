@@ -2,14 +2,19 @@
 
 Flujo:
   1) Menú: Consultar ubicación | Modificar ubicación.
-  2) Modificar -> Registrar y borrar (deja solo la ubicación nueva)
-               -> Agregar (suma otra ubicación sin borrar las que ya tiene).
-  3) Se escribe la REFERENCIA (ej. SATIN), se elige la referencia si hay varias y
-     luego el COLOR (igual que en Inventario SAP). El bot toma del inventario SAP el
-     código y la descripción del artículo de esa referencia y color.
-  4) Consultar: muestra las ubicaciones registradas.
-     Registrar y borrar / Agregar: pide la ubicación y la guarda; después deja
-     elegir otro color de la misma referencia (o escribir otra referencia).
+
+  2) CONSULTAR (por nombre): se escribe la REFERENCIA (ej. SATIN), se elige la
+     referencia si hay varias y luego el COLOR, igual que en Inventario SAP.
+     Muestra las ubicaciones registradas del artículo.
+
+  3) MODIFICAR (siempre por código): Registrar y borrar | Agregar.
+     Se escanea (o se escribe) el código de barras del rollo, de 12 dígitos:
+        001820005225  ->  artículo 0018-200  +  cantidad 05225 (se descarta)
+     También se acepta el código del artículo solo (0018-200).
+     El bot busca el artículo en el inventario SAP (código y descripción), pide la
+     ubicación y la guarda.
+        - Registrar y borrar: elimina todas las ubicaciones del artículo y deja la nueva.
+        - Agregar: suma otra ubicación sin borrar las que ya tiene.
 
 Las ubicaciones se guardan en la pestaña "UBICACIONES BODEGA" del Google Sheet
 AUDITORIA_BOT (FECHA | UBICACIÓN | CODIGO | DESCRIPCIÓN | NOMBRE), una fila por
@@ -44,13 +49,15 @@ logger = logging.getLogger(__name__)
     UB_ESPERANDO_REF,
     UB_SELECCIONANDO_REF,
     UB_SELECCIONANDO_COLOR,
+    UB_ESPERANDO_CODIGO,
     UB_ESPERANDO_UBICACION,
-) = 40, 41, 42, 43, 44
+) = 40, 41, 42, 43, 44, 45
 
 URL_UBICACIONES = os.environ.get("URL_UBICACIONES", "").strip()
 TOKEN_UBICACIONES = os.environ.get("TOKEN_UBICACIONES", "").strip()
 
 MODOS = ("consultar", "reemplazar", "agregar")
+MODOS_MODIFICAR = ("reemplazar", "agregar")
 MAX_REFS = 20
 MAX_COLORES = 60
 
@@ -68,6 +75,30 @@ def _sin_acentos(texto) -> str:
     return "".join(
         c for c in unicodedata.normalize("NFD", str(texto)) if unicodedata.category(c) != "Mn"
     )
+
+
+def _clave(codigo) -> str:
+    """Código sin guiones ni espacios, en mayúsculas: '0018-200' -> '0018200'."""
+    return re.sub(r"[^0-9A-Za-z]", "", str(codigo)).upper()
+
+
+def _extraer_codigo(texto):
+    """Devuelve los 7 dígitos del artículo o None si el texto no es válido.
+
+    - 12 dígitos (código de barras del rollo): 7 del artículo + 5 de cantidad (se descartan).
+    - 7 dígitos (código del artículo, con o sin guion): se usa tal cual.
+    """
+    digitos = re.sub(r"\D", "", str(texto))
+    if len(digitos) == 12:
+        return digitos[:7]
+    if len(digitos) == 7:
+        return digitos
+    return None
+
+
+def _formatear(codigo7: str) -> str:
+    """'0018200' -> '0018-200'."""
+    return f"{codigo7[:4]}-{codigo7[4:]}"
 
 
 def _normalizar_ubicacion(texto):
@@ -92,22 +123,66 @@ def _primer_texto(serie) -> str:
     return ""
 
 
-def _articulo_de(df, ref: str, color: str):
-    """(código SAP, descripción) del artículo de esa referencia y color, o None."""
-    filas = df[(df["_ref"] == ref) & (df["_color"] == color)]
-    if filas.empty:
-        return None
-    col_cod = _buscar_columna(df, COLUMNAS_CODIGO)
-    if col_cod is None:
+def _columna_codigo(df) -> str:
+    col = _buscar_columna(df, COLUMNAS_CODIGO)
+    if col is None:
         raise RuntimeError(
             "No encontré la columna del artículo en el inventario SAP "
             f"(columnas: {', '.join(map(str, df.columns))})"
         )
+    return col
+
+
+# --------------------------------------------------------------------------- #
+# Inventario SAP
+# --------------------------------------------------------------------------- #
+_cache = {"firma": None, "indice": {}}
+
+
+def _indice_articulos(df) -> dict:
+    """{clave: (código SAP, descripción)}; se reconstruye solo si cambió el inventario."""
+    firma = (id(df), len(df))
+    if _cache["firma"] == firma:
+        return _cache["indice"]
+
+    col_cod = _columna_codigo(df)
     col_desc = _buscar_columna(df, COLUMNAS_DESCRIPCION)
 
-    codigo = _primer_texto(filas[col_cod])
+    codigos = df[col_cod].astype(str).str.strip().tolist()
+    if col_desc:
+        descripciones = df[col_desc].astype(str).str.strip().tolist()
+    else:
+        descripciones = [""] * len(codigos)
+
+    indice = {}
+    for cod, desc in zip(codigos, descripciones):
+        if not cod or cod.lower() == "nan":
+            continue
+        k = _clave(cod)
+        if k and k not in indice:
+            indice[k] = (cod, "" if desc.lower() == "nan" else desc)
+
+    _cache["firma"], _cache["indice"] = firma, indice
+    return indice
+
+
+async def _buscar_articulo(codigo7: str):
+    """Por código: (código SAP, descripción) o None si no está en el inventario."""
+    df = await datos.inventario.obtener()
+    if df is None:
+        raise RuntimeError(datos.inventario.ultimo_error or "No se pudo acceder al inventario")
+    return _indice_articulos(df).get(codigo7)
+
+
+def _articulo_de(df, ref: str, color: str):
+    """Por referencia y color: (código SAP, descripción) o None."""
+    filas = df[(df["_ref"] == ref) & (df["_color"] == color)]
+    if filas.empty:
+        return None
+    codigo = _primer_texto(filas[_columna_codigo(df)])
     if not codigo:
         return None
+    col_desc = _buscar_columna(df, COLUMNAS_DESCRIPCION)
     descripcion = _primer_texto(filas[col_desc]) if col_desc else ""
     return codigo, descripcion or f"{ref} - {color}"
 
@@ -179,19 +254,24 @@ def _teclado_volver():
 
 
 def _teclado_resultado():
+    """Resultado de una consulta: volver a la lista de colores o al menú."""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🔙 Volver a colores", callback_data="ub_back_cols")],
         _boton_menu(),
     ])
 
 
-def _texto_pedir_ref(modo: str) -> str:
-    titulo = {
-        "consultar": "🔎 <b>Consultar ubicación</b>",
-        "reemplazar": "🗑️ <b>Registrar y borrar</b>",
-        "agregar": "➕ <b>Agregar ubicación</b>",
-    }[modo]
-    return f"{titulo}\n\nEscribe la <b>referencia</b> que deseas buscar (ej. <code>SATIN</code>):"
+def _texto_pedir(modo: str) -> str:
+    if modo == "consultar":
+        return (
+            "🔎 <b>Consultar ubicación</b>\n\n"
+            "Escribe la <b>referencia</b> que deseas buscar (ej. <code>SATIN</code>):"
+        )
+    titulo = "🗑️ <b>Registrar y borrar</b>" if modo == "reemplazar" else "➕ <b>Agregar ubicación</b>"
+    return (
+        f"{titulo}\n\nEscanea el <b>código de barras</b> del rollo "
+        "(o escribe el código del artículo, ej. <code>0018-200</code>):"
+    )
 
 
 def _pantalla_refs(ub: dict):
@@ -212,7 +292,7 @@ def _pantalla_refs(ub: dict):
     return texto, InlineKeyboardMarkup(filas)
 
 
-def _pantalla_colores(ub: dict, continuar: bool = False):
+def _pantalla_colores(ub: dict):
     colores = ub["colores"][:MAX_COLORES]
     filas = [
         [InlineKeyboardButton(color or "(sin color)", callback_data=f"ub_col_{i}")]
@@ -222,13 +302,7 @@ def _pantalla_colores(ub: dict, continuar: bool = False):
         filas.append([InlineKeyboardButton("🔙 Volver a referencias", callback_data="ub_back_refs")])
     filas.append(_boton_menu())
 
-    if continuar:
-        texto = (
-            f"Selecciona otro color de <b>{esc(ub['ref'])}</b> "
-            "o escribe otra referencia:"
-        )
-    else:
-        texto = f"🔍 Referencia: <b>{esc(ub['ref'])}</b>.\nSelecciona un color:"
+    texto = f"🔍 Referencia: <b>{esc(ub['ref'])}</b>.\nSelecciona un color:"
     if len(ub["colores"]) > MAX_COLORES:
         texto += f"\n(Mostrando {MAX_COLORES} de {len(ub['colores'])} colores)"
     return texto, InlineKeyboardMarkup(filas)
@@ -276,7 +350,7 @@ async def _expirada_cb(query, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 # --------------------------------------------------------------------------- #
-# Handlers
+# Handlers: menú
 # --------------------------------------------------------------------------- #
 @requiere_acceso("ubicaciones")
 async def iniciar_ubicaciones(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -309,10 +383,15 @@ async def botones_ub(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await editar(query, texto, teclado)
         return UB_MENU
 
-    if accion in MODOS:  # consultar | reemplazar | agregar
+    if accion == "consultar":  # por nombre: referencia y color
         ub["modo"] = accion
-        await editar(query, _texto_pedir_ref(accion), _teclado_volver())
+        await editar(query, _texto_pedir(accion), _teclado_volver())
         return UB_ESPERANDO_REF
+
+    if accion in MODOS_MODIFICAR:  # por código de barras
+        ub["modo"] = accion
+        await editar(query, _texto_pedir(accion), _teclado_volver())
+        return UB_ESPERANDO_CODIGO
 
     texto, teclado = _pantalla_menu()  # menu (y cualquier otra acción)
     await editar(query, texto, teclado)
@@ -326,12 +405,14 @@ async def recordar_botones_ub(update: Update, context: ContextTypes.DEFAULT_TYPE
     return UB_MENU
 
 
+# --------------------------------------------------------------------------- #
+# Handlers: CONSULTAR (por referencia y color)
+# --------------------------------------------------------------------------- #
 async def recibir_ref_ub(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Referencia escrita: busca en el inventario SAP y muestra referencias o colores."""
     programar_borrado(context, update.message)
     ub = context.user_data.setdefault("ub", {})
-    modo = ub.get("modo")
-    if modo not in MODOS:
+    if ub.get("modo") != "consultar":
         return await _sesion_expirada(update, context)
 
     termino = (update.message.text or "").strip().upper()
@@ -362,7 +443,7 @@ async def recibir_ref_ub(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # Búsqueda nueva: se conserva solo el modo
     ub.clear()
-    ub.update({"modo": modo, "termino": termino, "refs": refs[:MAX_REFS], "total": len(refs)})
+    ub.update({"modo": "consultar", "termino": termino, "refs": refs[:MAX_REFS], "total": len(refs)})
 
     if len(refs) == 1:
         ub["ref"] = refs[0]
@@ -381,7 +462,7 @@ async def seleccionar_ref_ub(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await query.answer()
     ub = context.user_data.get("ub") or {}
     df = await datos.inventario.obtener()
-    if ub.get("modo") not in MODOS or not ub.get("refs") or df is None:
+    if ub.get("modo") != "consultar" or not ub.get("refs") or df is None:
         return await _expirada_cb(query, context)
     try:
         ref = ub["refs"][int(query.data.rsplit("_", 1)[1])]
@@ -396,25 +477,22 @@ async def seleccionar_ref_ub(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def seleccionar_color_ub(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Botones: ub_col_N | ub_back_refs | ub_back_cols."""
+    """Botones: ub_col_N | ub_back_refs | ub_back_cols (solo consulta)."""
     query = update.callback_query
     await query.answer()
     ub = context.user_data.get("ub") or {}
-    modo = ub.get("modo")
-    if modo not in MODOS or not ub.get("ref") or not ub.get("colores"):
+    if ub.get("modo") != "consultar" or not ub.get("ref") or not ub.get("colores"):
         return await _expirada_cb(query, context)
     data = query.data
 
     if data == "ub_back_refs":
         if not ub.get("refs"):
             return await _expirada_cb(query, context)
-        ub.pop("articulo", None)
         texto, teclado = _pantalla_refs(ub)
         await editar(query, texto, teclado)
         return UB_SELECCIONANDO_REF
 
     if data == "ub_back_cols":
-        ub.pop("articulo", None)
         texto, teclado = _pantalla_colores(ub)
         await editar(query, texto, teclado)
         return UB_SELECCIONANDO_COLOR
@@ -456,13 +534,69 @@ async def seleccionar_color_ub(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return UB_SELECCIONANDO_COLOR
 
-    cabecera = _texto_articulo(codigo, descripcion)
+    await editar(
+        query,
+        f"{_texto_articulo(codigo, descripcion)}\n{_detalle_ubicaciones(ubicaciones)}",
+        _teclado_resultado(),
+    )
+    return UB_SELECCIONANDO_COLOR
 
-    if modo == "consultar":
-        await editar(query, f"{cabecera}\n{_detalle_ubicaciones(ubicaciones)}", _teclado_resultado())
-        return UB_SELECCIONANDO_COLOR
 
-    # Modificar: guarda el artículo y pide la ubicación
+# --------------------------------------------------------------------------- #
+# Handlers: MODIFICAR (siempre por código de barras)
+# --------------------------------------------------------------------------- #
+async def recibir_codigo_ub(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    programar_borrado(context, update.message)
+    ub = context.user_data.setdefault("ub", {})
+    modo = ub.get("modo")
+    if modo not in MODOS_MODIFICAR:
+        return await _sesion_expirada(update, context)
+
+    codigo7 = _extraer_codigo(update.message.text)
+    if codigo7 is None:
+        await responder(
+            update, context,
+            "⚠️ No reconozco ese código.\nDebe tener 12 dígitos (ej. <code>001820005225</code>) "
+            "o ser el código del artículo (ej. <code>0018-200</code>).",
+            reply_markup=_teclado_volver(),
+        )
+        return UB_ESPERANDO_CODIGO
+
+    if datos.inventario.df is None:  # solo en la primera carga tras arrancar
+        await responder(update, context, "⏳ Cargando inventario, un momento…")
+
+    try:
+        articulo = await _buscar_articulo(codigo7)
+    except Exception as e:
+        logger.error(f"Ubicaciones: error buscando el artículo {codigo7}: {e}", exc_info=True)
+        await responder(
+            update, context,
+            f"⚠️ No pude consultar el inventario SAP.\n<code>{esc(e)}</code>",
+            reply_markup=_teclado_volver(),
+        )
+        return UB_ESPERANDO_CODIGO
+
+    if articulo is None:
+        await responder(
+            update, context,
+            f"❌ No encontré el artículo <b>{_formatear(codigo7)}</b> en el inventario SAP.\n"
+            "Escanea otro código.",
+            reply_markup=_teclado_volver(),
+        )
+        return UB_ESPERANDO_CODIGO
+
+    codigo, descripcion = articulo
+    try:
+        ubicaciones, _ = await _consultar_ubicaciones(codigo)
+    except Exception as e:
+        logger.error(f"Ubicaciones: error consultando la hoja para {codigo}: {e}", exc_info=True)
+        await responder(
+            update, context,
+            f"⚠️ No pude consultar la hoja de ubicaciones.\n<code>{esc(e)}</code>",
+            reply_markup=_teclado_volver(),
+        )
+        return UB_ESPERANDO_CODIGO
+
     ub["articulo"] = (codigo, descripcion)
     if ubicaciones:
         if modo == "reemplazar":
@@ -472,10 +606,11 @@ async def seleccionar_color_ub(update: Update, context: ContextTypes.DEFAULT_TYP
     else:
         aviso = "Aún no tiene ubicaciones registradas."
 
-    await editar(
-        query,
-        f"{cabecera}\n{aviso}\n\n📍 Escribe la <b>ubicación</b> (ej. <code>A-03-2</code>):",
-        _teclado_resultado(),
+    await responder(
+        update, context,
+        f"{_texto_articulo(codigo, descripcion)}\n{aviso}\n\n"
+        "📍 Escribe la <b>ubicación</b> (ej. <code>A-03-2</code>):",
+        reply_markup=_teclado_volver(),
     )
     return UB_ESPERANDO_UBICACION
 
@@ -485,7 +620,7 @@ async def recibir_ubicacion_ub(update: Update, context: ContextTypes.DEFAULT_TYP
     ub = context.user_data.get("ub") or {}
     modo = ub.get("modo")
     articulo = ub.get("articulo")
-    if modo not in ("reemplazar", "agregar") or not articulo:
+    if modo not in MODOS_MODIFICAR or not articulo:
         return await _sesion_expirada(update, context)
 
     entrada = update.message.text or ""
@@ -494,7 +629,7 @@ async def recibir_ubicacion_ub(update: Update, context: ContextTypes.DEFAULT_TYP
             update, context,
             "⚠️ Eso parece un código de barras, no una ubicación.\n"
             "Escribe la ubicación (ej. <code>A-03-2</code>).",
-            reply_markup=_teclado_resultado(),
+            reply_markup=_teclado_volver(),
         )
         return UB_ESPERANDO_UBICACION
 
@@ -504,7 +639,7 @@ async def recibir_ubicacion_ub(update: Update, context: ContextTypes.DEFAULT_TYP
             update, context,
             "⚠️ Ubicación no válida. Usa letras, números, espacios, guion, punto, "
             "<code>/</code> o <code>#</code> (máximo 30 caracteres), por ejemplo <code>A-03-2</code>.",
-            reply_markup=_teclado_resultado(),
+            reply_markup=_teclado_volver(),
         )
         return UB_ESPERANDO_UBICACION
 
@@ -531,7 +666,7 @@ async def recibir_ubicacion_ub(update: Update, context: ContextTypes.DEFAULT_TYP
         await responder(
             update, context,
             f"⚠️ No pude guardar la ubicación.\n<code>{esc(e)}</code>\nPuedes intentar de nuevo.",
-            reply_markup=_teclado_resultado(),
+            reply_markup=_teclado_volver(),
         )
         return UB_ESPERANDO_UBICACION
 
@@ -550,20 +685,11 @@ async def recibir_ubicacion_ub(update: Update, context: ContextTypes.DEFAULT_TYP
         titulo = f"✅ <b>Ubicación agregada:</b> {esc(ubicacion)}"
 
     ub.pop("articulo", None)
-    confirmacion = (
-        f"{titulo}\n\n{_texto_articulo(codigo, descripcion)}"
-        f"📍 <b>Ubicaciones:</b> {_nombres(ubicaciones)}"
-    )
-
-    # Sigue con otro color de la misma referencia (o una referencia nueva escrita)
-    if ub.get("ref") and ub.get("colores"):
-        texto_colores, teclado = _pantalla_colores(ub, continuar=True)
-        await responder(update, context, f"{confirmacion}\n\n{texto_colores}", reply_markup=teclado)
-        return UB_SELECCIONANDO_COLOR
-
     await responder(
         update, context,
-        f"{confirmacion}\n\nEscribe otra referencia o toca Volver.",
+        f"{titulo}\n\n{_texto_articulo(codigo, descripcion)}"
+        f"📍 <b>Ubicaciones:</b> {_nombres(ubicaciones)}\n\n"
+        "Escanea el siguiente rollo o toca Volver.",
         reply_markup=_teclado_volver(),
     )
-    return UB_ESPERANDO_REF
+    return UB_ESPERANDO_CODIGO
