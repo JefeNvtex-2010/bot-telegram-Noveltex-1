@@ -100,7 +100,8 @@ from etiquetas_handlers import (  # impresión de etiquetas Zebra
     seleccionar_referencia_et,
 )
 
-from ubicacion import (  # ubicaciones de bodega (por referencia y color)
+from ubicacion import (  # ubicaciones: consultar por nombre, modificar por código
+    UB_ESPERANDO_CODIGO,
     UB_ESPERANDO_REF,
     UB_ESPERANDO_UBICACION,
     UB_MENU,
@@ -108,6 +109,7 @@ from ubicacion import (  # ubicaciones de bodega (por referencia y color)
     UB_SELECCIONANDO_REF,
     botones_ub,
     iniciar_ubicaciones,
+    recibir_codigo_ub,
     recibir_ref_ub,
     recibir_ubicacion_ub,
     recordar_botones_ub,
@@ -408,6 +410,9 @@ def main() -> None:
   texto_ub_ref = MessageHandler(
       filters.TEXT & ~filters.COMMAND, recibir_ref_ub
   )
+  texto_ub_codigo = MessageHandler(
+      filters.TEXT & ~filters.COMMAND, recibir_codigo_ub
+  )
   texto_ub_ubicacion = MessageHandler(
       filters.TEXT & ~filters.COMMAND, recibir_ubicacion_ub
   )
@@ -494,12 +499,15 @@ def main() -> None:
       ],
       ESPERANDO_METROS_ET: [texto_metros_et],
       ESPERANDO_COPIAS_ET: [texto_copias_et],
-      # Ubicaciones de bodega (menú -> referencia -> color -> ubicación)
+      # Ubicaciones de bodega
+      #  Consultar: menú -> referencia -> color
+      #  Modificar: menú -> código de barras -> ubicación
       UB_MENU: [botones_ub_cb, texto_ub_menu],
       UB_ESPERANDO_REF: [botones_ub_cb, texto_ub_ref],
       UB_SELECCIONANDO_REF: [ub_ref_cb, botones_ub_cb, texto_ub_ref],
       UB_SELECCIONANDO_COLOR: [ub_color_cb, botones_ub_cb, texto_ub_ref],
-      UB_ESPERANDO_UBICACION: [ub_color_cb, botones_ub_cb, texto_ub_ubicacion],
+      UB_ESPERANDO_CODIGO: [botones_ub_cb, texto_ub_codigo],
+      UB_ESPERANDO_UBICACION: [botones_ub_cb, texto_ub_ubicacion],
   }
 
   fallbacks = entradas + [
