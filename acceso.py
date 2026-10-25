@@ -1,3 +1,39 @@
+"""Control de acceso a las funciones del bot (por ID de usuario de Telegram).
+
+Los permisos salen de una hoja de Google Sheets (pestaña PERMISOS del archivo
+AUDITORIA_BOT) y, opcionalmente, de variables de entorno. Ambas fuentes se suman.
+
+  HOJA DE GOOGLE (recomendado)
+    ACCESO_SHEET_URL     Enlace CSV de la pestaña PERMISOS publicada en la web
+                         (Archivo > Compartir > Publicar en la web > PERMISOS > .csv).
+    ACCESO_SHEET_ID      Solo si no usas ACCESO_SHEET_URL: ID del archivo de Google
+                         (por defecto el de AUDITORIA_BOT). Requiere que el archivo
+                         esté compartido como "Cualquier persona con el enlace".
+    ACCESO_HOJA          Nombre de la pestaña (por defecto PERMISOS).
+    ACCESO_REFRESCO_MIN  Cada cuántos minutos se vuelve a leer (por defecto 5).
+
+    Columnas (se buscan por el nombre del encabezado, el orden no importa):
+      grupo | ID Telegram | acceso a
+
+    En "acceso a", separa con coma. Frases reconocidas:
+      inventario sap (/in) | pedidos pg (/pg) | inventario vendedor (/iv)
+      guias (/gu) | etiquetas (/etiqueta) | pedidos pv (/pv)
+      ubicaciones (/ub) | TODO
+
+  VARIABLES DE ENTORNO (opcionales, respaldo fijo)
+    ADMIN_IDS        IDs con acceso a TODO, separados por coma.
+    ACCESO_USUARIOS  id:funcion1,funcion2;id:*;...
+
+Nombres internos de función (los que usa @requiere_acceso):
+  PV, PG, guias, etiquetas, inventario, inventario_vendedor, ubicaciones
+
+Lo que no está autorizado queda oculto: no aparece el botón en /i y, si lo escriben
+a mano, el bot responde "no disponible".
+
+La lista de comandos "/" de Telegram (el botón de menú) solo la ven los MASTER
+(los que tienen TODO en la hoja, ADMIN_IDS y el dueño). Los demás usuarios no ven
+ninguna lista: entran escribiendo /i y usan los botones que tengan autorizados.
+"""
 import asyncio
 import csv
 import functools
@@ -48,6 +84,9 @@ ALIAS_FUNCIONES = {
     "et": "etiquetas",
     "etiqueta": "etiquetas",
     "etiquetas": "etiquetas",
+    "ub": "ubicaciones",
+    "ubicacion": "ubicaciones",
+    "ubicaciones": "ubicaciones",
 }
 
 # --------------------------------------------------------------------------- #
@@ -67,6 +106,7 @@ COMANDOS_POR_FUNCION = {
     "inventario": [BotCommand("in", "Inventario SAP")],
     "inventario_vendedor": [BotCommand("iv", "Inventario vendedor")],
     "etiquetas": [BotCommand("etiqueta", "Etiquetas")],
+    "ubicaciones": [BotCommand("ub", "Ubicaciones de bodega")],
 }
 
 COMANDOS_ADMIN = [
@@ -129,6 +169,8 @@ def _permiso_de(item: str):
         return "guias"
     if "etiqueta" in t:
         return "etiquetas"
+    if "ubicacion" in t:
+        return "ubicaciones"
     if "pv" in palabras:
         return "pv"
     if "pg" in palabras or t.startswith("pedido"):
