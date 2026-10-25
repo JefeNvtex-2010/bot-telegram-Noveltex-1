@@ -26,8 +26,12 @@ AUDITORIA_BOT) y, opcionalmente, de variables de entorno. Ambas fuentes se suman
 Nombres internos de función (los que usa @requiere_acceso):
   PV, PG, guias, etiquetas, inventario, inventario_vendedor
 
-Lo que no está autorizado queda oculto: no aparece el botón en /i, no aparece el
-comando en la lista "/" de Telegram, y si lo escriben a mano responde "no disponible".
+Lo que no está autorizado queda oculto: no aparece el botón en /i y, si lo escriben
+a mano, el bot responde "no disponible".
+
+La lista de comandos "/" de Telegram (el botón de menú) solo la ven los MASTER
+(los que tienen TODO en la hoja, ADMIN_IDS y el dueño). Los demás usuarios no ven
+ninguna lista: entran escribiendo /i y usan los botones que tengan autorizados.
 """
 import asyncio
 import csv
@@ -328,13 +332,18 @@ def requiere_acceso(funcion: str):
 # Lista "/" de Telegram por persona
 # --------------------------------------------------------------------------- #
 def comandos_de(user_id: int) -> list:
-    """Lista de comandos que debe ver esta persona en el menú "/" de Telegram."""
+    """Lista de comandos que debe ver esta persona en el menú "/" de Telegram.
+
+    Solo los MASTER ven la lista (todos los comandos). Para el resto devuelve [],
+    lo que en Telegram significa "sin lista de comandos".
+    """
+    if not es_admin(user_id):
+        return []
+
     comandos = list(COMANDOS_BASE)
-    for funcion, lista in COMANDOS_POR_FUNCION.items():
-        if tiene_acceso(user_id, funcion):
-            comandos.extend(lista)
-    if es_admin(user_id):
-        comandos.extend(COMANDOS_ADMIN)
+    for lista in COMANDOS_POR_FUNCION.values():
+        comandos.extend(lista)
+    comandos.extend(COMANDOS_ADMIN)
 
     vistos, unicos = set(), []
     for c in comandos:
@@ -361,12 +370,18 @@ async def _aplicar_comandos(bot, forzar: bool = False) -> None:
     objetivos = set(USUARIOS) | set(ADMIN_IDS) | set(MASTERS_SHEET)
     for uid in sorted(objetivos):
         try:
-            await bot.set_my_commands(comandos_de(uid), scope=BotCommandScopeChat(chat_id=uid))
+            scope = BotCommandScopeChat(chat_id=uid)
+            lista = comandos_de(uid)
+            if lista:
+                await bot.set_my_commands(lista, scope=scope)
+            else:
+                # Sin lista: se borra la que tuviera (queda sin botón de menú)
+                await bot.delete_my_commands(scope=scope)
         except Exception as e:
             # Pasa si esa persona aún no ha escrito nunca al bot
             log.warning("No se pudo fijar los comandos de %s: %s", uid, e)
 
-    # Personas que ya no están en la hoja: vuelven a ver solo los comandos base
+    # Personas que ya no están en la hoja: se les borra la lista que tuvieran
     for uid in sorted(_CONFIGURADOS - objetivos):
         try:
             await bot.delete_my_commands(scope=BotCommandScopeChat(chat_id=uid))
@@ -392,9 +407,10 @@ async def configurar_comandos(application: Application) -> None:
     await recargar_accesos()
 
     try:
-        await application.bot.set_my_commands(COMANDOS_BASE)
+        # Lista por defecto vacía: quien no es MASTER no ve lista de comandos
+        await application.bot.delete_my_commands()
     except Exception as e:
-        log.error("No se pudo fijar la lista de comandos por defecto: %s", e)
+        log.error("No se pudo vaciar la lista de comandos por defecto: %s", e)
 
     await _aplicar_comandos(application.bot, forzar=True)
 
