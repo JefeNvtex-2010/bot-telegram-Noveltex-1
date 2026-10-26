@@ -1,7 +1,11 @@
-"""Flujo guiado /etiqueta: referencia -> color -> cantidad (metros.centímetros) -> nº de etiquetas."""
+"""Flujo guiado /etiqueta: ID operario -> referencia -> color -> cantidad (metros.centímetros) -> nº de etiquetas."""
 import asyncio
+import csv
+import io
 import logging
+import os
 import re
+import urllib.request
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes, ConversationHandler
@@ -23,6 +27,44 @@ PREGUNTANDO_OTRA_ET = "et_preguntando_otra"  # estado para el bucle de "otra eti
 MAX_BOTONES = 40
 MAX_METROS = 999
 MAX_COPIAS = 50
+
+# Google Sheet AUDITORIA_BOT, pestaña ETIQUETAS (columnas: OPERARIO | ID)
+SHEET_ID_OPERARIOS = os.environ.get(
+    "SHEET_ID_AUDITORIA", "1Si6SMJ7p4DlDugBCxV6ATGicHWMFQNMZtCNQ409qppk"
+)
+PESTANA_OPERARIOS = "ETIQUETAS"
+
+
+def _cargar_operarios() -> dict:
+    """Lee la pestaña ETIQUETAS y devuelve {id: nombre}. Bloqueante: usar con to_thread."""
+    url = (
+        f"https://docs.google.com/spreadsheets/d/{SHEET_ID_OPERARIOS}"
+        f"/gviz/tq?tqx=out:csv&sheet={PESTANA_OPERARIOS}"
+    )
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        texto = r.read().decode("utf-8-sig")
+
+    # Si la hoja no es accesible, Google devuelve una página HTML de login
+    if texto.lstrip().lower().startswith("<"):
+        raise RuntimeError("La hoja no es accesible (revisa que esté compartida con el enlace).")
+
+    operarios = {}
+    filas = list(csv.reader(io.StringIO(texto)))
+    for fila in filas[1:]:  # se salta el encabezado OPERARIO | ID
+        if len(fila) < 2:
+            continue
+        nombre = fila[0].strip()
+        id_op = re.sub(r"\D", "", fila[1])
+        if nombre and id_op:
+            operarios[id_op] = nombre
+    return operarios
+
+
+def _operario_actual(context: ContextTypes.DEFAULT_TYPE) -> dict:
+    """Devuelve solo los datos del operario ya validado (para conservarlos entre pasos)."""
+    et = context.user_data.get("et", {})
+    return {k: et[k] for k in ("operario", "id_operario") if k in et}
 
 
 async def _responder(update: Update, texto: str, markup=None) -> None:
@@ -75,8 +117,33 @@ def _item_de(df, ref: str, color: str) -> str:
 
 async def iniciar_etiqueta(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
     registrar_uso_bot(update, "BOTÓN_ETIQUETA" if update.callback_query else "/ETIQUETA")
-    context.user_data["et"] = {}
-    await _responder(update, "🏷️ Etiqueta Zebra\n\nEscribe la referencia:")
+    context.user_data["et"] = {}  # sin operario: se pedirá el ID
+    await _responder(update, "🏷️ Etiqueta Zebra\n\nEscribe tu ID de operario:")
+    return ESPERANDO_REF_ET
+
+
+async def _validar_id_operario(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
+    """Valida el ID escrito contra la pestaña ETIQUETAS del Google Sheet."""
+    id_txt = re.sub(r"\D", "", update.message.text)
+
+    try:
+        operarios = await asyncio.to_thread(_cargar_operarios)
+    except Exception:
+        logger.exception("No se pudo leer la lista de operarios de etiquetas")
+        await update.message.reply_text(
+            "⚠️ No pude consultar la lista de operarios. Intenta de nuevo en un momento:"
+        )
+        return ESPERANDO_REF_ET
+
+    nombre = operarios.get(id_txt) if id_txt else None
+    if not nombre:
+        await update.message.reply_text("❌ ID no autorizado. Escribe tu ID de operario:")
+        return ESPERANDO_REF_ET
+
+    et = context.user_data.setdefault("et", {})
+    et["operario"] = nombre
+    et["id_operario"] = id_txt
+    await update.message.reply_text(f"✅ Hola, {nombre}.\n\nEscribe la referencia:")
     return ESPERANDO_REF_ET
 
 
@@ -87,7 +154,7 @@ async def _mostrar_colores(update: Update, context: ContextTypes.DEFAULT_TYPE, r
         return ESPERANDO_REF_ET
 
     colores = colores[:MAX_BOTONES]
-    context.user_data["et"] = {"ref": ref, "colores": colores}
+    context.user_data["et"] = {**_operario_actual(context), "ref": ref, "colores": colores}
 
     botones, fila = [], []
     for i, c in enumerate(colores):
@@ -104,6 +171,10 @@ async def _mostrar_colores(update: Update, context: ContextTypes.DEFAULT_TYPE, r
 
 
 async def recibir_texto_ref_et(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
+    # Mientras no haya un operario validado, el texto recibido es el ID
+    if "operario" not in context.user_data.get("et", {}):
+        return await _validar_id_operario(update, context)
+
     termino = update.message.text.strip().upper()
     df = await datos.inventario.obtener()
     if df is None:
@@ -121,7 +192,7 @@ async def recibir_texto_ref_et(update: Update, context: ContextTypes.DEFAULT_TYP
         return await _mostrar_colores(update, context, refs[0], df)
 
     mostradas = refs[:MAX_BOTONES]
-    context.user_data["et"] = {"refs": mostradas}
+    context.user_data["et"] = {**_operario_actual(context), "refs": mostradas}
     botones = [[InlineKeyboardButton(r, callback_data=f"et_ref_{i}")] for i, r in enumerate(mostradas)]
     texto = f"Encontré {len(refs)} referencias, elige una:"
     if len(refs) > len(mostradas):
@@ -148,7 +219,7 @@ async def seleccionar_referencia_et(update: Update, context: ContextTypes.DEFAUL
 async def seleccionar_color_et(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
     q = update.callback_query
     if q.data == "et_back":
-        context.user_data["et"] = {}
+        context.user_data["et"] = _operario_actual(context)  # conserva al operario
         await _responder(update, "Escribe la referencia:")
         return ESPERANDO_REF_ET
 
@@ -220,7 +291,7 @@ async def recibir_copias_et(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return ESPERANDO_COPIAS_ET
 
     et = context.user_data.get("et", {})
-    campos = ("ref", "item", "color", "metros", "cm")
+    campos = ("operario", "ref", "item", "color", "metros", "cm")
     if any(k not in et for k in campos):
         await update.message.reply_text("⚠️ Se perdió la selección. Escribe /etiqueta para empezar de nuevo.")
         return ConversationHandler.END
@@ -236,6 +307,12 @@ async def recibir_copias_et(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         )
         return ConversationHandler.END
 
+    logger.info(
+        "Etiqueta impresa por %s (ID %s): item %s ref %s color %s cant %03d.%02d copias %d",
+        et["operario"], et.get("id_operario"), et["item"], et["ref"], et["color"],
+        et["metros"], et["cm"], copias,
+    )
+
     cant = f"{et['metros']:03d}.{et['cm']:02d}"
 
     botones_otra = [
@@ -248,7 +325,8 @@ async def recibir_copias_et(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     await update.message.reply_text(
         f"✅ Etiqueta enviada:\nItem {et['item']} · {et['ref']} · Color {et.get('color_nombre', et['color'])}\n"
-        f"Cantidad {cant} · Etiquetas {copias}\n\n"
+        f"Cantidad {cant} · Etiquetas {copias}\n"
+        f"Operario: {et['operario']}\n\n"
         "¿Deseas generar otra etiqueta?",
         reply_markup=reply_markup,
     )
@@ -261,7 +339,7 @@ async def manejar_otra_etiqueta(update: Update, context: ContextTypes.DEFAULT_TY
     await q.answer()
 
     if q.data == "et_otra_si":
-        context.user_data["et"] = {}  # Limpiar datos anteriores
+        context.user_data["et"] = _operario_actual(context)  # limpia todo menos al operario
         await q.edit_message_text("🏷️ Etiqueta Zebra\n\nEscribe la referencia:")
         return ESPERANDO_REF_ET
     else:
