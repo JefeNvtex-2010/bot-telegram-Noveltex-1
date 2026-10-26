@@ -56,7 +56,6 @@ def _extraer_codigo_y_cantidad(texto: str):
     cod7 = digitos[:7]
     cant_str = digitos[7:]
 
-    # Cantidad: últimos 5 dígitos / 100
     try:
         cant = float(cant_str) / 100.0
     except ValueError:
@@ -243,7 +242,7 @@ async def seleccionar_metodo_tr(update: Update, context: ContextTypes.DEFAULT_TY
     return TR_MENU
 
 
-# --- FLUSHO BARRAS ---
+# --- FLUJO BARRAS ---
 async def recibir_codigo_tr(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     programar_borrado(context, update.message)
     tr = context.user_data.setdefault("tr", {})
@@ -262,7 +261,7 @@ async def recibir_codigo_tr(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         )
         return TR_ESPERANDO_CODIGO
 
-    # Buscar artículo en SAP
+    # Buscar artículo en SAP local (sin usar Gemini)
     try:
         from ubicacion import _buscar_articulo, _indice_inventario
         indice = await _indice_inventario()
@@ -331,7 +330,6 @@ async def seguir_tr(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await editar(query, texto, teclado)
         return TR_MENU
 
-    # Sí -> esperar siguiente lectura
     tr["pausado"] = False
     _iniciar_temporizador(context, tr, query.message, update.effective_user.id)
 
