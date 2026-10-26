@@ -113,6 +113,7 @@ from ubicacion import (  # ubicaciones: consultar por nombre, modificar por cód
     recibir_ref_ub,
     recibir_ubicacion_ub,
     recordar_botones_ub,
+    seguir_ub,  # NUEVO: botones Sí / No de "¿Continuar con la siguiente toma?"
     seleccionar_color_ub,
     seleccionar_ref_ub,
 )
@@ -364,14 +365,14 @@ def main() -> None:
       CommandHandler("pg", iniciar_pg),
       CommandHandler("gu", iniciar_gu),
       CommandHandler("etiqueta", iniciar_etiqueta),
-      CommandHandler("ub", iniciar_ubicaciones),  # NUEVO
+      CommandHandler("ub", iniciar_ubicaciones),
       CallbackQueryHandler(iniciar_busqueda, pattern="^start_pv$"),
       CallbackQueryHandler(iniciar_busqueda_sap, pattern="^start_sap$"),
       CallbackQueryHandler(iniciar_busqueda_vendedor, pattern="^start_vend$"),
       CallbackQueryHandler(iniciar_pg, pattern="^start_pg$"),
       CallbackQueryHandler(iniciar_gu, pattern="^start_gu$"),
       CallbackQueryHandler(iniciar_etiqueta, pattern="^start_et$"),
-      CallbackQueryHandler(iniciar_ubicaciones, pattern="^start_ub$"),  # NUEVO
+      CallbackQueryHandler(iniciar_ubicaciones, pattern="^start_ub$"),
   ]
 
   texto_pv = MessageHandler(
@@ -411,6 +412,10 @@ def main() -> None:
   )
   ub_color_cb = CallbackQueryHandler(
       seleccionar_color_ub, pattern=r"^ub_(col_\d+|back_refs|back_cols)$"
+  )
+  # NUEVO: "¿Continuar con la siguiente toma?" -> Sí / No
+  ub_seguir_cb = CallbackQueryHandler(
+      seguir_ub, pattern=r"^ub_seguir_(si|no)$"
   )
   texto_ub_menu = MessageHandler(
       filters.TEXT & ~filters.COMMAND, recordar_botones_ub
@@ -509,12 +514,12 @@ def main() -> None:
       ESPERANDO_COPIAS_ET: [texto_copias_et],
       # Ubicaciones de bodega
       #  Consultar: menú -> referencia -> color
-      #  Modificar: menú -> código de barras -> ubicación
+      #  Modificar: menú -> código de barras -> ubicación -> ¿continuar? (Sí/No)
       UB_MENU: [botones_ub_cb, texto_ub_menu],
       UB_ESPERANDO_REF: [botones_ub_cb, texto_ub_ref],
       UB_SELECCIONANDO_REF: [ub_ref_cb, botones_ub_cb, texto_ub_ref],
       UB_SELECCIONANDO_COLOR: [ub_color_cb, botones_ub_cb, texto_ub_ref],
-      UB_ESPERANDO_CODIGO: [botones_ub_cb, texto_ub_codigo],
+      UB_ESPERANDO_CODIGO: [ub_seguir_cb, botones_ub_cb, texto_ub_codigo],
       UB_ESPERANDO_UBICACION: [botones_ub_cb, texto_ub_ubicacion],
   }
 
