@@ -11,10 +11,17 @@ Flujo:
      Se escanea (o se escribe) el código de barras del rollo, de 12 dígitos:
         001820005225  ->  artículo 0018-200  +  cantidad 05225 (se descarta)
      También se acepta el código del artículo solo (0018-200).
+     Si el color en SAP no lleva el cero inicial (0018042 -> 0018-42), el bot
+     prueba ambas formas al buscar el artículo.
      El bot busca el artículo en el inventario SAP (código y descripción), pide la
      ubicación y la guarda.
         - Registrar y borrar: elimina todas las ubicaciones del artículo y deja la nueva.
         - Agregar: suma otra ubicación sin borrar las que ya tiene.
+
+     Después de cada rollo el bot pregunta "¿Continuar con la siguiente toma?":
+        - Sí: queda esperando el siguiente rollo durante SEGUNDOS_TOMA segundos.
+              Si no hay lectura en ese tiempo, vuelve a hacer la pregunta.
+        - No: vuelve al menú principal.
 
 Las ubicaciones se guardan en la pestaña "UBICACIONES BODEGA" del Google Sheet
 AUDITORIA_BOT (FECHA | UBICACIÓN | CODIGO | DESCRIPCIÓN | NOMBRE), una fila por
@@ -35,14 +42,23 @@ import logging
 import os
 import re
 import unicodedata
+import uuid
 
 import requests
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import ContextTypes
+from telegram.constants import ParseMode
+from telegram.ext import ContextTypes, ConversationHandler
 
 import datos
 from acceso import requiere_acceso, tiene_acceso
-from handlers import editar, esc, programar_borrado, registrar_uso_bot, responder
+from handlers import (
+    _teclado_menu,
+    editar,
+    esc,
+    programar_borrado,
+    registrar_uso_bot,
+    responder,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +82,9 @@ MENSAJE_SOLO_ADMIN = "Solo los administradores pueden modificar ubicaciones."
 MAX_REFS = 20
 MAX_COLORES = 60
 
+# Segundos que tiene el usuario para leer el siguiente rollo después de decir "Sí"
+SEGUNDOS_TOMA = 30
+
 # Nombres posibles de las columnas del inventario SAP (sin tildes, minúsculas)
 COLUMNAS_CODIGO = ("articulo", "codigo articulo", "codigo del articulo", "itemcode", "item code")
 COLUMNAS_DESCRIPCION = ("descripcion", "descripcion articulo", "nombre articulo", "itemname", "item name")
@@ -88,22 +107,23 @@ def _clave(codigo) -> str:
 
 
 def _extraer_codigo(texto):
-    """Devuelve los 7 dígitos del artículo o None si el texto no es válido.
+    """Devuelve los dígitos del artículo o None si el texto no es válido.
 
     - 12 dígitos (código de barras del rollo): 7 del artículo + 5 de cantidad (se descartan).
     - 7 dígitos (código del artículo, con o sin guion): se usa tal cual.
+    - 6 dígitos (código SAP sin el cero del color, ej. 0018-42): se usa tal cual.
     """
     digitos = re.sub(r"\D", "", str(texto))
     if len(digitos) == 12:
         return digitos[:7]
-    if len(digitos) == 7:
+    if len(digitos) in (6, 7):
         return digitos
     return None
 
 
-def _formatear(codigo7: str) -> str:
-    """'0018200' -> '0018-200'."""
-    return f"{codigo7[:4]}-{codigo7[4:]}"
+def _formatear(codigo: str) -> str:
+    """'0018200' -> '0018-200'  |  '001842' -> '0018-42'."""
+    return f"{codigo[:4]}-{codigo[4:]}"
 
 
 def _normalizar_ubicacion(texto):
@@ -179,28 +199,44 @@ async def _indice_inventario() -> dict:
     return _indice_articulos(df)
 
 
-def _similares(indice: dict, codigo7: str, maximo: int = 8):
+def _buscar_articulo(indice: dict, codigo: str):
+    """Busca el artículo probando el código tal cual y sin el cero delante del color.
+
+    0018042 -> prueba 0018042, luego 001842 (0018-42) y luego sin todos los ceros.
+    """
+    item, color = codigo[:4], codigo[4:]
+    candidatos = [codigo]
+    if color.startswith("0"):
+        candidatos.append(item + color[1:])
+        candidatos.append(item + color.lstrip("0"))
+    for k in dict.fromkeys(candidatos):  # sin repetidos, conservando el orden
+        if k in indice:
+            return indice[k]
+    return None
+
+
+def _similares(indice: dict, codigo: str, maximo: int = 8):
     """Artículos del mismo ítem (primeros 4 dígitos): (lista limitada, total)."""
-    prefijo = codigo7[:4]
+    prefijo = codigo[:4]
     coincidencias = sorted(
         (cod, desc) for k, (cod, desc) in indice.items() if k.startswith(prefijo)
     )
     return coincidencias[:maximo], len(coincidencias)
 
 
-def _texto_no_encontrado(codigo7: str, indice: dict) -> str:
+def _texto_no_encontrado(codigo: str, indice: dict) -> str:
     """Mensaje cuando el código no está en SAP, con pistas de qué sí hay del mismo ítem."""
-    texto = f"❌ No encontré el artículo <b>{_formatear(codigo7)}</b> en el inventario SAP."
-    similares, total = _similares(indice, codigo7)
+    texto = f"❌ No encontré el artículo <b>{_formatear(codigo)}</b> en el inventario SAP."
+    similares, total = _similares(indice, codigo)
     if similares:
         lineas = []
         for cod, desc in similares:
             lineas.append(f"• <code>{esc(cod)}</code>" + (f" — {esc(desc)}" if desc else ""))
-        texto += f"\n\nDel ítem <b>{codigo7[:4]}</b> sí hay en SAP:\n" + "\n".join(lineas)
+        texto += f"\n\nDel ítem <b>{codigo[:4]}</b> sí hay en SAP:\n" + "\n".join(lineas)
         if total > len(similares):
             texto += f"\n… y {total - len(similares)} más"
     else:
-        texto += f"\n\nNo hay ningún artículo del ítem <b>{codigo7[:4]}</b> en el inventario SAP."
+        texto += f"\n\nNo hay ningún artículo del ítem <b>{codigo[:4]}</b> en el inventario SAP."
     return texto + "\n\nEscanea otro código."
 
 
@@ -347,6 +383,16 @@ def _pantalla_colores(ub: dict):
     return texto, InlineKeyboardMarkup(filas)
 
 
+def _pantalla_continuar(resumen: str = ""):
+    """Pregunta tras cada rollo: seguir con la siguiente toma o volver al menú."""
+    texto = (resumen + "\n\n" if resumen else "") + "🔁 <b>¿Continuar con la siguiente toma?</b>"
+    teclado = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Sí", callback_data="ub_seguir_si"),
+        InlineKeyboardButton("🏁 No", callback_data="ub_seguir_no"),
+    ]])
+    return texto, teclado
+
+
 def _texto_articulo(codigo: str, descripcion: str) -> str:
     texto = f"📦 <b>Artículo:</b> <code>{esc(codigo)}</code>\n"
     if descripcion:
@@ -372,8 +418,67 @@ def _plural(n: int, singular: str, plural: str) -> str:
     return f"{n} {singular if n == 1 else plural}"
 
 
+# --------------------------------------------------------------------------- #
+# Temporizador de la toma (30 s para leer el siguiente rollo)
+# --------------------------------------------------------------------------- #
+def _cancelar_temporizador(ub: dict) -> None:
+    job = ub.pop("job", None)
+    ub["token"] = None
+    if job:
+        try:
+            job.schedule_removal()
+        except Exception:
+            pass  # el job ya había corrido o fue eliminado
+
+
+async def _vencio_toma(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Pasaron SEGUNDOS_TOMA sin lectura: se vuelve a hacer la pregunta."""
+    d = context.job.data
+    ub = d["ub"]
+    actual = context.application.user_data.get(d["user_id"], {}).get("ub")
+    if actual is not ub or ub.get("token") != d["token"]:
+        return  # ya leyó un rollo, salió o empezó otra sesión
+    ub["pausado"] = True
+    ub["token"] = None
+    ub.pop("job", None)
+    texto, teclado = _pantalla_continuar(f"⏱️ Pasaron {SEGUNDOS_TOMA} segundos sin lectura.")
+    try:
+        await context.bot.edit_message_text(
+            chat_id=d["chat_id"],
+            message_id=d["message_id"],
+            text=texto,
+            reply_markup=teclado,
+            parse_mode=ParseMode.HTML,
+        )
+    except Exception as e:
+        logger.warning(f"Ubicaciones: no pude re-preguntar tras el tiempo de espera: {e}")
+
+
+def _iniciar_temporizador(context: ContextTypes.DEFAULT_TYPE, ub: dict, mensaje, user_id: int) -> None:
+    _cancelar_temporizador(ub)
+    if context.job_queue is None or mensaje is None:
+        return
+    token = uuid.uuid4().hex
+    ub["token"] = token
+    ub["job"] = context.job_queue.run_once(
+        _vencio_toma,
+        SEGUNDOS_TOMA,
+        data={
+            "ub": ub,
+            "token": token,
+            "user_id": user_id,
+            "chat_id": mensaje.chat_id,
+            "message_id": mensaje.message_id,
+        },
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Sesión expirada / sin permiso
+# --------------------------------------------------------------------------- #
 async def _sesion_expirada(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Sesión perdida (por ejemplo tras un reinicio) al recibir un texto."""
+    _cancelar_temporizador(context.user_data.get("ub") or {})
     context.user_data.pop("ub", None)
     texto, teclado = _pantalla_menu(_puede_modificar(_uid(update)))
     await responder(update, context, "⌛ La sesión expiró.\n\n" + texto, reply_markup=teclado)
@@ -382,6 +487,7 @@ async def _sesion_expirada(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 async def _expirada_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Sesión perdida al pulsar un botón."""
+    _cancelar_temporizador(context.user_data.get("ub") or {})
     context.user_data.pop("ub", None)
     texto, teclado = _pantalla_menu(_puede_modificar(_uid(update)))
     await editar(update.callback_query, "⌛ La sesión expiró.\n\n" + texto, teclado)
@@ -391,6 +497,7 @@ async def _expirada_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 async def _sin_permiso_modificar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Texto recibido de alguien que ya no puede modificar (permiso quitado a mitad de camino)."""
     logger.warning(f"Ubicaciones: modificación denegada a {_uid(update)}")
+    _cancelar_temporizador(context.user_data.get("ub") or {})
     context.user_data.pop("ub", None)
     texto, teclado = _pantalla_menu(False)
     await responder(update, context, f"⛔ {MENSAJE_SOLO_ADMIN}\n\n{texto}", reply_markup=teclado)
@@ -402,6 +509,7 @@ async def _sin_permiso_modificar(update: Update, context: ContextTypes.DEFAULT_T
 # --------------------------------------------------------------------------- #
 @requiere_acceso("ubicaciones")
 async def iniciar_ubicaciones(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    _cancelar_temporizador(context.user_data.get("ub") or {})
     context.user_data["ub"] = {}
     texto, teclado = _pantalla_menu(_puede_modificar(_uid(update)))
 
@@ -430,12 +538,14 @@ async def botones_ub(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         if not puede_modificar:
             logger.warning(f"Ubicaciones: modificación denegada a {_uid(update)}")
             await query.answer(MENSAJE_SOLO_ADMIN, show_alert=True)
+            _cancelar_temporizador(ub)
             ub.clear()
             texto, teclado = _pantalla_menu(False)
             await editar(query, texto, teclado)
             return UB_MENU
 
     await query.answer()
+    _cancelar_temporizador(ub)  # cualquier botón del menú corta la espera del rollo
     ub.clear()
 
     if accion == "modificar":
@@ -605,6 +715,41 @@ async def seleccionar_color_ub(update: Update, context: ContextTypes.DEFAULT_TYP
 # --------------------------------------------------------------------------- #
 # Handlers: MODIFICAR (siempre por código de barras)
 # --------------------------------------------------------------------------- #
+async def seguir_ub(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Botones: ub_seguir_si | ub_seguir_no."""
+    query = update.callback_query
+    await query.answer()
+    ub = context.user_data.get("ub") or {}
+    if ub.get("modo") not in MODOS_MODIFICAR:
+        return await _expirada_cb(update, context)
+    if not _puede_modificar(_uid(update)):
+        logger.warning(f"Ubicaciones: modificación denegada a {_uid(update)}")
+        await query.answer(MENSAJE_SOLO_ADMIN, show_alert=True)
+        return await _expirada_cb(update, context)
+
+    if query.data == "ub_seguir_no":  # terminar: volver al menú principal
+        _cancelar_temporizador(ub)
+        context.user_data.pop("ub", None)
+        teclado = _teclado_menu(_uid(update))
+        if teclado is None:
+            texto = "⛔ Todavía no tienes funciones habilitadas."
+        else:
+            texto = "👋 ¡Hola! Selecciona una opción del menú principal para comenzar:"
+        await editar(query, texto, teclado)
+        return ConversationHandler.END
+
+    # Sí: queda esperando el siguiente rollo, con límite de tiempo
+    ub["pausado"] = False
+    ub.pop("articulo", None)
+    _iniciar_temporizador(context, ub, query.message, _uid(update))
+    await editar(
+        query,
+        f"📷 Escanea el siguiente rollo (tienes {SEGUNDOS_TOMA} segundos).",
+        _teclado_volver(),
+    )
+    return UB_ESPERANDO_CODIGO
+
+
 async def recibir_codigo_ub(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     programar_borrado(context, update.message)
     ub = context.user_data.setdefault("ub", {})
@@ -613,6 +758,11 @@ async def recibir_codigo_ub(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return await _sesion_expirada(update, context)
     if not _puede_modificar(_uid(update)):
         return await _sin_permiso_modificar(update, context)
+
+    if ub.get("pausado"):  # hay una pregunta pendiente: no se lee hasta responder
+        texto, teclado = _pantalla_continuar()
+        await responder(update, context, "⏸️ Primero responde:\n\n" + texto, reply_markup=teclado)
+        return UB_ESPERANDO_CODIGO
 
     codigo7 = _extraer_codigo(update.message.text)
     if codigo7 is None:
@@ -638,7 +788,7 @@ async def recibir_codigo_ub(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         )
         return UB_ESPERANDO_CODIGO
 
-    articulo = indice.get(codigo7)
+    articulo = _buscar_articulo(indice, codigo7)  # prueba con y sin el cero del color
     if articulo is None:
         logger.warning(
             f"Ubicaciones: el artículo {_formatear(codigo7)} no está en el inventario SAP "
@@ -650,6 +800,8 @@ async def recibir_codigo_ub(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             reply_markup=_teclado_volver(),
         )
         return UB_ESPERANDO_CODIGO
+
+    _cancelar_temporizador(ub)  # leyó a tiempo: ya no hace falta el reloj
 
     codigo, descripcion = articulo
     try:
@@ -753,11 +905,11 @@ async def recibir_ubicacion_ub(update: Update, context: ContextTypes.DEFAULT_TYP
         titulo = f"✅ <b>Ubicación agregada:</b> {esc(ubicacion)}"
 
     ub.pop("articulo", None)
-    await responder(
-        update, context,
+    ub["pausado"] = True  # queda la pregunta "¿Continuar?" pendiente
+    resumen = (
         f"{titulo}\n\n{_texto_articulo(codigo, descripcion)}"
-        f"📍 <b>Ubicaciones:</b> {_nombres(ubicaciones)}\n\n"
-        "Escanea el siguiente rollo o toca Volver.",
-        reply_markup=_teclado_volver(),
+        f"📍 <b>Ubicaciones:</b> {_nombres(ubicaciones)}"
     )
+    texto, teclado = _pantalla_continuar(resumen)
+    await responder(update, context, texto, reply_markup=teclado)
     return UB_ESPERANDO_CODIGO
