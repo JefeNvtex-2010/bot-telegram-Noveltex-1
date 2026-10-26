@@ -18,6 +18,7 @@ SELECCIONANDO_REF_ET = "et_seleccionando_ref"
 SELECCIONANDO_COLOR_ET = "et_seleccionando_color"
 ESPERANDO_METROS_ET = "et_esperando_metros"
 ESPERANDO_COPIAS_ET = "et_esperando_copias"
+PREGUNTANDO_OTRA_ET = "et_preguntando_otra"  # <-- NUEVO ESTADO PARA EL BUCLE
 
 MAX_BOTONES = 40
 MAX_METROS = 999
@@ -236,9 +237,35 @@ async def recibir_copias_et(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return ConversationHandler.END
 
     cant = f"{et['metros']:03d}.{et['cm']:02d}"
-    context.user_data.pop("et", None)
+    
+    # --- MODIFICADO: Generar botones dinámicos en vez de cerrar el proceso ---
+    botones_otra = [
+        [
+            InlineKeyboardButton("🔄 Sí, generar otra", callback_data="et_otra_si"),
+            InlineKeyboardButton("❌ No, terminar", callback_data="et_otra_no")
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(botones_otra)
+
     await update.message.reply_text(
         f"✅ Etiqueta enviada:\nItem {et['item']} · {et['ref']} · Color {et.get('color_nombre', et['color'])}\n"
-        f"Cantidad {cant} · Etiquetas {copias}"
+        f"Cantidad {cant} · Etiquetas {copias}\n\n"
+        "¿Deseas generar otra etiqueta?",
+        reply_markup=reply_markup
     )
-    return ConversationHandler.END
+    return PREGUNTANDO_OTRA_ET  # Mantenemos la conversación en este nuevo estado intermedio
+
+
+async def manejar_otra_etiqueta(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
+    """Evalúa la acción elegida por el operador (Generar otra o cerrar)."""
+    q = update.callback_query
+    await q.answer()
+    
+    if q.data == "et_otra_si":
+        context.user_data["et"] = {}  # Limpiar datos anteriores
+await q.edit_message_text("🏷️ Etiqueta Zebra\n\nEscribe la referencia:")
+return ESPERANDO_REF_ET
+else:
+context.user_data.pop("et", None)
+await q.edit_message_text("👍 Entendido. Proceso de etiquetado cerrado correctamente.")
+return ConversationHandler.END
