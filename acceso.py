@@ -59,6 +59,9 @@ ALIAS_FUNCIONES = {
     "modificar ubicaciones": "ubicaciones_modificar",
     "ubicaciones modificar": "ubicaciones_modificar",
     "editar ubicaciones": "ubicaciones_modificar",
+    "tr": "transferencias",
+    "transferencia": "transferencias",
+    "transferencias": "transferencias",
 }
 
 # --------------------------------------------------------------------------- #
@@ -79,6 +82,7 @@ COMANDOS_POR_FUNCION = {
     "inventario_vendedor": [BotCommand("iv", "Inventario vendedor")],
     "etiquetas": [BotCommand("etiqueta", "Etiquetas")],
     "ubicaciones": [BotCommand("ub", "Ubicaciones de bodega")],
+    "transferencias": [BotCommand("tr", "Transferencia de metros")],
 }
 
 COMANDOS_ADMIN = [
@@ -145,6 +149,8 @@ def _permiso_de(item: str):
         return "ubicaciones_modificar"
     if "ubicacion" in t or "cajon" in t:
         return "ubicaciones"
+    if "transferencia" in t or "tr" in palabras:
+        return "transferencias"
     if "pv" in palabras:
         return "pv"
     if "pg" in palabras or t.startswith("pedido"):
