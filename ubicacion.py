@@ -31,12 +31,13 @@ logger = logging.getLogger(__name__)
     UB_SELECCIONANDO_COLOR,
     UB_ESPERANDO_CODIGO,
     UB_ESPERANDO_UBICACION,
-) = 40, 41, 42, 43, 44, 45
+    UB_ESPERANDO_CAJON,
+) = 40, 41, 42, 43, 44, 45, 46
 
 URL_UBICACIONES = os.environ.get("URL_UBICACIONES", "").strip()
 TOKEN_UBICACIONES = os.environ.get("TOKEN_UBICACIONES", "").strip()
 
-MODOS = ("consultar", "reemplazar", "agregar")
+MODOS = ("consultar", "reemplazar", "agregar", "cajon")
 MODOS_MODIFICAR = ("reemplazar", "agregar")
 PERMISO_MODIFICAR = "ubicaciones_modificar"
 MENSAJE_SOLO_ADMIN = "Solo los administradores pueden modificar ubicaciones."
@@ -245,6 +246,14 @@ async def _consultar_ubicaciones(codigo: str):
     return resp.get("ubicaciones", []), resp.get("descripcion", "")
 
 
+async def _consultar_por_ubicacion(ubicacion: str):
+    """Consulta los artículos que están en una ubicación/cajón específica."""
+    resp = await asyncio.to_thread(
+        _llamar_ubicaciones, {"accion": "consultar_ubicacion", "ubicacion": ubicacion}
+    )
+    return resp.get("articulos", [])
+
+
 # --------------------------------------------------------------------------- #
 # Pantallas
 # --------------------------------------------------------------------------- #
@@ -262,9 +271,12 @@ def _puede_modificar(user_id: int) -> bool:
 
 
 def _pantalla_menu(puede_modificar: bool):
-    """Menú principal; el botón de modificar solo aparece a quien tiene el permiso."""
+    """Menú principal con opción de consulta por artículo y consulta por cajón."""
     texto = "📍 <b>Ubicaciones de bodega</b>\n\n¿Qué deseas hacer?"
-    filas = [[InlineKeyboardButton("🔎 Consultar ubicación", callback_data="ub_consultar")]]
+    filas = [
+        [InlineKeyboardButton("🔎 Consultar por Artículo", callback_data="ub_consultar")],
+        [InlineKeyboardButton("📦 Consulta por Cajón", callback_data="ub_cajon")],
+    ]
     if puede_modificar:
         filas.append([InlineKeyboardButton("✏️ Modificar ubicación", callback_data="ub_modificar")])
     return texto, InlineKeyboardMarkup(filas)
@@ -300,8 +312,14 @@ def _teclado_resultado():
 def _texto_pedir(modo: str) -> str:
     if modo == "consultar":
         return (
-            "🔎 <b>Consultar ubicación</b>\n\n"
+            "🔎 <b>Consultar ubicación por Artículo</b>\n\n"
             "Escribe la <b>referencia</b> que deseas buscar (ej. <code>SATIN</code>):"
+        )
+    if modo == "cajon":
+        return (
+            "📦 <b>Consulta por Cajón</b>\n\n"
+            "Escribe o ingresa la <b>ubicación/cajón</b> que deseas consultar "
+            "(ej. <code>B/1 P/6 C/1</code>):"
         )
     titulo = "🗑️ <b>Registrar y borrar</b>" if modo == "reemplazar" else "➕ <b>Agregar ubicación</b>"
     return (
@@ -488,7 +506,7 @@ async def iniciar_ubicaciones(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def botones_ub(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Botones: ub_menu | ub_consultar | ub_modificar | ub_reemplazar | ub_agregar."""
+    """Botones: ub_menu | ub_consultar | ub_cajon | ub_modificar | ub_reemplazar | ub_agregar."""
     query = update.callback_query
     accion = query.data.split("_", 1)[1]
     puede_modificar = _puede_modificar(_uid(update))
@@ -519,6 +537,11 @@ async def botones_ub(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await editar(query, _texto_pedir(accion), _teclado_volver())
         return UB_ESPERANDO_REF
 
+    if accion == "cajon":  # consulta por cajón / ubicación
+        ub["modo"] = accion
+        await editar(query, _texto_pedir(accion), _teclado_volver())
+        return UB_ESPERANDO_CAJON
+
     if accion in MODOS_MODIFICAR:  # por código de barras
         ub["modo"] = accion
         await editar(query, _texto_pedir(accion), _teclado_volver())
@@ -534,6 +557,56 @@ async def recordar_botones_ub(update: Update, context: ContextTypes.DEFAULT_TYPE
     programar_borrado(context, update.message)
     await responder(update, context, "☝️ Elige una opción con los botones del menú de ubicaciones.")
     return UB_MENU
+
+
+# --------------------------------------------------------------------------- #
+# Handlers: CONSULTAR POR CAJÓN / UBICACIÓN
+# --------------------------------------------------------------------------- #
+async def recibir_cajon_ub(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Recibe la ubicación escrita por el usuario y muestra los artículos ahí ubicados."""
+    programar_borrado(context, update.message)
+    ub = context.user_data.setdefault("ub", {})
+    if ub.get("modo") != "cajon":
+        return await _sesion_expirada(update, context)
+
+    entrada = update.message.text or ""
+    ubicacion = _normalizar_ubicacion(entrada)
+    if not ubicacion:
+        await responder(
+            update, context,
+            "⚠️ Ubicación no válida. Escribe la ubicación correctamente (ej. <code>B/1 P/6 C/1</code>).",
+            reply_markup=_teclado_volver(),
+        )
+        return UB_ESPERANDO_CAJON
+
+    try:
+        articulos = await _consultar_por_ubicacion(ubicacion)
+    except Exception as e:
+        logger.error(f"Ubicaciones: error consultando el cajón {ubicacion}: {e}", exc_info=True)
+        await responder(
+            update, context,
+            f"⚠️ No pude consultar la ubicación en la hoja.\n<code>{esc(e)}</code>",
+            reply_markup=_teclado_volver(),
+        )
+        return UB_ESPERANDO_CAJON
+
+    if not articulos:
+        texto = f"❌ No se encontraron artículos registrados en la ubicación <b>{esc(ubicacion)}</b>."
+    else:
+        lineas = []
+        for art in articulos:
+            codigo = art.get("codigo", "")
+            desc = art.get("descripcion", "")
+            lineas.append(f"• <code>{esc(codigo)}</code>" + (f" — {esc(desc)}" if desc else ""))
+
+        texto = (
+            f"📦 <b>Artículos en la ubicación {esc(ubicacion)}:</b>\n\n"
+            + "\n".join(lineas)
+            + f"\n\nTotal de registros: <b>{len(articulos)}</b>"
+        )
+
+    await responder(update, context, texto, reply_markup=_teclado_volver())
+    return UB_ESPERANDO_CAJON
 
 
 # --------------------------------------------------------------------------- #
