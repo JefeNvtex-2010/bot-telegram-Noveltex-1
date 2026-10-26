@@ -49,9 +49,13 @@ def _entero(texto: str, minimo: int, maximo: int):
 
 
 def _formato_color(color: str) -> str:
-    """Si el color es un código numérico, lo completa a 3 dígitos (21 -> 021)."""
+    """Toma el código del color: '240 VINOTINTO' -> '240', '21' -> '021'.
+
+    Si el color no empieza con un código numérico, se deja tal cual.
+    """
     c = str(color).strip()
-    return c.zfill(3) if c.isdigit() else c
+    m = re.match(r"^(\d+)", c)
+    return m.group(1).zfill(3) if m else c
 
 
 def _item_de(df, ref: str, color: str) -> str:
@@ -64,6 +68,7 @@ def _item_de(df, ref: str, color: str) -> str:
     if filas.empty:
         return ""
     valor = str(filas.iloc[0]["Artículo"]).strip()
+    valor = valor.split("-")[0].strip()  # '1554-240' -> '1554'
     return valor.zfill(4) if valor.isdigit() else valor
 
 
@@ -165,10 +170,11 @@ async def seleccionar_color_et(update: Update, context: ContextTypes.DEFAULT_TYP
         return SELECCIONANDO_COLOR_ET
 
     et["color"] = _formato_color(color)
+    et["color_nombre"] = color
     et["item"] = item
     await _responder(
         update,
-        f"Referencia: {et['ref']}\nItem: {item}\nColor: {et['color']}\n\n"
+        f"Referencia: {et['ref']}\nItem: {item}\nColor: {color}\n\n"
         "Introduce la cantidad:",
     )
     return ESPERANDO_METROS_ET
@@ -232,7 +238,7 @@ async def recibir_copias_et(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     cant = f"{et['metros']:03d}.{et['cm']:02d}"
     context.user_data.pop("et", None)
     await update.message.reply_text(
-        f"✅ Etiqueta enviada:\nItem {et['item']} · {et['ref']} · Color {et['color']}\n"
+        f"✅ Etiqueta enviada:\nItem {et['item']} · {et['ref']} · Color {et.get('color_nombre', et['color'])}\n"
         f"Cantidad {cant} · Etiquetas {copias}"
     )
     return ConversationHandler.END
