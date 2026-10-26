@@ -261,7 +261,7 @@ async def recibir_codigo_tr(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         )
         return TR_ESPERANDO_CODIGO
 
-    # Buscar artículo en SAP local (sin usar Gemini)
+    # Buscar artículo en SAP local
     try:
         from ubicacion import _buscar_articulo, _indice_inventario
         indice = await _indice_inventario()
