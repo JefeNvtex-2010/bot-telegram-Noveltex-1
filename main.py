@@ -321,10 +321,18 @@ def run_dummy_server():
 
 async def _post_init(application) -> None:
   await datos.iniciar(application)
-  await configurar_comandos(application)  # lee la hoja de accesos y fija la lista "/"
+  # La lista "/" de Telegram se configura EN SEGUNDO PLANO: antes se esperaba
+  # aquí y, si Telegram daba timeout, el bot tardaba minutos en empezar a
+  # atender mensajes (y descartaba los que llegaban mientras tanto).
+  application.bot_data["tarea_comandos"] = asyncio.create_task(
+      configurar_comandos(application)
+  )
 
 
 async def _post_shutdown(application) -> None:
+  tarea = application.bot_data.get("tarea_comandos")
+  if tarea and not tarea.done():
+    tarea.cancel()
   await datos.detener(application)
 
 
