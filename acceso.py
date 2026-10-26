@@ -51,6 +51,9 @@ ALIAS_FUNCIONES = {
     "ub": "ubicaciones",
     "ubicacion": "ubicaciones",
     "ubicaciones": "ubicaciones",
+    "cajon": "ubicaciones",
+    "cajones": "ubicaciones",
+    "consulta cajon": "ubicaciones",
     "ubm": "ubicaciones_modificar",
     "modificar ubicacion": "ubicaciones_modificar",
     "modificar ubicaciones": "ubicaciones_modificar",
@@ -140,7 +143,7 @@ def _permiso_de(item: str):
         return "etiquetas"
     if "ubicacion" in t and ("modific" in t or "edit" in t):
         return "ubicaciones_modificar"
-    if "ubicacion" in t:
+    if "ubicacion" in t or "cajon" in t:
         return "ubicaciones"
     if "pv" in palabras:
         return "pv"
@@ -274,15 +277,7 @@ def tiene_acceso(user_id: int, funcion: str) -> bool:
 
 
 def requiere_acceso(funcion: str):
-    """Decorador para handlers async de python-telegram-bot.
-
-    Uso:
-        @requiere_acceso("etiquetas")
-        async def cmd_etiqueta(update, context): ...
-
-    Si no hay acceso devuelve None: dentro de un ConversationHandler eso significa
-    que la conversación no arranca (o se queda en el estado en que estaba).
-    """
+    """Decorador para handlers async de python-telegram-bot."""
 
     def decorador(handler):
         @functools.wraps(handler)
@@ -314,11 +309,7 @@ def requiere_acceso(funcion: str):
 # Lista "/" de Telegram por persona
 # --------------------------------------------------------------------------- #
 def comandos_de(user_id: int) -> list:
-    """Lista de comandos que debe ver esta persona en el menú "/" de Telegram.
-
-    Solo los MASTER ven la lista (todos los comandos). Para el resto devuelve [],
-    lo que en Telegram significa "sin lista de comandos".
-    """
+    """Lista de comandos que debe ver esta persona en el menú "/" de Telegram."""
     if not es_admin(user_id):
         return []
 
@@ -344,11 +335,7 @@ def _firma():
 
 
 async def _aplicar_comandos(bot, forzar: bool = False) -> None:
-    """Fija la lista "/" de cada persona. Solo si los permisos cambiaron (o forzar).
-
-    Si alguna llamada a Telegram falla (por ejemplo por timeout), NO se guarda la
-    firma, así la próxima recarga automática lo vuelve a intentar.
-    """
+    """Fija la lista "/" de cada persona."""
     firma = _firma()
     if not forzar and firma == _ESTADO["firma"]:
         return
@@ -362,14 +349,11 @@ async def _aplicar_comandos(bot, forzar: bool = False) -> None:
             if lista:
                 await bot.set_my_commands(lista, scope=scope)
             else:
-                # Sin lista: se borra la que tuviera (queda sin botón de menú)
                 await bot.delete_my_commands(scope=scope)
         except Exception as e:
-            # Pasa si esa persona aún no ha escrito nunca al bot, o por timeout
             fallos += 1
             log.warning("No se pudo fijar los comandos de %s: %s", uid, e)
 
-    # Personas que ya no están en la hoja: se les borra la lista que tuvieran
     for uid in sorted(_CONFIGURADOS - objetivos):
         try:
             await bot.delete_my_commands(scope=BotCommandScopeChat(chat_id=uid))
@@ -391,14 +375,9 @@ async def _job_recarga(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def configurar_comandos(application: Application) -> None:
-    """Se lanza en segundo plano desde post_init (main.py).
-
-    Lee la hoja de accesos, fija la lista "/" de cada persona y programa la
-    recarga automática cada ACCESO_REFRESCO_MIN minutos.
-    """
+    """Se lanza en segundo plano desde post_init (main.py)."""
     await recargar_accesos()
 
-    # Se programa la recarga ANTES de las llamadas lentas a Telegram
     if application.job_queue:
         application.job_queue.run_repeating(
             _job_recarga,
@@ -410,7 +389,6 @@ async def configurar_comandos(application: Application) -> None:
         log.warning("No hay job_queue: la hoja de accesos solo se lee al arrancar (usa /accesos).")
 
     try:
-        # Lista por defecto vacía: quien no es MASTER no ve lista de comandos
         await application.bot.delete_my_commands()
     except Exception as e:
         log.error("No se pudo vaciar la lista de comandos por defecto: %s", e)
@@ -438,8 +416,7 @@ async def recargar_accesos_cmd(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 async def miid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Comando /miid: cada persona ve su ID para pasárselo al administrador.
-    No lleva restricción a propósito."""
+    """Comando /miid: cada persona ve su ID para pasárselo al administrador."""
     usuario = update.effective_user
     if update.effective_message and usuario:
         await update.effective_message.reply_text(f"Tu ID de Telegram es: {usuario.id}")
