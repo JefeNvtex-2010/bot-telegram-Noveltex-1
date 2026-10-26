@@ -120,6 +120,25 @@ from ubicacion import (  # ubicaciones: consultar por nombre, consultar por caj�
     seleccionar_ref_ub,
 )
 
+from transferencias import (  # transferencias (Faltante, Retazos, Imperfecto)
+    TR_ELEGIR_METODO,
+    TR_ESPERANDO_CANTIDAD,
+    TR_ESPERANDO_CODIGO,
+    TR_ESPERANDO_REF,
+    TR_MENU,
+    TR_SELECCIONANDO_COLOR,
+    TR_SELECCIONANDO_REF,
+    botones_tr_menu,
+    iniciar_transferencias,
+    recibir_cantidad_tr,
+    recibir_codigo_tr,
+    recibir_ref_tr,
+    seleccionar_color_tr,
+    seleccionar_metodo_tr,
+    seleccionar_ref_tr,
+    seguir_tr,
+)
+
 logger = logging.getLogger(__name__)
 
 # --- CONTROL DE ACCESO POR MÓDULO ---
@@ -127,6 +146,7 @@ iniciar_busqueda_sap = requiere_acceso("inventario")(iniciar_busqueda_sap)
 iniciar_pg = requiere_acceso("PG")(iniciar_pg)
 iniciar_gu = requiere_acceso("guias")(iniciar_gu)
 iniciar_etiqueta = requiere_acceso("etiquetas")(iniciar_etiqueta)
+iniciar_transferencias = requiere_acceso("transferencias")(iniciar_transferencias)
 
 # --- CONFIGURACIÓN DE GEMINI AGENTE Y HERRAMIENTAS ---
 ai_client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
@@ -361,6 +381,7 @@ def main() -> None:
       CommandHandler("gu", iniciar_gu),
       CommandHandler("etiqueta", iniciar_etiqueta),
       CommandHandler("ub", iniciar_ubicaciones),
+      CommandHandler("tr", iniciar_transferencias),
       CallbackQueryHandler(iniciar_busqueda, pattern="^start_pv$"),
       CallbackQueryHandler(iniciar_busqueda_sap, pattern="^start_sap$"),
       CallbackQueryHandler(iniciar_busqueda_vendedor, pattern="^start_vend$"),
@@ -368,6 +389,7 @@ def main() -> None:
       CallbackQueryHandler(iniciar_gu, pattern="^start_gu$"),
       CallbackQueryHandler(iniciar_etiqueta, pattern="^start_et$"),
       CallbackQueryHandler(iniciar_ubicaciones, pattern="^start_ub$"),
+      CallbackQueryHandler(iniciar_transferencias, pattern="^start_tr$"),
   ]
 
   texto_pv = MessageHandler(
@@ -517,6 +539,33 @@ def main() -> None:
       UB_ESPERANDO_CAJON: [botones_ub_cb, texto_ub_cajon],
       UB_ESPERANDO_CODIGO: [ub_seguir_cb, botones_ub_cb, texto_ub_codigo],
       UB_ESPERANDO_UBICACION: [botones_ub_cb, texto_ub_ubicacion],
+      # Transferencias (Faltante, Retazos, Imperfecto)
+      TR_MENU: [CallbackQueryHandler(botones_tr_menu, pattern=r"^tr_(menu|tipo_.+)$")],
+      TR_ELEGIR_METODO: [
+          CallbackQueryHandler(seleccionar_metodo_tr, pattern=r"^tr_metodo_.+$"),
+          CallbackQueryHandler(botones_tr_menu, pattern=r"^tr_menu$"),
+      ],
+      TR_ESPERANDO_CODIGO: [
+          CallbackQueryHandler(seguir_tr, pattern=r"^tr_seguir_(si|no)$"),
+          CallbackQueryHandler(botones_tr_menu, pattern=r"^tr_menu$"),
+          MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_codigo_tr),
+      ],
+      TR_ESPERANDO_REF: [
+          CallbackQueryHandler(botones_tr_menu, pattern=r"^tr_menu$"),
+          MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_ref_tr),
+      ],
+      TR_SELECCIONANDO_REF: [
+          CallbackQueryHandler(seleccionar_ref_tr, pattern=r"^tr_ref_\d+$"),
+          CallbackQueryHandler(botones_tr_menu, pattern=r"^tr_menu$"),
+      ],
+      TR_SELECCIONANDO_COLOR: [
+          CallbackQueryHandler(seleccionar_color_tr, pattern=r"^tr_col_\d+$"),
+          CallbackQueryHandler(botones_tr_menu, pattern=r"^tr_menu$"),
+      ],
+      TR_ESPERANDO_CANTIDAD: [
+          CallbackQueryHandler(botones_tr_menu, pattern=r"^tr_menu$"),
+          MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_cantidad_tr),
+      ],
   }
 
   fallbacks = entradas + [
