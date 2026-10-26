@@ -344,11 +344,16 @@ def _firma():
 
 
 async def _aplicar_comandos(bot, forzar: bool = False) -> None:
-    """Fija la lista "/" de cada persona. Solo si los permisos cambiaron (o forzar)."""
+    """Fija la lista "/" de cada persona. Solo si los permisos cambiaron (o forzar).
+
+    Si alguna llamada a Telegram falla (por ejemplo por timeout), NO se guarda la
+    firma, así la próxima recarga automática lo vuelve a intentar.
+    """
     firma = _firma()
     if not forzar and firma == _ESTADO["firma"]:
         return
 
+    fallos = 0
     objetivos = set(USUARIOS) | set(ADMIN_IDS) | set(MASTERS_SHEET)
     for uid in sorted(objetivos):
         try:
@@ -360,7 +365,8 @@ async def _aplicar_comandos(bot, forzar: bool = False) -> None:
                 # Sin lista: se borra la que tuviera (queda sin botón de menú)
                 await bot.delete_my_commands(scope=scope)
         except Exception as e:
-            # Pasa si esa persona aún no ha escrito nunca al bot
+            # Pasa si esa persona aún no ha escrito nunca al bot, o por timeout
+            fallos += 1
             log.warning("No se pudo fijar los comandos de %s: %s", uid, e)
 
     # Personas que ya no están en la hoja: se les borra la lista que tuvieran
@@ -368,11 +374,15 @@ async def _aplicar_comandos(bot, forzar: bool = False) -> None:
         try:
             await bot.delete_my_commands(scope=BotCommandScopeChat(chat_id=uid))
         except Exception as e:
+            fallos += 1
             log.warning("No se pudo restablecer los comandos de %s: %s", uid, e)
 
     _CONFIGURADOS.clear()
     _CONFIGURADOS.update(objetivos)
-    _ESTADO["firma"] = firma
+    if fallos == 0:
+        _ESTADO["firma"] = firma
+    else:
+        log.warning("Comandos: %s fallos; se reintentará en la próxima recarga.", fallos)
 
 
 async def _job_recarga(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -381,21 +391,14 @@ async def _job_recarga(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def configurar_comandos(application: Application) -> None:
-    """Úsalo como post_init del Application.
+    """Se lanza en segundo plano desde post_init (main.py).
 
     Lee la hoja de accesos, fija la lista "/" de cada persona y programa la
     recarga automática cada ACCESO_REFRESCO_MIN minutos.
     """
     await recargar_accesos()
 
-    try:
-        # Lista por defecto vacía: quien no es MASTER no ve lista de comandos
-        await application.bot.delete_my_commands()
-    except Exception as e:
-        log.error("No se pudo vaciar la lista de comandos por defecto: %s", e)
-
-    await _aplicar_comandos(application.bot, forzar=True)
-
+    # Se programa la recarga ANTES de las llamadas lentas a Telegram
     if application.job_queue:
         application.job_queue.run_repeating(
             _job_recarga,
@@ -405,6 +408,14 @@ async def configurar_comandos(application: Application) -> None:
         )
     else:
         log.warning("No hay job_queue: la hoja de accesos solo se lee al arrancar (usa /accesos).")
+
+    try:
+        # Lista por defecto vacía: quien no es MASTER no ve lista de comandos
+        await application.bot.delete_my_commands()
+    except Exception as e:
+        log.error("No se pudo vaciar la lista de comandos por defecto: %s", e)
+
+    await _aplicar_comandos(application.bot, forzar=True)
 
 
 # --------------------------------------------------------------------------- #
