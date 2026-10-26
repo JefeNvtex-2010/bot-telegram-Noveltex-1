@@ -100,7 +100,8 @@ from etiquetas_handlers import (  # impresión de etiquetas Zebra
     seleccionar_referencia_et,
 )
 
-from ubicacion import (  # ubicaciones: consultar por nombre, modificar por código
+from ubicacion import (  # ubicaciones: consultar por nombre, consultar por cajón, modificar por código
+    UB_ESPERANDO_CAJON,
     UB_ESPERANDO_CODIGO,
     UB_ESPERANDO_REF,
     UB_ESPERANDO_UBICACION,
@@ -109,11 +110,12 @@ from ubicacion import (  # ubicaciones: consultar por nombre, modificar por cód
     UB_SELECCIONANDO_REF,
     botones_ub,
     iniciar_ubicaciones,
+    recibir_cajon_ub,
     recibir_codigo_ub,
     recibir_ref_ub,
     recibir_ubicacion_ub,
     recordar_botones_ub,
-    seguir_ub,  # NUEVO: botones Sí / No de "¿Continuar con la siguiente toma?"
+    seguir_ub,
     seleccionar_color_ub,
     seleccionar_ref_ub,
 )
@@ -121,10 +123,6 @@ from ubicacion import (  # ubicaciones: consultar por nombre, modificar por cód
 logger = logging.getLogger(__name__)
 
 # --- CONTROL DE ACCESO POR MÓDULO ---
-# Se protege el punto de entrada de cada flujo (comando y botón del menú).
-# /PV ya está protegido en handlers.py, /iv en inventario_vendedor_handlers.py
-# y /ub en ubicacion.py.
-# Los nombres de permiso deben coincidir con los de la pestaña PERMISOS.
 iniciar_busqueda_sap = requiere_acceso("inventario")(iniciar_busqueda_sap)
 iniciar_pg = requiere_acceso("PG")(iniciar_pg)
 iniciar_gu = requiere_acceso("guias")(iniciar_gu)
@@ -237,7 +235,7 @@ def get_or_create_chat(user_id):
   return user_chats[user_id]
 
 
-@requiere_acceso("inventario")  # el agente consulta TODO el inventario SAP
+@requiere_acceso("inventario")
 async def handle_gemini_agent(update, context):
   """Maneja las conversaciones y ejecución automática de herramientas (Function Calling)."""
   user_id = update.effective_user.id
@@ -263,7 +261,7 @@ async def handle_gemini_agent(update, context):
     await update.message.reply_text(f"⚠️ Error técnico: {str(e)}")
 
 
-@requiere_acceso("inventario")  # igual que el agente de texto
+@requiere_acceso("inventario")
 async def handle_voice_message(update, context):
   """Maneja las notas de voz, permitiendo que Gemini escuche la referencia y consulte el inventario."""
   user_id = update.effective_user.id
@@ -322,9 +320,6 @@ def run_dummy_server():
 
 async def _post_init(application) -> None:
   await datos.iniciar(application)
-  # La lista "/" de Telegram se configura EN SEGUNDO PLANO: antes se esperaba
-  # aquí y, si Telegram daba timeout, el bot tardaba minutos en empezar a
-  # atender mensajes (y descartaba los que llegaban mientras tanto).
   application.bot_data["tarea_comandos"] = asyncio.create_task(
       configurar_comandos(application)
   )
@@ -405,7 +400,7 @@ def main() -> None:
   # Ubicaciones de bodega
   botones_ub_cb = CallbackQueryHandler(
       botones_ub,
-      pattern=r"^ub_(menu|consultar|modificar|reemplazar|agregar)$",
+      pattern=r"^ub_(menu|consultar|cajon|modificar|reemplazar|agregar)$",
   )
   ub_ref_cb = CallbackQueryHandler(
       seleccionar_ref_ub, pattern=r"^ub_ref_\d+$"
@@ -413,7 +408,6 @@ def main() -> None:
   ub_color_cb = CallbackQueryHandler(
       seleccionar_color_ub, pattern=r"^ub_(col_\d+|back_refs|back_cols)$"
   )
-  # NUEVO: "¿Continuar con la siguiente toma?" -> Sí / No
   ub_seguir_cb = CallbackQueryHandler(
       seguir_ub, pattern=r"^ub_seguir_(si|no)$"
   )
@@ -422,6 +416,9 @@ def main() -> None:
   )
   texto_ub_ref = MessageHandler(
       filters.TEXT & ~filters.COMMAND, recibir_ref_ub
+  )
+  texto_ub_cajon = MessageHandler(
+      filters.TEXT & ~filters.COMMAND, recibir_cajon_ub
   )
   texto_ub_codigo = MessageHandler(
       filters.TEXT & ~filters.COMMAND, recibir_codigo_ub
@@ -513,19 +510,17 @@ def main() -> None:
       ESPERANDO_METROS_ET: [texto_metros_et],
       ESPERANDO_COPIAS_ET: [texto_copias_et],
       # Ubicaciones de bodega
-      #  Consultar: menú -> referencia -> color
-      #  Modificar: menú -> código de barras -> ubicación -> ¿continuar? (Sí/No)
       UB_MENU: [botones_ub_cb, texto_ub_menu],
       UB_ESPERANDO_REF: [botones_ub_cb, texto_ub_ref],
       UB_SELECCIONANDO_REF: [ub_ref_cb, botones_ub_cb, texto_ub_ref],
       UB_SELECCIONANDO_COLOR: [ub_color_cb, botones_ub_cb, texto_ub_ref],
+      UB_ESPERANDO_CAJON: [botones_ub_cb, texto_ub_cajon],
       UB_ESPERANDO_CODIGO: [ub_seguir_cb, botones_ub_cb, texto_ub_codigo],
       UB_ESPERANDO_UBICACION: [botones_ub_cb, texto_ub_ubicacion],
   }
 
   fallbacks = entradas + [
       CommandHandler("cancelar", cancelar),
-      # /i es el menú; /inicio y /menu quedan como alias ocultos
       CommandHandler(["i", "inicio", "menu"], menu_inicio),
   ]
 
