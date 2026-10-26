@@ -1,3 +1,35 @@
+"""Módulo de ubicaciones de bodega (/ub).
+
+Flujo:
+  1) Menú: Consultar ubicación | Modificar ubicación.
+
+  2) CONSULTAR (por nombre): se escribe la REFERENCIA (ej. SATIN), se elige la
+     referencia si hay varias y luego el COLOR, igual que en Inventario SAP.
+     Muestra las ubicaciones registradas del artículo.
+
+  3) MODIFICAR (siempre por código): Registrar y borrar | Agregar.
+     Se escanea (o se escribe) el código de barras del rollo, de 12 dígitos:
+        001820005225  ->  artículo 0018-200  +  cantidad 05225 (se descarta)
+     También se acepta el código del artículo solo (0018-200).
+     El bot busca el artículo en el inventario SAP (código y descripción), pide la
+     ubicación y la guarda.
+        - Registrar y borrar: elimina todas las ubicaciones del artículo y deja la nueva.
+        - Agregar: suma otra ubicación sin borrar las que ya tiene.
+
+Las ubicaciones se guardan en la pestaña "UBICACIONES BODEGA" del Google Sheet
+AUDITORIA_BOT (FECHA | UBICACIÓN | CODIGO | DESCRIPCIÓN | NOMBRE), una fila por
+cada ubicación del artículo. La escritura/lectura se hace a través de un Apps Script
+(ver ubicaciones_apps_script.gs).
+
+Variables de entorno (Render):
+  URL_UBICACIONES     URL /exec del Apps Script de ubicaciones.
+  TOKEN_UBICACIONES   Token (el mismo que la propiedad TOKEN del Apps Script).
+
+Permisos (en la hoja PERMISOS, columna "acceso a"):
+  "ubicaciones"            -> solo CONSULTAR ubicaciones.
+  "modificar ubicaciones"  -> además puede Registrar y borrar / Agregar (administradores).
+  "TODO"                   -> todo.
+"""
 import asyncio
 import logging
 import os
@@ -9,7 +41,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 import datos
-from acceso import requiere_acceso
+from acceso import requiere_acceso, tiene_acceso
 from handlers import editar, esc, programar_borrado, registrar_uso_bot, responder
 
 logger = logging.getLogger(__name__)
@@ -29,6 +61,8 @@ TOKEN_UBICACIONES = os.environ.get("TOKEN_UBICACIONES", "").strip()
 
 MODOS = ("consultar", "reemplazar", "agregar")
 MODOS_MODIFICAR = ("reemplazar", "agregar")
+PERMISO_MODIFICAR = "ubicaciones_modificar"
+MENSAJE_SOLO_ADMIN = "Solo los administradores pueden modificar ubicaciones."
 MAX_REFS = 20
 MAX_COLORES = 60
 
@@ -221,13 +255,22 @@ def _boton_menu():
     return [InlineKeyboardButton("🔙 Menú de ubicaciones", callback_data="ub_menu")]
 
 
-def _pantalla_menu():
+def _uid(update: Update) -> int:
+    usuario = update.effective_user
+    return usuario.id if usuario else 0
+
+
+def _puede_modificar(user_id: int) -> bool:
+    return tiene_acceso(user_id, PERMISO_MODIFICAR)
+
+
+def _pantalla_menu(puede_modificar: bool):
+    """Menú principal; el botón de modificar solo aparece a quien tiene el permiso."""
     texto = "📍 <b>Ubicaciones de bodega</b>\n\n¿Qué deseas hacer?"
-    teclado = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔎 Consultar ubicación", callback_data="ub_consultar")],
-        [InlineKeyboardButton("✏️ Modificar ubicación", callback_data="ub_modificar")],
-    ])
-    return texto, teclado
+    filas = [[InlineKeyboardButton("🔎 Consultar ubicación", callback_data="ub_consultar")]]
+    if puede_modificar:
+        filas.append([InlineKeyboardButton("✏️ Modificar ubicación", callback_data="ub_modificar")])
+    return texto, InlineKeyboardMarkup(filas)
 
 
 def _pantalla_modificar():
@@ -332,16 +375,25 @@ def _plural(n: int, singular: str, plural: str) -> str:
 async def _sesion_expirada(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Sesión perdida (por ejemplo tras un reinicio) al recibir un texto."""
     context.user_data.pop("ub", None)
-    texto, teclado = _pantalla_menu()
+    texto, teclado = _pantalla_menu(_puede_modificar(_uid(update)))
     await responder(update, context, "⌛ La sesión expiró.\n\n" + texto, reply_markup=teclado)
     return UB_MENU
 
 
-async def _expirada_cb(query, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def _expirada_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Sesión perdida al pulsar un botón."""
     context.user_data.pop("ub", None)
-    texto, teclado = _pantalla_menu()
-    await editar(query, "⌛ La sesión expiró.\n\n" + texto, teclado)
+    texto, teclado = _pantalla_menu(_puede_modificar(_uid(update)))
+    await editar(update.callback_query, "⌛ La sesión expiró.\n\n" + texto, teclado)
+    return UB_MENU
+
+
+async def _sin_permiso_modificar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Texto recibido de alguien que ya no puede modificar (permiso quitado a mitad de camino)."""
+    logger.warning(f"Ubicaciones: modificación denegada a {_uid(update)}")
+    context.user_data.pop("ub", None)
+    texto, teclado = _pantalla_menu(False)
+    await responder(update, context, f"⛔ {MENSAJE_SOLO_ADMIN}\n\n{texto}", reply_markup=teclado)
     return UB_MENU
 
 
@@ -351,7 +403,7 @@ async def _expirada_cb(query, context: ContextTypes.DEFAULT_TYPE) -> int:
 @requiere_acceso("ubicaciones")
 async def iniciar_ubicaciones(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data["ub"] = {}
-    texto, teclado = _pantalla_menu()
+    texto, teclado = _pantalla_menu(_puede_modificar(_uid(update)))
 
     query = update.callback_query
     if query:
@@ -369,9 +421,21 @@ async def iniciar_ubicaciones(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def botones_ub(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Botones: ub_menu | ub_consultar | ub_modificar | ub_reemplazar | ub_agregar."""
     query = update.callback_query
-    await query.answer()
     accion = query.data.split("_", 1)[1]
+    puede_modificar = _puede_modificar(_uid(update))
     ub = context.user_data.setdefault("ub", {})
+
+    # Modificar solo para administradores (también si pulsan un botón viejo)
+    if accion == "modificar" or accion in MODOS_MODIFICAR:
+        if not puede_modificar:
+            logger.warning(f"Ubicaciones: modificación denegada a {_uid(update)}")
+            await query.answer(MENSAJE_SOLO_ADMIN, show_alert=True)
+            ub.clear()
+            texto, teclado = _pantalla_menu(False)
+            await editar(query, texto, teclado)
+            return UB_MENU
+
+    await query.answer()
     ub.clear()
 
     if accion == "modificar":
@@ -389,7 +453,7 @@ async def botones_ub(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await editar(query, _texto_pedir(accion), _teclado_volver())
         return UB_ESPERANDO_CODIGO
 
-    texto, teclado = _pantalla_menu()  # menu (y cualquier otra acción)
+    texto, teclado = _pantalla_menu(puede_modificar)  # menu (y cualquier otra acción)
     await editar(query, texto, teclado)
     return UB_MENU
 
@@ -459,11 +523,11 @@ async def seleccionar_ref_ub(update: Update, context: ContextTypes.DEFAULT_TYPE)
     ub = context.user_data.get("ub") or {}
     df = await datos.inventario.obtener()
     if ub.get("modo") != "consultar" or not ub.get("refs") or df is None:
-        return await _expirada_cb(query, context)
+        return await _expirada_cb(update, context)
     try:
         ref = ub["refs"][int(query.data.rsplit("_", 1)[1])]
     except (ValueError, IndexError):
-        return await _expirada_cb(query, context)
+        return await _expirada_cb(update, context)
 
     ub["ref"] = ref
     ub["colores"] = datos.colores_de(df, ref)
@@ -478,12 +542,12 @@ async def seleccionar_color_ub(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.answer()
     ub = context.user_data.get("ub") or {}
     if ub.get("modo") != "consultar" or not ub.get("ref") or not ub.get("colores"):
-        return await _expirada_cb(query, context)
+        return await _expirada_cb(update, context)
     data = query.data
 
     if data == "ub_back_refs":
         if not ub.get("refs"):
-            return await _expirada_cb(query, context)
+            return await _expirada_cb(update, context)
         texto, teclado = _pantalla_refs(ub)
         await editar(query, texto, teclado)
         return UB_SELECCIONANDO_REF
@@ -496,11 +560,11 @@ async def seleccionar_color_ub(update: Update, context: ContextTypes.DEFAULT_TYP
     try:
         color = ub["colores"][int(data.rsplit("_", 1)[1])]
     except (ValueError, IndexError):
-        return await _expirada_cb(query, context)
+        return await _expirada_cb(update, context)
 
     df = await datos.inventario.obtener()
     if df is None:
-        return await _expirada_cb(query, context)
+        return await _expirada_cb(update, context)
 
     try:
         articulo = _articulo_de(df, ub["ref"], color)
@@ -547,6 +611,8 @@ async def recibir_codigo_ub(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     modo = ub.get("modo")
     if modo not in MODOS_MODIFICAR:
         return await _sesion_expirada(update, context)
+    if not _puede_modificar(_uid(update)):
+        return await _sin_permiso_modificar(update, context)
 
     codigo7 = _extraer_codigo(update.message.text)
     if codigo7 is None:
@@ -622,6 +688,8 @@ async def recibir_ubicacion_ub(update: Update, context: ContextTypes.DEFAULT_TYP
     articulo = ub.get("articulo")
     if modo not in MODOS_MODIFICAR or not articulo:
         return await _sesion_expirada(update, context)
+    if not _puede_modificar(_uid(update)):
+        return await _sin_permiso_modificar(update, context)
 
     entrada = update.message.text or ""
     if re.fullmatch(r"\d{12}", re.sub(r"\s", "", entrada)):
