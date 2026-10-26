@@ -43,6 +43,7 @@ OPCIONES_MENU = [
     ("🚚 Guías", "start_gu", "guias"),
     ("🏷️ Etiquetas", "start_et", "etiquetas"),
     ("📍 Ubicaciones", "start_ub", "ubicaciones"),
+    ("📋 Transferencias", "start_tr", "transferencias"),
 ]
 
 
@@ -482,7 +483,7 @@ async def seleccionar_color(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await editar(query, partes[0], teclado)
     else:  # detalle largo: se envía en varios mensajes y el original queda con el botón de volver
         for parte in partes:
-            msg = await query.message.reply_text(parte, parse_mode=ParseMode.HTML)
+            msg = await query.message.reply_text(parte, parse_mode="HTML")
             programar_borrado(context, msg)
         await editar(query, "📌 Fin del detalle.", teclado)
     return SELECCIONANDO_COLOR
