@@ -260,76 +260,82 @@ def _parsear_cantidad(texto: str):
     t = texto.strip().lower()
     for sufijo in ("mts", "m"):
         t = t.removesuffix(sufijo).strip()
-m = _RE_CANTIDAD.match(t)
-if not m:
-return None
-metros = int(m.group(1))
-cm = int((m.group(2) or "0").ljust(2, "0"))  # '5' -> 50 cm, '05' -> 5 cm
-if metros == 0 and cm == 0:
-return None
-return metros, cm
+    m = _RE_CANTIDAD.match(t)
+    if not m:
+        return None
+    metros = int(m.group(1))
+    cm = int((m.group(2) or "0").ljust(2, "0"))  # '5' -> 50 cm, '05' -> 5 cm
+    if metros == 0 and cm == 0:
+        return None
+    return metros, cm
+
+
 async def recibir_metros_et(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
-cantidad = _parsear_cantidad(update.message.text)
-if quantity is None:
-await update.message.reply_text("⚠️ Cantidad no válida. Introduce la cantidad:")
-return ESPERANDO_METROS_ET
-metros, cm = cantidad
-context.user_data.setdefault("et", {}).update({"metros": metros, "cm": cm})
-await update.message.reply_text(
-f"Cantidad: {metros:03d}.{cm:02d}\n\nIntroduce el número de etiquetas:"
-)
-return ESPERANDO_COPIAS_ET
+    cantidad = _parsear_cantidad(update.message.text)
+    if cantidad is None:
+        await update.message.reply_text("⚠️ Cantidad no válida. Introduce la cantidad:")
+        return ESPERANDO_METROS_ET
+    metros, cm = cantidad
+    context.user_data.setdefault("et", {}).update({"metros": metros, "cm": cm})
+    await update.message.reply_text(
+        f"Cantidad: {metros:03d}.{cm:02d}\n\nIntroduce el número de etiquetas:"
+    )
+    return ESPERANDO_COPIAS_ET
+
+
 async def recibir_copias_et(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
-copias = _entero(update.message.text, 1, MAX_COPIAS)
-if copias is None:
-await update.message.reply_text(f"⚠️ Escribe un número de etiquetas entre 1 y {MAX_COPIAS}:")
-return ESPERANDO_COPIAS_ET
-et = context.user_data.get("et", {})
-campos = ("operario", "ref", "item", "color", "metros", "cm")
-if any(k not in et for k in campos):
-await update.message.reply_text("⚠️ Se perdió la selección. Escribe /etiqueta para empezar de nuevo.")
-return ConversationHandler.END
-try:
-# Se añade et["operario"] como séptimo argumento para pasar el nombre real a la etiqueta ZPL
-await asyncio.to_thread(
-imprimir_etiqueta, et["item"], et["ref"], et["color"], et["metros"], et["cm"], copias, et["operario"]
-)
-except Exception:
-logger.exception("No se pudo imprimir la etiqueta")
-await update.message.reply_text(
-"⚠️ No se pudo enviar la etiqueta a la impresora. Escribe /etiqueta para reintentar."
-)
-return ConversationHandler.END
-logger.info(
-"Etiqueta impresa por %s (ID %s): item %s ref %s color %s cant %03d.%02d copias %d",
-et["operario"], et.get("id_operario"), et["item"], et["ref"], et["color"],
-et["metros"], et["cm"], copias,
-)
-cant = f"{et['metros']:03d}.{et['cm']:02d}"
-botones_otra = [
-[
-InlineKeyboardButton("🔄 Sí, generar otra", callback_data="et_otra_si"),
-InlineKeyboardButton("❌ No, terminar", callback_data="et_otra_no"),
-]
-]
-reply_markup = InlineKeyboardMarkup(botones_otra)
-await update.message.reply_text(
-f"✅ Etiqueta enviada:\nItem {et['item']} · {et['ref']} · Color {et.get('color_nombre', et['color'])}\n"
-f"Cantidad {cant} · Etiquetas {copias}\n"
-f"Operario: {et['operario']}\n\n"
-"¿Deseas generar otra etiqueta?",
-reply_markup=reply_markup,
-)
-return PREGUNTANDO_OTRA_ET
+    copias = _entero(update.message.text, 1, MAX_COPIAS)
+    if copias is None:
+        await update.message.reply_text(f"⚠️ Escribe un número de etiquetas entre 1 y {MAX_COPIAS}:")
+        return ESPERANDO_COPIAS_ET
+    et = context.user_data.get("et", {})
+    campos = ("operario", "ref", "item", "color", "metros", "cm")
+    if any(k not in et for k in campos):
+        await update.message.reply_text("⚠️ Se perdió la selección. Escribe /etiqueta para empezar de nuevo.")
+        return ConversationHandler.END
+    try:
+        # Se añade et["operario"] como séptimo argumento para pasar el nombre real a la etiqueta ZPL
+        await asyncio.to_thread(
+            imprimir_etiqueta, et["item"], et["ref"], et["color"], et["metros"], et["cm"], copias, et["operario"]
+        )
+    except Exception:
+        logger.exception("No se pudo imprimir la etiqueta")
+        await update.message.reply_text(
+            "⚠️ No se pudo enviar la etiqueta a la impresora. Escribe /etiqueta para reintentar."
+        )
+        return ConversationHandler.END
+    logger.info(
+        "Etiqueta impresa por %s (ID %s): item %s ref %s color %s cant %03d.%02d copias %d",
+        et["operario"], et.get("id_operario"), et["item"], et["ref"], et["color"],
+        et["metros"], et["cm"], copias,
+    )
+    cant = f"{et['metros']:03d}.{et['cm']:02d}"
+    botones_otra = [
+        [
+            InlineKeyboardButton("🔄 Sí, generar otra", callback_data="et_otra_si"),
+            InlineKeyboardButton("❌ No, terminar", callback_data="et_otra_no"),
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(botones_otra)
+    await update.message.reply_text(
+        f"✅ Etiqueta enviada:\nItem {et['item']} · {et['ref']} · Color {et.get('color_nombre', et['color'])}\n"
+        f"Cantidad {cant} · Etiquetas {copias}\n"
+        f"Operario: {et['operario']}\n\n"
+        "¿Deseas generar otra etiqueta?",
+        reply_markup=reply_markup,
+    )
+    return PREGUNTANDO_OTRA_ET
+
+
 async def manejar_otra_etiqueta(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
-"""Evalúa la acción elegida por el operador (generar otra o cerrar)."""
-q = update.callback_query
-await q.answer()
-if q.data == "et_otra_si":
-context.user_data["et"] = _operario_actual(context)  # limpia todo menos al operario
-await q.edit_message_text("🏷️ Etiqueta Zebra\n\nEscribe la referencia:")
-return ESPERANDO_REF_ET
-else:
-context.user_data.pop("et", None)
-await q.edit_message_text("👍 Entendido. Proceso de etiquetado cerrado correctamente.")
-return ConversationHandler.END
+    """Evalúa la acción elegida por el operador (generar otra o cerrar)."""
+    q = update.callback_query
+    await q.answer()
+    if q.data == "et_otra_si":
+        context.user_data["et"] = _operario_actual(context)  # limpia todo menos al operario
+        await q.edit_message_text("🏷️ Etiqueta Zebra\n\nEscribe la referencia:")
+        return ESPERANDO_REF_ET
+    else:
+        context.user_data.pop("et", None)
+        await q.edit_message_text("👍 Entendido. Proceso de etiquetado cerrado correctamente.")
+        return ConversationHandler.END
