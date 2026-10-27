@@ -9,7 +9,7 @@ Dos modos, según las variables de entorno:
             Render con la IP pública abierta en el puerto 9100).
 
 Variables de entorno:
-  ZEBRA_IP     IP de la impresora (por defecto 147.120.0.181)
+  ZEBRA_IP     IP de la impresora (por defecto 147.120.0.183)
   ZEBRA_PORT   puerto RAW (por defecto 9100)
   URL_COLA     URL /exec del Apps Script (solo modo cola)
   TOKEN_COLA   token del Apps Script (solo modo cola)
@@ -33,7 +33,7 @@ def _limpiar(texto) -> str:
 
 
 def generar_zpl_noveltex(item, ref, color, metros, centimetros, copias=1) -> str:
-    """Etiqueta de rollo de tela: item, referencia, color, cantidad, fecha y lote."""
+    """Etiqueta de rollo de tela: item, referencia, color, cantidad, fecha y lote con diseño idéntico al original."""
     tz = datetime.timezone(datetime.timedelta(hours=-5))  # Colombia (Render corre en UTC)
     ahora = datetime.datetime.now(tz)
     fecha = ahora.strftime("%d/%m/%Y %H:%M")
@@ -43,33 +43,33 @@ def generar_zpl_noveltex(item, ref, color, metros, centimetros, copias=1) -> str
     ref = _limpiar(ref)[:20]
     m, cm = int(metros), int(centimetros)
     cant = f"{m:03d}.{cm:02d}"
-    codigo = f"{item}{color}{m:03d}{cm:02d}"  # ej. 0615 + 600 + 061 + 00 = 061560006100
+    codigo = f"{item}{color}{m:03d}{cm:02d}"  # ej. 061560006100
 
-    # El nombre vertical se achica si es largo para que quepa en el alto de la etiqueta
-    ancho_ref = max(14, min(30, 340 // max(len(ref), 1)))
-
-    # Nota: el logo va como texto provisional hasta incrustar la imagen (^GFA).
+    # Retorno del bloque ZPL estructurado
     return f"""^XA
 ^PW799
 ^LL408
 ^LH0,0
 ^CI28
 ^PQ{max(1, int(copias))}
-^FO30,20^BQN,2,5^FDQA,{codigo}^FS
-^FO270,35^A0N,60,60^FDNOVELTEX S.A.S^FS
-^FO230,140^A0N,24,24^FDTELEFONO 4442659 - CALI^FS
-^FO30,180^A0N,38,38^FDITEM^FS
-^FO190,180^A0N,38,38^FD{item}^FS
-^FO30,222^A0N,38,38^FDREF.^FS
-^FO190,222^A0N,42,42^FD{ref}^FS
-^FO30,264^A0N,38,38^FDCOLOR^FS
-^FO190,264^A0N,38,38^FD{color}^FS
-^FO30,312^A0N,55,55^FDCANT.^FS
-^FO210,312^A0N,55,55^FD{cant}^FS
-^FO30,380^A0N,22,22^FD{fecha}^FS
-^FO270,372^A0N,34,34^FDLOTE :  {lote}^FS
-^FO690,390^A0B,48,28^FD{codigo}^FS
-^FO745,390^A0B,45,{ancho_ref}^FD{ref}^FS
+^FO430,35^GB22,22,22^FS
+^FO442,47^GB22,22,22^FS
+^FO454,59^GB22,22,22^FS
+^FO490,42^A0N,45,45^FDNOVELTEX S.A.S^FS
+^FO420,110^A0N,22,22^FDTELEFONO 4442659 - CALI^FS
+^FO425,145^BQN,2,3^FDQA,{codigo}^FS
+^FO80,185^A0N,38,38^FDITEM^FS
+^FO250,185^A0N,38,38^FD{item}^FS
+^FO80,230^A0N,38,38^FDREF.^FS
+^FO250,230^A0N,42,42^FD{ref}^FS
+^FO80,275^A0N,38,38^FDCOLOR^FS
+^FO250,275^A0N,38,38^FD{color}^FS
+^FO80,325^A0N,55,55^FDCANT.^FS
+^FO270,325^A0N,55,55^FD{cant}^FS
+^FO65,390^A0N,20,20^FD{fecha}^FS
+^FO320,380^A0N,32,32^FDLOTE : {lote}^FS
+^FO735,40^A0R,38,24^FD{codigo}^FS
+^FO775,40^A0R,38,26^FD{ref}^FS
 ^XZ"""
 
 
