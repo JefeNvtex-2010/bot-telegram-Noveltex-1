@@ -45,7 +45,7 @@ def generar_zpl_noveltex(item, ref, color, metros, centimetros, copias=1) -> str
     cant = f"{m:03d}.{cm:02d}"
     codigo = f"{item}{color}{m:03d}{cm:02d}"  # ej. 001860000999
 
-    # Diseño optimizado: texto plano NOVELTEX a X=220 y espaciado de fuente mejorado a la derecha
+    # Diseño optimizado: texto plano NOVELTEX a X=220 e inyección de espacio entre caracteres a la derecha
     return f"""^XA
 ^PW799
 ^LL408
@@ -65,8 +65,8 @@ def generar_zpl_noveltex(item, ref, color, metros, centimetros, copias=1) -> str
 ^FO220,305^A0N,52,52^FD{cant}^FS
 ^FO60,370^A0N,24,24^FD{fecha}^FS
 ^FO310,370^A0N,24,24^FDOPERARIO: ORIGINAL^FS
-^FO640,100^A0B,62,24^FD{codigo}^FS
-^FO705,100^A0B,58,32^FD{ref}^FS
+^FO640,100^EG2^A0B,62,30^FD{codigo}^FS
+^FO705,100^A0B,58,26^FD{ref}^FS
 ^XZ"""
 
 
