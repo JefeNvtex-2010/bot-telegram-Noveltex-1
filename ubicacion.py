@@ -1,9 +1,12 @@
 import asyncio
+import csv
+import io
 import logging
 import os
 import re
 import unicodedata
 import uuid
+import urllib.request
 
 import requests
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -32,11 +35,17 @@ logger = logging.getLogger(__name__)
     UB_ESPERANDO_CODIGO,
     UB_ESPERANDO_UBICACION,
     UB_ESPERANDO_CAJON,
-    UB_ESPERANDO_ID,  # <--- Nuevo estado para solicitar el ID
+    UB_ESPERANDO_ID,  # <--- Estado para solicitar el ID de operario
 ) = 40, 41, 42, 43, 44, 45, 46, 47
 
 URL_UBICACIONES = os.environ.get("URL_UBICACIONES", "").strip()
 TOKEN_UBICACIONES = os.environ.get("TOKEN_UBICACIONES", "").strip()
+
+# Google Sheet AUDITORIA_BOT, pestaña ETIQUETAS (columnas: OPERARIO | ID)
+SHEET_ID_OPERARIOS = os.environ.get(
+    "SHEET_ID_AUDITORIA", "1Si6SMJ7p4DlDugBCxV6ATGicHWMFQNMZtCNQ409qppk"
+)
+PESTANA_OPERARIOS = "ETIQUETAS"
 
 MODOS = ("consultar", "reemplazar", "agregar", "cajon")
 MODOS_MODIFICAR = ("reemplazar", "agregar")
@@ -48,7 +57,6 @@ MAX_COLORES = 60
 # Segundos que tiene el usuario para leer el siguiente rollo después de decir "Sí"
 SEGUNDOS_TOMA = 30
 
-# Nombres posibles de las columnas del inventario SAP (sin tildes, minúsculas)
 COLUMNAS_CODIGO = ("articulo", "codigo articulo", "codigo del articulo", "itemcode", "item code")
 COLUMNAS_DESCRIPCION = ("descripcion", "descripcion articulo", "nombre articulo", "itemname", "item name")
 
@@ -56,8 +64,33 @@ _PATRON_UBICACION = re.compile(r"^[A-Z0-9Ñ][A-Z0-9Ñ \-./#]{0,29}$")
 
 
 # --------------------------------------------------------------------------- #
-# Utilidades
+# Utilidades y Carga de Operarios (Pestaña ETIQUETAS)
 # --------------------------------------------------------------------------- #
+def _cargar_operarios() -> dict:
+    """Lee la pestaña ETIQUETAS y devuelve {id: nombre}. Bloqueante: usar con to_thread."""
+    url = (
+        f"https://docs.google.com/spreadsheets/d/{SHEET_ID_OPERARIOS}"
+        f"/gviz/tq?tqx=out:csv&sheet={PESTANA_OPERARIOS}"
+    )
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        texto = r.read().decode("utf-8-sig")
+
+    if texto.lstrip().lower().startswith("<"):
+        raise RuntimeError("La hoja no es accesible (revisa que esté compartida con el enlace).")
+
+    operarios = {}
+    filas = list(csv.reader(io.StringIO(texto)))
+    for fila in filas[1:]:  # salta el encabezado OPERARIO | ID
+        if len(fila) < 2:
+            continue
+        nombre = fila[0].strip()
+        id_op = re.sub(r"\D", "", fila[1])
+        if nombre and id_op:
+            operarios[id_op] = nombre
+    return operarios
+
+
 def _sin_acentos(texto) -> str:
     return "".join(
         c for c in unicodedata.normalize("NFD", str(texto)) if unicodedata.category(c) != "Mn"
@@ -65,17 +98,10 @@ def _sin_acentos(texto) -> str:
 
 
 def _clave(codigo) -> str:
-    """Código sin guiones ni espacios, en mayúsculas: '0018-200' -> '0018200'."""
     return re.sub(r"[^0-9A-Za-z]", "", str(codigo)).upper()
 
 
 def _extraer_codigo(texto):
-    """Devuelve los dígitos del artículo o None si el texto no es válido.
-
-    - 12 dígitos (código de barras del rollo): 7 del artículo + 5 de cantidad (se descartan).
-    - 7 dígitos (código del artículo, con o sin guion): se usa tal cual.
-    - 6 dígitos (código SAP sin el cero del color, ej. 0018-42): se usa tal cual.
-    """
     digitos = re.sub(r"\D", "", str(texto))
     if len(digitos) == 12:
         return digitos[:7]
@@ -85,12 +111,10 @@ def _extraer_codigo(texto):
 
 
 def _formatear(codigo: str) -> str:
-    """'0018200' -> '0018-200'  |  '001842' -> '0018-42'."""
     return f"{codigo[:4]}-{codigo[4:]}"
 
 
 def _normalizar_ubicacion(texto):
-    """Ubicación limpia en mayúsculas, o None si no es válida."""
     t = re.sub(r"\s+", " ", str(texto).strip().upper())
     return t if _PATRON_UBICACION.match(t) else None
 
@@ -128,7 +152,6 @@ _cache = {"firma": None, "indice": {}}
 
 
 def _indice_articulos(df) -> dict:
-    """{clave: (código SAP, descripción)}; se reconstruye solo si cambió el inventario."""
     firma = (id(df), len(df))
     if _cache["firma"] == firma:
         return _cache["indice"]
@@ -155,7 +178,6 @@ def _indice_articulos(df) -> dict:
 
 
 async def _indice_inventario() -> dict:
-    """Índice {clave: (código SAP, descripción)} del inventario SAP actual."""
     df = await datos.inventario.obtener()
     if df is None:
         raise RuntimeError(datos.inventario.ultimo_error or "No se pudo acceder al inventario")
@@ -163,7 +185,6 @@ async def _indice_inventario() -> dict:
 
 
 def _buscar_articulo(indice: dict, codigo: str):
-    """Busca el artículo probando el código tal cual y sin el cero delante del color."""
     item, color = codigo[:4], codigo[4:]
     candidatos = [codigo]
     if color.startswith("0"):
@@ -387,7 +408,7 @@ def _plural(n: int, singular: str, plural: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Temporizador de la toma
+# Temporizador
 # --------------------------------------------------------------------------- #
 def _cancelar_temporizador(ub: dict) -> None:
     job = ub.pop("job", None)
@@ -441,7 +462,7 @@ def _iniciar_temporizador(context: ContextTypes.DEFAULT_TYPE, ub: dict, mensaje,
 
 
 # --------------------------------------------------------------------------- #
-# Sesión expirada / sin permiso
+# Sesiones y Permisos
 # --------------------------------------------------------------------------- #
 async def _sesion_expirada(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     _cancelar_temporizador(context.user_data.get("ub") or {})
@@ -459,17 +480,8 @@ async def _expirada_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     return UB_MENU
 
 
-async def _sin_permiso_modificar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    logger.warning(f"Ubicaciones: modificación denegada a {_uid(update)}")
-    _cancelar_temporizador(context.user_data.get("ub") or {})
-    context.user_data.pop("ub", None)
-    texto, teclado = _pantalla_menu(False)
-    await responder(update, context, f"⛔ {MENSAJE_SOLO_ADMIN}\n\n{texto}", reply_markup=teclado)
-    return UB_MENU
-
-
 # --------------------------------------------------------------------------- #
-# Handlers: menú
+# Handlers: Menú e Identificación por ID en pestaña ETIQUETAS
 # --------------------------------------------------------------------------- #
 @requiere_acceso("ubicaciones")
 async def iniciar_ubicaciones(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -500,12 +512,12 @@ async def botones_ub(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     _cancelar_temporizador(ub)
     ub.clear()
 
-    # Interceptamos "modificar" para pedir el ID de la hoja de Google Sheets
+    # Al presionar modificar, solicitamos el ID de operario de la pestaña ETIQUETAS
     if accion == "modificar":
         ub["modo_pendiente"] = "modificar"
         await editar(
             query,
-            "🔐 <b>Validación de Identidad</b>\n\nPor favor, escribe tu <b>ID</b> alojado en el sistema para continuar:",
+            "🔐 <b>Validación de Operario</b>\n\nPor favor, escribe tu <b>ID</b> (registrado en el sistema) para continuar:",
             _teclado_volver()
         )
         return UB_ESPERANDO_ID
@@ -531,12 +543,12 @@ async def botones_ub(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 async def recibir_id_ub(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Valida el ID introducido contra la pestaña PERMISOS de Google Sheets."""
+    """Valida el ID contra la pestaña ETIQUETAS usando la misma lógica de etiquetas.py."""
     programar_borrado(context, update.message)
     ub = context.user_data.setdefault("ub", {})
-    id_ingresado = (update.message.text or "").strip()
+    id_txt = re.sub(r"\D", "", update.message.text or "")
 
-    if not id_ingresado:
+    if not id_txt:
         await responder(
             update, context,
             "⚠️ Por favor, escribe un ID válido:",
@@ -545,40 +557,33 @@ async def recibir_id_ub(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         return UB_ESPERANDO_ID
 
     try:
-        resp = await asyncio.to_thread(
-            _llamar_ubicaciones,
-            {
-                "accion": "validar_id",
-                "id": id_ingresado
-            }
-        )
-        encontrado = resp.get("encontrado", False)
-        operario = resp.get("operario", "")
+        operarios = await asyncio.to_thread(_cargar_operarios)
     except Exception as e:
-        logger.error(f"Ubicaciones: error validando ID {id_ingresado}: {e}", exc_info=True)
+        logger.error(f"Ubicaciones: no se pudo leer la lista de operarios: {e}", exc_info=True)
         await responder(
             update, context,
-            f"⚠️ No pude validar el ID en la hoja.\n<code>{esc(e)}</code>",
+            "⚠️ No pude consultar la lista de operarios. Intenta de nuevo:",
             reply_markup=_teclado_volver()
         )
         return UB_ESPERANDO_ID
 
-    if not encontrado:
+    nombre = operarios.get(id_txt)
+    if not nombre:
         await responder(
             update, context,
-            "❌ <b>ID no encontrado.</b> El ID ingresado no está registrado en la hoja de permisos. Intenta de nuevo:",
+            "❌ <b>ID no autorizado.</b> El ID ingresado no está registrado en la pestaña ETIQUETAS. Intenta de nuevo:",
             reply_markup=_teclado_volver()
         )
         return UB_ESPERANDO_ID
 
-    # ID verificado con éxito
-    ub["operario_validado"] = operario
+    # Guardamos el nombre validado para registrarlo luego en las auditorías/modificaciones
+    ub["operario_validado"] = nombre
     ub.pop("modo_pendiente", None)
 
     texto, teclado = _pantalla_modificar()
     await responder(
         update, context,
-        f"✅ ¡Hola, <b>{esc(operario)}</b>! ID verificado correctamente.\n\n{texto}",
+        f"✅ ¡Hola, <b>{esc(nombre)}</b>! ID verificado correctamente.\n\n{texto}",
         reply_markup=teclado
     )
     return UB_MENU
@@ -591,7 +596,7 @@ async def recordar_botones_ub(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 # --------------------------------------------------------------------------- #
-# Handlers: CONSULTAR POR CAJÓN / UBICACIÓN
+# Consultar por Cajón / Referencia
 # --------------------------------------------------------------------------- #
 async def recibir_cajon_ub(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     programar_borrado(context, update.message)
@@ -639,9 +644,6 @@ async def recibir_cajon_ub(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     return UB_ESPERANDO_CAJON
 
 
-# --------------------------------------------------------------------------- #
-# Handlers: CONSULTAR (por referencia y color)
-# --------------------------------------------------------------------------- #
 async def recibir_ref_ub(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     programar_borrado(context, update.message)
     ub = context.user_data.setdefault("ub", {})
@@ -774,7 +776,7 @@ async def seleccionar_color_ub(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 # --------------------------------------------------------------------------- #
-# Handlers: MODIFICAR
+# Modificar / Guardar ubicaciones
 # --------------------------------------------------------------------------- #
 async def seguir_ub(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
@@ -911,7 +913,7 @@ async def recibir_ubicacion_ub(update: Update, context: ContextTypes.DEFAULT_TYP
         return UB_ESPERANDO_UBICACION
 
     codigo, descripcion = articulo
-    # Recuperamos el nombre validado en la fase de ID o el nombre de Telegram por defecto
+    # Usamos el nombre validado previamente desde la pestaña ETIQUETAS
     nombre = ub.get("operario_validado", "")
     if not nombre:
         usuario = update.effective_user
