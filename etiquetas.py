@@ -43,7 +43,7 @@ def generar_zpl_noveltex(item, ref, color, metros, centimetros, copias=1) -> str
     ref = _limpiar(ref)[:20]
     m, cm = int(metros), int(centimetros)
     cant = f"{m:03d}.{cm:02d}"
-    codigo = f"{item}{color}{m:03d}{cm:02d}"  # ej. 001860002378
+    codigo = f"{item}{color}{m:03d}{cm:02d}"  # ej. 001860000990
 
     # Cadena hexadecimal de la imagen indexada del logo Noveltex (64x64 pixeles, 512 bytes)
     logo_hex = (
@@ -61,7 +61,7 @@ def generar_zpl_noveltex(item, ref, color, metros, centimetros, copias=1) -> str
         "000000000000000000"
     )
 
-    # Valores alineados a X=240 (marca verde) y texto lateral subido a Y=40 con letras más estilizadas
+    # Todo el bloque central (Logo y valores del artículo) alineado uniformemente a X=220
     return f"""^XA
 ^PW799
 ^LL408
@@ -69,21 +69,21 @@ def generar_zpl_noveltex(item, ref, color, metros, centimetros, copias=1) -> str
 ^CI28
 ^PQ{max(1, int(copias))}
 ^FO50,35^BQN,2,5^FDQA,{codigo}^FS
-^FO280,30^GFA,512,512,8,{logo_hex}^FS
-^FO360,45^A0N,38,38^FDNOVELTEX S.A.S^FS
-^FO320,110^A0N,22,22^FDTel 6023798741 - 6023798742^FS
+^FO220,30^GFA,512,512,8,{logo_hex}^FS
+^FO300,45^A0N,38,38^FDNOVELTEX S.A.S^FS
+^FO260,110^A0N,22,22^FDTel 6023798741 - 6023798742^FS
 ^FO50,165^A0N,38,38^FDITEM^FS
-^FO240,165^A0N,38,38^FD{item}^FS
+^FO220,165^A0N,38,38^FD{item}^FS
 ^FO50,210^A0N,38,38^FDREF.^FS
-^FO240,210^A0N,40,40^FD{ref}^FS
+^FO220,210^A0N,40,40^FD{ref}^FS
 ^FO50,255^A0N,38,38^FDCOLOR^FS
-^FO240,255^A0N,38,38^FD{color}^FS
+^FO220,255^A0N,38,38^FD{color}^FS
 ^FO50,305^A0N,52,52^FDCANT.^FS
-^FO240,305^A0N,52,52^FD{cant}^FS
+^FO220,305^A0N,52,52^FD{cant}^FS
 ^FO60,370^A0N,24,24^FD{fecha}^FS
 ^FO310,370^A0N,24,24^FDOPERARIO: ORIGINAL^FS
-^FO640,40^A0B,62,30^FD{codigo}^FS
-^FO705,40^A0B,58,32^FD{ref}^FS
+^FO640,100^A0B,62,30^FD{codigo}^FS
+^FO705,100^A0B,58,32^FD{ref}^FS
 ^XZ"""
 
 
