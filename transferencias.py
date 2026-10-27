@@ -226,7 +226,7 @@ async def iniciar_transferencias(update: Update, context: ContextTypes.DEFAULT_T
 
 
 async def recibir_id_tr(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Valida el ID contra la pestaña ETIQUETAS al ingresar al módulo."""
+    """Valida el ID contra la pestaña TRASLADOS al ingresar al módulo."""
     programar_borrado(context, update.message)
     tr = context.user_data.setdefault("tr", {})
     id_txt = re.sub(r"\D", "", update.message.text or "")
