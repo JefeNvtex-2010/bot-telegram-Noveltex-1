@@ -1,3 +1,15 @@
+"""Comando /PG: trazabilidad de pedidos NOVELTEX (web service Oracle ORDS).
+
+Mismo flujo que /PV: número de pedido -> referencia -> color -> detalle.
+La diferencia es que los datos vienen en vivo del web service de Oracle.
+
+Uso en Telegram:
+    /PG 7374   -> consulta directa del pedido PV 7374
+    /PG        -> el bot pide el número de pedido y se escribe en el siguiente mensaje
+
+La clave NO va en el código (el repo es público): se lee de la variable de
+entorno NTEX_WS_ID_LLAVE (Render > Environment).
+"""
 import asyncio
 import logging
 import os
