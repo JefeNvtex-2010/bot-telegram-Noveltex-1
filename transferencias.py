@@ -1,8 +1,11 @@
 import asyncio
+import csv
+import io
 import logging
 import os
 import re
 import uuid
+import urllib.request
 
 import requests
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -31,10 +34,17 @@ logger = logging.getLogger(__name__)
     TR_SELECCIONANDO_REF,
     TR_SELECCIONANDO_COLOR,
     TR_ESPERANDO_CANTIDAD,
-) = 60, 61, 62, 63, 64, 65, 66
+    TR_ESPERANDO_ID,  # <--- Nuevo estado para solicitar el ID de operario
+) = 60, 61, 62, 63, 64, 65, 66, 67
 
 URL_TRANSFERENCIAS = os.environ.get("URL_TRANSFERENCIAS", "").strip()
 TOKEN_TRANSFERENCIAS = os.environ.get("TOKEN_TRANSFERENCIAS", "").strip()
+
+# Google Sheet AUDITORIA_BOT, pestaña ETIQUETAS (columnas: OPERARIO | ID)
+SHEET_ID_OPERARIOS = os.environ.get(
+    "SHEET_ID_AUDITORIA", "1Si6SMJ7p4DlDugBCxV6ATGicHWMFQNMZtCNQ409qppk"
+)
+PESTANA_OPERARIOS = "ETIQUETAS"
 
 TIPOS_MOVIMIENTO = ("FALTANTE", "RETAZOS", "IMPERFECTO")
 SEGUNDOS_TOMA = 30
@@ -42,13 +52,38 @@ MAX_REFS = 20
 MAX_COLORES = 60
 
 
+def _cargar_operarios() -> dict:
+    """Lee la pestaña ETIQUETAS y devuelve {id: nombre}. Bloqueante: usar con to_thread."""
+    url = (
+        f"https://docs.google.com/spreadsheets/d/{SHEET_ID_OPERARIOS}"
+        f"/gviz/tq?tqx=out:csv&sheet={PESTANA_OPERARIOS}"
+    )
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        texto = r.read().decode("utf-8-sig")
+
+    if texto.lstrip().lower().startswith("<"):
+        raise RuntimeError("La hoja no es accesible (revisa que esté compartida con el enlace).")
+
+    operarios = {}
+    filas = list(csv.reader(io.StringIO(texto)))
+    for fila in filas[1:]:
+        if len(fila) < 2:
+            continue
+        nombre = fila[0].strip()
+        id_op = re.sub(r"\D", "", fila[1])
+        if nombre and id_op:
+            operarios[id_op] = nombre
+    return operarios
+
+
+def _operario_actual(context: ContextTypes.DEFAULT_TYPE) -> dict:
+    """Conserva los datos del operario ya validado entre pasos."""
+    tr = context.user_data.get("tr", {})
+    return {k: tr[k] for k in ("operario", "id_operario") if k in tr}
+
+
 def _extraer_codigo_y_cantidad(texto: str):
-    """
-    Analiza un código de barras de 12 dígitos.
-    Ejemplo: 001820005230 -> Art: 0018-200, Cant: 52.30
-    Ejemplo: 001804005030 -> Art: 0018-40, Cant: 50.30
-    Ejemplo: 001804010030 -> Art: 0018-40, Cant: 100.30
-    """
     digitos = re.sub(r"\D", "", str(texto))
     if len(digitos) != 12:
         return None, None
@@ -65,7 +100,6 @@ def _extraer_codigo_y_cantidad(texto: str):
 
 
 def _formatear_codigo(cod7: str) -> str:
-    """Formatea 7 dígitos a versión con guion (ej. 0018200 -> 0018-200)."""
     return f"{cod7[:4]}-{cod7[4:]}"
 
 
@@ -208,11 +242,51 @@ async def botones_tr_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if data.startswith("tr_tipo_"):
         tipo = data.replace("tr_tipo_", "")
         tr["tipo"] = tipo
-        texto, teclado = _pantalla_metodo(tipo)
-        await editar(query, texto, teclado)
-        return TR_ELEGIR_METODO
+        
+        # Al seleccionar el tipo de movimiento, solicitamos el ID de operario
+        texto = (
+            f"📌 Tipo seleccionado: <b>{esc(tipo)}</b>\n\n"
+            "🔐 Por favor, escribe tu <b>ID de operario</b> registrado en el sistema:"
+        )
+        await editar(query, texto, InlineKeyboardMarkup([_boton_menu()]))
+        return TR_ESPERANDO_ID
 
     return TR_MENU
+
+
+async def recibir_id_tr(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Valida el ID introducido contra la pestaña ETIQUETAS antes de continuar con los métodos."""
+    programar_borrado(context, update.message)
+    tr = context.user_data.setdefault("tr", {})
+    id_txt = re.sub(r"\D", "", update.message.text or "")
+
+    if not id_txt:
+        await responder(update, context, "⚠️ Por favor, escribe un ID válido:", reply_markup=InlineKeyboardMarkup([_boton_menu()]))
+        return TR_ESPERANDO_ID
+
+    try:
+        operarios = await asyncio.to_thread(_cargar_operarios)
+    except Exception as e:
+        logger.error(f"Transferencias: no se pudo leer la lista de operarios: {e}", exc_info=True)
+        await responder(update, context, "⚠️ No pude consultar la lista de operarios. Intenta de nuevo:", reply_markup=InlineKeyboardMarkup([_boton_menu()]))
+        return TR_ESPERANDO_ID
+
+    nombre = operarios.get(id_txt)
+    if not nombre:
+        await responder(
+            update, context,
+            "❌ <b>ID no autorizado.</b> El ID ingresado no está registrado en la hoja. Intenta de nuevo:",
+            reply_markup=InlineKeyboardMarkup([_boton_menu()])
+        )
+        return TR_ESPERANDO_ID
+
+    # Guardamos los datos del operario verificado
+    tr["operario"] = nombre
+    tr["id_operario"] = id_txt
+
+    texto, teclado = _pantalla_metodo(tr.get("tipo", ""))
+    await responder(update, context, f"✅ ¡Hola, <b>{esc(nombre)}</b>! ID verificado.\n\n{texto}", reply_markup=teclado)
+    return TR_ELEGIR_METODO
 
 
 async def seleccionar_metodo_tr(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -224,7 +298,7 @@ async def seleccionar_metodo_tr(update: Update, context: ContextTypes.DEFAULT_TY
     if data == "tr_metodo_barras":
         tr["metodo"] = "barras"
         texto = (
-            f"📌 Tipo: <b>{esc(tr.get('tipo', ''))}</b>\n\n"
+            f"📌 Tipo: <b>{esc(tr.get('tipo', ''))}</b> | Operario: <b>{esc(tr.get('operario', ''))}</b>\n\n"
             "📷 Escanea el <b>código de barras</b> de 12 dígitos del rollo:"
         )
         await editar(query, texto, InlineKeyboardMarkup([_boton_menu()]))
@@ -233,7 +307,7 @@ async def seleccionar_metodo_tr(update: Update, context: ContextTypes.DEFAULT_TY
     if data == "tr_metodo_nombre":
         tr["metodo"] = "nombre"
         texto = (
-            f"📌 Tipo: <b>{esc(tr.get('tipo', ''))}</b>\n\n"
+            f"📌 Tipo: <b>{esc(tr.get('tipo', ''))}</b> | Operario: <b>{esc(tr.get('operario', ''))}</b>\n\n"
             "🔎 Escribe la <b>referencia</b> a buscar (ej. <code>SATIN</code>):"
         )
         await editar(query, texto, InlineKeyboardMarkup([_boton_menu()]))
@@ -261,7 +335,6 @@ async def recibir_codigo_tr(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         )
         return TR_ESPERANDO_CODIGO
 
-    # Buscar artículo en SAP local
     try:
         from ubicacion import _buscar_articulo, _indice_inventario
         indice = await _indice_inventario()
@@ -276,10 +349,8 @@ async def recibir_codigo_tr(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         codigo_sap = _formatear_codigo(cod7)
         descripcion = f"Artículo {codigo_sap}"
 
-    usuario = update.effective_user
-    nombre_user = usuario.full_name if usuario else str(usuario.id)
+    nombre_user = tr.get("operario") or (update.effective_user.full_name if update.effective_user else "Desconocido")
 
-    # Guardar en Sheet
     try:
         resp = await asyncio.to_thread(
             _llamar_transferencias,
@@ -309,6 +380,7 @@ async def recibir_codigo_tr(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     resumen = (
         f"✅ <b>Registrado con éxito</b>\n\n"
         f"📌 <b>Tipo:</b> {esc(tr.get('tipo', ''))}\n"
+        f"👤 <b>Operario:</b> {esc(nombre_user)}\n"
         f"📦 <b>Artículo:</b> <code>{esc(codigo_sap)}</code>\n"
         f"📝 <b>Descripción:</b> {esc(descripcion)}\n"
         f"📏 <b>Cantidad:</b> <code>{cantidad:,.2f} m</code>"
@@ -442,8 +514,7 @@ async def recibir_cantidad_tr(update: Update, context: ContextTypes.DEFAULT_TYPE
         await responder(update, context, "⚠️ Ingresa un número válido de metros (ej. <code>25.5</code>).")
         return TR_ESPERANDO_CANTIDAD
 
-    usuario = update.effective_user
-    nombre_user = usuario.full_name if usuario else str(usuario.id)
+    nombre_user = tr.get("operario") or (update.effective_user.full_name if update.effective_user else "Desconocido")
 
     try:
         await asyncio.to_thread(
@@ -464,6 +535,7 @@ async def recibir_cantidad_tr(update: Update, context: ContextTypes.DEFAULT_TYPE
     resumen = (
         f"✅ <b>Registrado con éxito</b>\n\n"
         f"📌 <b>Tipo:</b> {esc(tr.get('tipo', ''))}\n"
+        f"👤 <b>Operario:</b> {esc(nombre_user)}\n"
         f"📦 <b>Artículo:</b> <code>{esc(tr.get('codigo_sap', ''))}</code>\n"
         f"📝 <b>Descripción:</b> {esc(tr.get('descripcion', ''))}\n"
         f"📏 <b>Cantidad:</b> <code>{cantidad:,.2f} m</code>"
