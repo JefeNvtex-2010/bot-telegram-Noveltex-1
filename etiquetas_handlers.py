@@ -38,7 +38,7 @@ PESTANA_OPERARIOS = "ETIQUETAS"
 def _cargar_operarios() -> dict:
     """Lee la pestaña ETIQUETAS y devuelve {id: nombre}. Bloqueante: usar con to_thread."""
     url = (
-        f"https://google.com{SHEET_ID_OPERARIOS}"
+        f"https://docs.google.com/spreadsheets/d/{SHEET_ID_OPERARIOS}"
         f"/gviz/tq?tqx=out:csv&sheet={PESTANA_OPERARIOS}"
     )
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
