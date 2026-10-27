@@ -32,8 +32,8 @@ def _limpiar(texto) -> str:
     return str(texto).replace("^", " ").replace("~", " ").strip()
 
 
-def generar_zpl_noveltex(item, ref, color, metros, centimetros, copias=1) -> str:
-    """Etiqueta de rollo de tela: item, referencia, color, cantidad, fecha y lote con diseño maximizado."""
+def generar_zpl_noveltex(item, ref, color, metros, centimetros, copias=1, operario="ORIGINAL") -> str:
+    """Etiqueta de rollo de tela: item, referencia, color, cantidad, fecha, lote y operario dinámico."""
     tz = datetime.timezone(datetime.timedelta(hours=-5))  # Colombia
     ahora = datetime.datetime.now(tz)
     fecha = ahora.strftime("%d/%m/%Y %H:%M")
@@ -41,11 +41,13 @@ def generar_zpl_noveltex(item, ref, color, metros, centimetros, copias=1) -> str
 
     item, color = _limpiar(item), _limpiar(color)
     ref = _limpiar(ref)[:20]
+    nombre_operario = _limpiar(operario).upper()[:25]
+    
     m, cm = int(metros), int(centimetros)
     cant = f"{m:03d}.{cm:02d}"
     codigo = f"{item}{color}{m:03d}{cm:02d}"  # ej. 026869509999
 
-    # Bloque ZPL optimizado para ocupar todo el recuadro azul y alinear horizontalmente la referencia
+    # Bloque ZPL con el bloque lateral corrido a la izquierda y operario asignado dinámicamente
     return f"""^XA
 ^PW799
 ^LL408
@@ -64,9 +66,9 @@ def generar_zpl_noveltex(item, ref, color, metros, centimetros, copias=1) -> str
 ^FO50,305^A0N,52,52^FDCANT.^FS
 ^FO220,305^A0N,52,52^FD{cant}^FS
 ^FO60,370^A0N,24,24^FD{fecha}^FS
-^FO310,370^A0N,24,24^FDOPERARIO: ORIGINAL^FS
-^FO655,35^A0R,74,38^FD{codigo}^FS
-^FO725,35^A0R,68,40^FD{ref}^FS
+^FO310,370^A0N,24,24^FDOPERARIO: {nombre_operario}^FS
+^FO605,35^A0R,74,38^FD{codigo}^FS
+^FO675,35^A0R,68,40^FD{ref}^FS
 ^XZ"""
 
 
@@ -88,7 +90,7 @@ def enviar_a_zebra(zpl: str) -> None:
     )
 
 
-def _encolar(item, referencia, color, metros, centimetros, copias) -> None:
+def _encolar(item, referencia, color, metros, centimetros, copias, operario) -> None:
     import requests
 
     r = requests.post(
@@ -102,6 +104,7 @@ def _encolar(item, referencia, color, metros, centimetros, copias) -> None:
             "metros": int(metros),
             "centimetros": int(centimetros),
             "copias": int(copias),
+            "operario": operario,
         },
         timeout=20,
     )
@@ -111,11 +114,11 @@ def _encolar(item, referencia, color, metros, centimetros, copias) -> None:
         raise RuntimeError(f"La cola rechazó el trabajo: {datos.get('error')}")
 
 
-def imprimir_etiqueta(item, referencia, color, metros, centimetros, copias=1) -> None:
-    """Imprime (o encola) la etiqueta. Bloqueante: llamar con asyncio.to_thread."""
+def imprimir_etiqueta(item, referencia, color, metros, centimetros, copias=1, operario="ORIGINAL") -> None:
+    """Imprime (o encola) la etiqueta agregando soporte para operario dinámico."""
     if URL_COLA:
-        _encolar(item, referencia, color, metros, centimetros, copias)
+        _encolar(item, referencia, color, metros, centimetros, copias, operario)
     else:
         enviar_a_zebra(
-            generar_zpl_noveltex(item, referencia, color, metros, centimetros, copias)
+            generar_zpl_noveltex(item, referencia, color, metros, centimetros, copias, operario)
         )
