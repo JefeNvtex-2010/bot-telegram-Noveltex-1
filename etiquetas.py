@@ -45,7 +45,7 @@ def generar_zpl_noveltex(item, ref, color, metros, centimetros, copias=1) -> str
     cant = f"{m:03d}.{cm:02d}"
     codigo = f"{item}{color}{m:03d}{cm:02d}"  # ej. 026850205500
 
-    # Retorno del bloque ZPL estructurado bajo la nueva plantilla
+    # Retorno del bloque ZPL estructurado y corregido para centrar el bloque lateral arriba
     return f"""^XA
 ^PW799
 ^LL408
@@ -68,8 +68,8 @@ def generar_zpl_noveltex(item, ref, color, metros, centimetros, copias=1) -> str
 ^FO240,305^A0N,52,52^FD{cant}^FS
 ^FO60,370^A0N,24,24^FD{fecha}^FS
 ^FO310,370^A0N,24,24^FDOPERARIO: ORIGINAL^FS
-^FO690,370^A0B,46,26^FD{codigo}^FS
-^FO750,370^A0B,44,28^FD{ref}^FS
+^FO690,45^A0R,46,26^FD{codigo}^FS
+^FO750,45^A0R,44,28^FD{ref}^FS
 ^XZ"""
 
 
