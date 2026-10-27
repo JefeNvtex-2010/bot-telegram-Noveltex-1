@@ -40,11 +40,11 @@ logger = logging.getLogger(__name__)
 URL_TRANSFERENCIAS = os.environ.get("URL_TRANSFERENCIAS", "").strip()
 TOKEN_TRANSFERENCIAS = os.environ.get("TOKEN_TRANSFERENCIAS", "").strip()
 
-# Google Sheet AUDITORIA_BOT, pestaña ETIQUETAS (columnas: OPERARIO | ID)
+# Google Sheet AUDITORIA_BOT, pestaña TRANSFERENCIAS (columnas: OPERARIO | ID)
 SHEET_ID_OPERARIOS = os.environ.get(
     "SHEET_ID_AUDITORIA", "1Si6SMJ7p4DlDugBCxV6ATGicHWMFQNMZtCNQ409qppk"
 )
-PESTANA_OPERARIOS = "ETIQUETAS"
+PESTANA_OPERARIOS = "TRANSFERENCIAS"
 
 TIPOS_MOVIMIENTO = ("FALTANTE", "RETAZOS", "IMPERFECTO")
 SEGUNDOS_TOMA = 30
@@ -53,7 +53,7 @@ MAX_COLORES = 60
 
 
 def _cargar_operarios() -> dict:
-    """Lee la pestaña TRASLADOS y devuelve {id: nombre}. Bloqueante: usar con to_thread."""
+    """Lee la pestaña TRANSFERENCIAS y devuelve {id: nombre}. Bloqueante: usar con to_thread."""
     url = (
         f"https://docs.google.com/spreadsheets/d/{SHEET_ID_OPERARIOS}"
         f"/gviz/tq?tqx=out:csv&sheet={PESTANA_OPERARIOS}"
@@ -226,7 +226,7 @@ async def iniciar_transferencias(update: Update, context: ContextTypes.DEFAULT_T
 
 
 async def recibir_id_tr(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Valida el ID contra la pestaña TRASLADOS al ingresar al módulo."""
+    """Valida el ID contra la pestaña TRANSFERENCIAS al ingresar al módulo."""
     programar_borrado(context, update.message)
     tr = context.user_data.setdefault("tr", {})
     id_txt = re.sub(r"\D", "", update.message.text or "")
