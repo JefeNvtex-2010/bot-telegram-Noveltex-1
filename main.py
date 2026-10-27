@@ -105,7 +105,7 @@ from etiquetas_handlers import (  # impresión de etiquetas Zebra
 from ubicacion import (  # ubicaciones: consultar por nombre, consultar por cajón, modificar por código
     UB_ESPERANDO_CAJON,
     UB_ESPERANDO_CODIGO,
-    UB_ESPERANDO_ID,      # <--- NUEVO IMPORTADO
+    UB_ESPERANDO_ID,
     UB_ESPERANDO_REF,
     UB_ESPERANDO_UBICACION,
     UB_MENU,
@@ -115,7 +115,7 @@ from ubicacion import (  # ubicaciones: consultar por nombre, consultar por caj�
     iniciar_ubicaciones,
     recibir_cajon_ub,
     recibir_codigo_ub,
-    recibir_id_ub,        # <--- NUEVO IMPORTADO
+    recibir_id_ub,
     recibir_ref_ub,
     recibir_ubicacion_ub,
     recordar_botones_ub,
@@ -128,6 +128,7 @@ from transferencias import (  # transferencias (Faltante, Retazos, Imperfecto)
     TR_ELEGIR_METODO,
     TR_ESPERANDO_CANTIDAD,
     TR_ESPERANDO_CODIGO,
+    TR_ESPERANDO_ID,
     TR_ESPERANDO_REF,
     TR_MENU,
     TR_SELECCIONANDO_COLOR,
@@ -136,6 +137,7 @@ from transferencias import (  # transferencias (Faltante, Retazos, Imperfecto)
     iniciar_transferencias,
     recibir_cantidad_tr,
     recibir_codigo_tr,
+    recibir_id_tr,
     recibir_ref_tr,
     seleccionar_color_tr,
     seleccionar_metodo_tr,
@@ -167,7 +169,7 @@ def consultar_inventario_sap(termino_busqueda: str) -> str:
     refs = datos.buscar_referencias(df, termino)
     if not refs:
       return (
-          f"No se encontraron referencias que coincidan con '{termino_busqueda}'."
+          f"No se encontraron referencias que coincidan com '{termino_busqueda}'."
       )
 
     ref_encontrada = refs[0]
@@ -238,7 +240,7 @@ def consultar_inventario_sap(termino_busqueda: str) -> str:
 SYSTEM_INSTRUCTION = """
 Eres el Agente Inteligente y Asistente Virtual oficial de Noveltex en Telegram.
 Tu objetivo principal es ayudar a los usuarios a consultar el inventario de telas y productos usando la herramienta 'consultar_inventario_sap' siempre que pidan ver el stock, disponibilidad o metros de una referencia (por ejemplo, 'Fit', 'Satin', etc.).
-Cuando el usuario pregunte por un inventario, DEBES invocar la herramienta de inventario para darle el reporte exacto con el formato estruturado de almacenes y totales.
+Cuando el usuario pregunte por un inventario, DEBES invocar la herramienta de inventario para darle el reporte exacto con el formato estructurado de almacenes y totales.
 Mantén un trato profesional, cercano y servicial. Recuerda el contexto de la charla anterior.
 """
 
@@ -457,6 +459,11 @@ def main() -> None:
       filters.TEXT & ~filters.COMMAND, recibir_ubicacion_ub
   )
 
+  # Transferencias
+  texto_tr_id = MessageHandler(
+      filters.TEXT & ~filters.COMMAND, recibir_id_tr
+  )
+
   estados = {
       ESPERANDO_DOCUMENTO_PV: [texto_pv],
       SELECCIONANDO_REFERENCIA: [
@@ -556,6 +563,10 @@ def main() -> None:
       UB_ESPERANDO_UBICACION: [botones_ub_cb, texto_ub_ubicacion],
       # Transferencias
       TR_MENU: [CallbackQueryHandler(botones_tr_menu, pattern=r"^tr_(menu|tipo_.+)$")],
+      TR_ESPERANDO_ID: [
+          CallbackQueryHandler(botones_tr_menu, pattern=r"^tr_menu$"),
+          texto_tr_id,
+      ],
       TR_ELEGIR_METODO: [
           CallbackQueryHandler(seleccionar_metodo_tr, pattern=r"^tr_metodo_.+$"),
           CallbackQueryHandler(botones_tr_menu, pattern=r"^tr_menu$"),
