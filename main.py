@@ -64,7 +64,7 @@ from inventario_vendedor_handlers import (
     seleccionar_referencia_vendedor,
 )
 
-from pedidos_cliente_handlers import (
+from pedidos_vendedor_handlers import (
     ESPERANDO_DOCUMENTO_PC,
     SELECCIONANDO_COLOR_PC,
     SELECCIONANDO_REF_PC,
