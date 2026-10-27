@@ -67,7 +67,7 @@ _PATRON_UBICACION = re.compile(r"^[A-Z0-9Ñ][A-Z0-9Ñ \-./#]{0,29}$")
 # Utilidades y Carga de Operarios (Pestaña ETIQUETAS)
 # --------------------------------------------------------------------------- #
 def _cargar_operarios() -> dict:
-    """Lee la pestaña ETIQUETAS y devuelve {id: nombre}. Bloqueante: usar con to_thread."""
+    """Lee la pestaña UBICACIONES y devuelve {id: nombre}. Bloqueante: usar con to_thread."""
     url = (
         f"https://docs.google.com/spreadsheets/d/{SHEET_ID_OPERARIOS}"
         f"/gviz/tq?tqx=out:csv&sheet={PESTANA_OPERARIOS}"
