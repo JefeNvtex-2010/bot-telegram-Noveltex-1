@@ -40,6 +40,7 @@ OPCIONES_MENU = [
     ("🛒 Inventario Vendedor", "start_vend", "inventario_vendedor"),
     ("🧮 Inventario SAP", "start_sap", "inventario"),
     ("📝 Pedidos..", "start_pg", "PG"),
+    ("📦 Pedidos Vendedor", "start_pc", "PC"),
     ("🚚 Guías", "start_gu", "guias"),
     ("🏷️ Etiquetas", "start_et", "etiquetas"),
     ("📍 Ubicaciones", "start_ub", "ubicaciones"),
