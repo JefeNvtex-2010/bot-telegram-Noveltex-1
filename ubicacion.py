@@ -41,11 +41,11 @@ logger = logging.getLogger(__name__)
 URL_UBICACIONES = os.environ.get("URL_UBICACIONES", "").strip()
 TOKEN_UBICACIONES = os.environ.get("TOKEN_UBICACIONES", "").strip()
 
-# Google Sheet AUDITORIA_BOT, pestaña ETIQUETAS (columnas: OPERARIO | ID)
+# Google Sheet AUDITORIA_BOT, pestaña UBICACIONES (columnas: OPERARIO | ID)
 SHEET_ID_OPERARIOS = os.environ.get(
     "SHEET_ID_AUDITORIA", "1Si6SMJ7p4DlDugBCxV6ATGicHWMFQNMZtCNQ409qppk"
 )
-PESTANA_OPERARIOS = "ETIQUETAS"
+PESTANA_OPERARIOS = "UBICACIONES"
 
 MODOS = ("consultar", "reemplazar", "agregar", "cajon")
 MODOS_MODIFICAR = ("reemplazar", "agregar")
@@ -64,7 +64,7 @@ _PATRON_UBICACION = re.compile(r"^[A-Z0-9Ñ][A-Z0-9Ñ \-./#]{0,29}$")
 
 
 # --------------------------------------------------------------------------- #
-# Utilidades y Carga de Operarios (Pestaña ETIQUETAS)
+# Utilidades y Carga de Operarios (Pestaña UBICACIONES)
 # --------------------------------------------------------------------------- #
 def _cargar_operarios() -> dict:
     """Lee la pestaña UBICACIONES y devuelve {id: nombre}. Bloqueante: usar con to_thread."""
@@ -481,7 +481,7 @@ async def _expirada_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
 
 # --------------------------------------------------------------------------- #
-# Handlers: Menú e Identificación por ID en pestaña ETIQUETAS
+# Handlers: Menú e Identificación por ID en pestaña UBICACIONES
 # --------------------------------------------------------------------------- #
 @requiere_acceso("ubicaciones")
 async def iniciar_ubicaciones(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -512,7 +512,7 @@ async def botones_ub(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     _cancelar_temporizador(ub)
     ub.clear()
 
-    # Al presionar modificar, solicitamos el ID de operario de la pestaña ETIQUETAS
+    # Al presionar modificar, solicitamos el ID de operario de la pestaña UBICACIONES
     if accion == "modificar":
         ub["modo_pendiente"] = "modificar"
         await editar(
@@ -543,7 +543,7 @@ async def botones_ub(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 async def recibir_id_ub(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Valida el ID contra la pestaña ETIQUETAS usando la misma lógica de etiquetas.py."""
+    """Valida el ID contra la pestaña UBICACIONES de la hoja AUDITORIA_BOT."""
     programar_borrado(context, update.message)
     ub = context.user_data.setdefault("ub", {})
     id_txt = re.sub(r"\D", "", update.message.text or "")
@@ -571,7 +571,7 @@ async def recibir_id_ub(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     if not nombre:
         await responder(
             update, context,
-            "❌ <b>ID no autorizado.</b> El ID ingresado no está registrado en la pestaña ETIQUETAS. Intenta de nuevo:",
+            "❌ <b>ID no autorizado.</b> El ID ingresado no está registrado en la pestaña UBICACIONES. Intenta de nuevo:",
             reply_markup=_teclado_volver()
         )
         return UB_ESPERANDO_ID
@@ -913,7 +913,7 @@ async def recibir_ubicacion_ub(update: Update, context: ContextTypes.DEFAULT_TYP
         return UB_ESPERANDO_UBICACION
 
     codigo, descripcion = articulo
-    # Usamos el nombre validado previamente desde la pestaña ETIQUETAS
+    # Usamos el nombre validado previamente desde la pestaña UBICACIONES
     nombre = ub.get("operario_validado", "")
     if not nombre:
         usuario = update.effective_user
