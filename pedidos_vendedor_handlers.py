@@ -23,17 +23,20 @@ from handlers import (
 
 logger = logging.getLogger(__name__)
 
-# Nuevos estados para /PC
+# Estados 0-8 los usan /PV, /IN y /I; 9-11 los usa /PG. /PC usa 12-14.
 ESPERANDO_DOCUMENTO_PC, SELECCIONANDO_REF_PC, SELECCIONANDO_COLOR_PC = 12, 13, 14
 
 BASE_URL = (
     "https://g6344c28e083a44-dbproyectos.adb.us-ashburn-1.oraclecloudapps.com/"
     "ords/multiplantas/noveltex/ntex_ws_trazabilidad"
 )
-PAGE_SIZE = 500
-TIMEOUT = 60
+PAGE_SIZE = 500   # registros por bloque (la guía propone máximo 500)
+TIMEOUT = 60      # segundos
 
 
+# --------------------------------------------------------------------------- #
+# Servicio (Oracle ORDS)
+# --------------------------------------------------------------------------- #
 def _id_llave() -> str:
     llave = os.environ.get("NTEX_WS_ID_LLAVE", "").strip()
     if not llave:
@@ -42,12 +45,15 @@ def _id_llave() -> str:
 
 
 def _normalizar(item: dict) -> dict:
+    """Llaves en minúscula y con espacios (acepta 'nombre_tercero' o 'nombre tercero')."""
     return {k.replace("_", " ").lower(): v for k, v in item.items() if k != "links"}
 
 
 def consultar_pedido_pc(documento: str, tipo: str = "PC") -> list:
+    """Devuelve todas las líneas del pedido, pidiendo por bloques hasta que no haya más."""
     documento = str(documento).strip()
     llave = quote(_id_llave(), safe="!")
+    # Con tipo_orden y documento_pd informados el servicio ignora las fechas.
     fecha_ini = "20200101"
     fecha_fin = date.today().strftime("%Y%m%d")
 
@@ -70,6 +76,9 @@ def consultar_pedido_pc(documento: str, tipo: str = "PC") -> list:
     return [_normalizar(i) for i in items]
 
 
+# --------------------------------------------------------------------------- #
+# Formato (igual que /PV)
+# --------------------------------------------------------------------------- #
 def _num(v) -> str:
     if v is None:
         return ""
@@ -101,6 +110,7 @@ def _texto_detalle(it: dict) -> str:
         if num_proforma:
             campos_contado += f"• <b>Número Proforma:</b> {num_proforma}\n"
 
+    # Datos que solo trae el web service: se muestran únicamente si tienen valor
     extra = ""
     for etiqueta, clave in (("Número Factura", "numero factura"), ("Número Guía", "numero guia")):
         valor = esc(it.get(clave))
@@ -161,12 +171,16 @@ def _pantalla_colores(d: dict):
     return texto, InlineKeyboardMarkup(filas)
 
 
+# --------------------------------------------------------------------------- #
+# Handlers de Telegram
+# --------------------------------------------------------------------------- #
 async def iniciar_pc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """/PC [número] o botón del menú: punto de entrada de la conversación."""
     query = update.callback_query
-    if query:
+    if query:  # botón "Pedidos (PC)" del menú /inicio
         await query.answer()
         registrar_uso_bot(update, "BOTÓN_PC")
-        await editar(query, "🚚 <b>Trazabilidad de Pedidos (PC)</b>\n\nEscribe el <b>número de pedido</b> que deseas buscar:")
+        await editar(query, "🚚 <b>Trazabilidad de pedidos</b>\n\nEscribe el <b>número de pedido</b> que deseas buscar:")
         return ESPERANDO_DOCUMENTO_PC
 
     registrar_uso_bot(update, "/PC")
@@ -175,7 +189,7 @@ async def iniciar_pc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not context.args:
         await responder(
             update, context,
-            "🚚 <b>Trazabilidad de Pedidos (PC)</b>\n\nEscribe el <b>número de pedido</b> que deseas buscar "
+            "🚚 <b>Trazabilidad de pedidos</b>\n\nEscribe el <b>número de pedido</b> que deseas buscar "
             "(o usa <code>/PC 7374</code>):",
         )
         return ESPERANDO_DOCUMENTO_PC
@@ -184,6 +198,7 @@ async def iniciar_pc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 async def recibir_texto_pc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Número de pedido escrito en el mensaje siguiente a /PC (o para cambiar de pedido)."""
     programar_borrado(context, update.message)
     return await ejecutar_pc(update, context, update.message.text)
 
@@ -199,13 +214,14 @@ async def ejecutar_pc(update: Update, context: ContextTypes.DEFAULT_TYPE, texto:
 
     espera = await responder(update, context, f"⏳ Consultando el pedido <b>{esc(doc)}</b>…")
     try:
+        # requests es bloqueante: se corre en otro hilo para no frenar el bot
         items = await asyncio.to_thread(consultar_pedido_pc, doc)
-    except RuntimeError as e:
-        logger.error("Configuración de trazabilidad PC: %s", e)
+    except RuntimeError as e:  # falta la clave en el entorno
+        logger.error("Configuración de trazabilidad: %s", e)
         await espera.edit_text(f"⚠️ {esc(e)}", parse_mode=ParseMode.HTML)
         return ConversationHandler.END
     except Exception:
-        logger.exception("Error consultando trazabilidad del pedido PC %s", doc)
+        logger.exception("Error consultando trazabilidad del pedido %s", doc)
         await espera.edit_text("⚠️ No pude consultar la trazabilidad ahora. Intenta de nuevo en un momento.")
         return ConversationHandler.END
 
@@ -223,7 +239,7 @@ async def ejecutar_pc(update: Update, context: ContextTypes.DEFAULT_TYPE, texto:
     }
     context.user_data["pc"] = d
 
-    if len(d["refs"]) == 1:
+    if len(d["refs"]) == 1:  # una sola referencia: salta directo a los colores
         d["ref"] = d["refs"][0]
         d["colores"] = _colores(items, d["ref"])
         texto_msg, teclado = _pantalla_colores(d)
@@ -295,7 +311,7 @@ async def seleccionar_color_pc(update: Update, context: ContextTypes.DEFAULT_TYP
     teclado = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver a colores", callback_data="pc_back_cols")]])
     if len(partes) == 1:
         await editar(query, partes[0], teclado)
-    else:
+    else:  # detalle largo: se envía en varios mensajes y el original queda con el botón de volver
         for parte in partes:
             msg = await query.message.reply_text(parte, parse_mode=ParseMode.HTML)
             programar_borrado(context, msg)
