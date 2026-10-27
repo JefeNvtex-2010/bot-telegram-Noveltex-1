@@ -1,303 +1,637 @@
 import asyncio
 import logging
 import os
-from datetime import date
-from urllib.parse import quote
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-import requests
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.constants import ParseMode
-from telegram.ext import ContextTypes, ConversationHandler
+from google import genai
+from google.genai import types
+
+from telegram.ext import (
+    ApplicationBuilder,
+    CallbackQueryHandler,
+    CommandHandler,
+    ConversationHandler,
+    MessageHandler,
+    filters,
+)
+
+import datos
+from acceso import configurar_comandos, miid, recargar_accesos_cmd, requiere_acceso
+from config import load_settings
+from logging_config import configure_logging
 
 from handlers import (
-    MAX_BOTONES,
-    _agrupar,
-    _sesion_expirada,
-    _traducir_estado,
-    editar,
+    SELECCIONANDO_COLOR,
+    SELECCIONANDO_REFERENCIA,
+    ESPERANDO_DOCUMENTO_PV,
+    callback_expirado,
+    cancelar,
     esc,
-    programar_borrado,
-    registrar_uso_bot,
-    responder,
+    help_command,
+    iniciar_busqueda,
+    limpiar_cache_y_deploy,
+    manejar_error,
+    menu_inicio,
+    order_command,
+    recibir_texto_documento_pv,
+    refrescar_datos,
+    reiniciar_render,
+    seleccionar_color,
+    seleccionar_referencia,
+    start,
+)
+
+from inventario_handlers import (
+    ESPERANDO_REF_SAP,
+    SELECCIONANDO_COLOR_SAP,
+    SELECCIONANDO_REF_SAP,
+    _num,
+    _primer_valor,
+    iniciar_busqueda_sap,
+    recibir_texto_ref_sap,
+    seleccionar_color_sap,
+    seleccionar_referencia_sap,
+)
+
+from inventario_vendedor_handlers import (
+    ESPERANDO_REF_VEND,
+    SELECCIONANDO_COLOR_VEND,
+    SELECCIONANDO_REF_VEND,
+    iniciar_busqueda_vendedor,
+    recibir_texto_ref_vendedor,
+    seleccionar_color_vendedor,
+    seleccionar_referencia_vendedor,
+)
+
+# Nota: Asegúrate de que el nombre del archivo coincida (aquí apunta a pedidos_vendedor_handlers)
+from pedidos_vendedor_handlers import (
+    ESPERANDO_DOCUMENTO_PC,
+    SELECCIONANDO_COLOR_PC,
+    SELECCIONANDO_REF_PC,
+    iniciar_pc,
+    recibir_texto_pc,
+    seleccionar_color_pc,
+    seleccionar_referencia_pc,
+)
+
+from guias_handlers import (
+    ACCIONES_GU,
+    ELIGIENDO_TIPO_GU,
+    ESPERANDO_DOCUMENTO_GU,
+    SELECCIONANDO_GUIA_GU,
+    acciones_gu,
+    elegir_tipo_gu,
+    iniciar_gu,
+    recibir_texto_gu,
+    seleccionar_guia_gu,
+)
+
+from etiquetas_handlers import (
+    ESPERANDO_COPIAS_ET,
+    ESPERANDO_METROS_ET,
+    ESPERANDO_REF_ET,
+    SELECCIONANDO_COLOR_ET,
+    SELECCIONANDO_REF_ET,
+    PREGUNTANDO_OTRA_ET,
+    iniciar_etiqueta,
+    recibir_copias_et,
+    recibir_metros_et,
+    recibir_texto_ref_et,
+    seleccionar_color_et,
+    seleccionar_referencia_et,
+    manejar_otra_etiqueta,
+)
+
+from ubicacion import (
+    UB_ESPERANDO_CAJON,
+    UB_ESPERANDO_CODIGO,
+    UB_ESPERANDO_ID,
+    UB_ESPERANDO_REF,
+    UB_ESPERANDO_UBICACION,
+    UB_MENU,
+    UB_SELECCIONANDO_COLOR,
+    UB_SELECCIONANDO_REF,
+    botones_ub,
+    iniciar_ubicaciones,
+    recibir_cajon_ub,
+    recibir_codigo_ub,
+    recibir_id_ub,
+    recibir_ref_ub,
+    recibir_ubicacion_ub,
+    recordar_botones_ub,
+    seguir_ub,
+    seleccionar_color_ub,
+    seleccionar_ref_ub,
+)
+
+from transferencias import (
+    TR_ELEGIR_METODO,
+    TR_ESPERANDO_CANTIDAD,
+    TR_ESPERANDO_CODIGO,
+    TR_ESPERANDO_ID,
+    TR_ESPERANDO_REF,
+    TR_MENU,
+    TR_SELECCIONANDO_COLOR,
+    TR_SELECCIONANDO_REF,
+    botones_tr_menu,
+    iniciar_transferencias,
+    recibir_cantidad_tr,
+    recibir_codigo_tr,
+    recibir_id_tr,
+    recibir_ref_tr,
+    seleccionar_color_tr,
+    seleccionar_metodo_tr,
+    seleccionar_ref_tr,
+    seguir_tr,
 )
 
 logger = logging.getLogger(__name__)
 
-# Nuevos estados para /PC
-ESPERANDO_DOCUMENTO_PC, SELECCIONANDO_REF_PC, SELECCIONANDO_COLOR_PC = 12, 13, 14
+# --- CONTROL DE ACCESO POR MÓDULO ---
+iniciar_busqueda_sap = requiere_acceso("inventario")(iniciar_busqueda_sap)
+iniciar_pc = requiere_acceso("PC")(iniciar_pc)
+iniciar_gu = requiere_acceso("guias")(iniciar_gu)
+iniciar_etiqueta = requiere_acceso("etiquetas")(iniciar_etiqueta)
+iniciar_transferencias = requiere_acceso("transferencias")(iniciar_transferencias)
 
-BASE_URL = (
-    "https://g6344c28e083a44-dbproyectos.adb.us-ashburn-1.oraclecloudapps.com/"
-    "ords/multiplantas/noveltex/ntex_ws_trazabilidad"
-)
-PAGE_SIZE = 500
-TIMEOUT = 60
-
-
-def _id_llave() -> str:
-    llave = os.environ.get("NTEX_WS_ID_LLAVE", "").strip()
-    if not llave:
-        raise RuntimeError("Falta la variable de entorno NTEX_WS_ID_LLAVE en Render.")
-    return llave
+# --- CONFIGURACIÓN DE GEMINI AGENTE Y HERRAMIENTAS ---
+ai_client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
 
-def _normalizar(item: dict) -> dict:
-    return {k.replace("_", " ").lower(): v for k, v in item.items() if k != "links"}
+def consultar_inventario_sap(termino_busqueda: str) -> str:
+    """Busca el stock e inventario SAP general de una referencia o tela y devuelve el desglose por almacén con sus totales."""
+    try:
+        df = datos.inventario.df
+        if df is None or df.empty:
+            return "El inventario aún no se ha cargado o no está disponible."
 
+        termino = termino_busqueda.strip().upper()
+        refs = datos.buscar_referencias(df, termino)
+        if not refs:
+            return f"No se encontraron referencias que coincidan con '{termino_busqueda}'."
 
-def consultar_pedido_pc(documento: str, tipo: str = "PC") -> list:
-    documento = str(documento).strip()
-    llave = quote(_id_llave(), safe="!")
-    fecha_ini = "20200101"
-    fecha_fin = date.today().strftime("%Y%m%d")
+        ref_encontrada = refs[0]
+        filas_ref = df[df["_ref"] == ref_encontrada]
 
-    items = []
-    offset = 0
-    with requests.Session() as s:
-        while True:
-            url = (
-                f"{BASE_URL}/{llave}/{fecha_ini}/{fecha_fin}/"
-                f"{quote(tipo)}/{quote(documento)}/{offset}/{PAGE_SIZE}"
+        if filas_ref.empty:
+            return f"No hay existencias para la referencia {ref_encontrada}."
+
+        codigo_articulo = str(filas_ref.iloc[0].get("Artículo", "N/A"))
+        descripcion = str(
+            filas_ref.iloc[0].get("Descripción", f"{ref_encontrada}")
+        )
+
+        resultado_texto = (
+            f"🟢 Inventario SAP\n\n"
+            f"• Artículo: {codigo_articulo}\n"
+            f"• Descripción: {descripcion}\n\n"
+            f"Desglose por Almacén:\n"
+        )
+
+        total_stock = total_comp = total_disp = 0.0
+        cols_cod = [
+            c
+            for c in df.columns
+            if any(k in c.upper() for k in ("CÓDIGO", "ALMACÉN", "ALMACEN"))
+        ]
+        cols_nom = [
+            c for c in df.columns if "NOMBRE" in c.upper() and "ALM" in c.upper()
+        ]
+
+        for _, fila in filas_ref.iterrows():
+            cod_almacen = _primer_valor(fila, cols_cod, "1")
+            nom_almacen = _primer_valor(fila, cols_nom, "")
+            almacen_txt = (
+                f"{cod_almacen} - {nom_almacen}" if nom_almacen else cod_almacen
             )
-            resp = s.get(url, timeout=TIMEOUT, headers={"Accept": "application/json"})
-            resp.raise_for_status()
-            data = resp.json()
-            pagina = data.get("items", [])
-            items.extend(pagina)
-            if not pagina or not data.get("hasMore"):
-                break
-            offset += PAGE_SIZE
-    return [_normalizar(i) for i in items]
+
+            stock = _num(fila.get("Stock", "0"), 0.0)
+            comprometido = _num(fila.get("Comprometido", "0"), 0.0)
+            disponible = _num(fila.get("Disponible", ""), None)
+            if disponible is None:
+                disponible = stock - comprometido
+
+            total_stock += stock
+            total_comp += comprometido
+            total_disp += disponible
+
+            resultado_texto += (
+                f"• Almacén {esc(almacen_txt)}:\n"
+                f"  - En stock: {stock:,.2f}\n"
+                f"  - Comprometido: {comprometido:,.2f}\n"
+                f"  - Disponible: {disponible:,.2f}\n\n"
+            )
+
+        resultado_texto += (
+            "-----------------------------------\n"
+            "📊 Totales Generales:\n"
+            f"• Stock Total: {total_stock:,.2f}\n"
+            f"• Total Comprometido: {total_comp:,.2f}\n"
+            f"• Total Disponible: {total_disp:,.2f}"
+        )
+        return resultado_texto
+
+    except Exception as e:
+        return f"Ocurrió un error consultando el inventario: {str(e)}"
 
 
-def _num(v) -> str:
-    if v is None:
-        return ""
-    if isinstance(v, (int, float)):
-        return f"{v:,.0f}" if float(v).is_integer() else f"{v:,.2f}"
-    return str(v)
+SYSTEM_INSTRUCTION = """
+Eres el Agente Inteligente y Asistente Virtual oficial de Noveltex en Telegram.
+Tu objetivo principal es ayudar a los usuarios a consultar el inventario de telas y productos usando la herramienta 'consultar_inventario_sap' siempre que pidan ver el stock, disponibilidad o metros de una referencia (por ejemplo, 'Fit', 'Satin', etc.).
+Cuando el usuario pregunte por un inventario, DEBES invocar la herramienta de inventario para darle el reporte exacto con el formato estructurado de almacenes y totales.
+Mantén un trato profesional, cercano y servicial. Recuerda el contexto de la charla anterior.
+"""
+
+user_chats = {}
 
 
-def _fecha(v) -> str:
-    return str(v)[:10] if v else ""
+def get_or_create_chat(user_id):
+    """Crea o recupera la sesión de chat conversacional con la herramienta de inventario habilitada."""
+    if user_id not in user_chats:
+        config = types.GenerateContentConfig(
+            system_instruction=SYSTEM_INSTRUCTION,
+            temperature=0.3,
+            tools=[consultar_inventario_sap],
+        )
+        user_chats[user_id] = ai_client.chats.create(
+            model="gemini-2.5-flash", config=config
+        )
+    return user_chats[user_id]
 
 
-def _v(it: dict, clave: str) -> str:
-    return esc(it.get(clave)) or "N/A"
+@requiere_acceso("inventario")
+async def handle_gemini_agent(update, context):
+    """Maneja las conversaciones y ejecución automática de herramientas (Function Calling)."""
+    user_id = update.effective_user.id
+    user_text = update.message.text
 
-
-def _raw(it: dict, clave: str) -> str:
-    return esc(it.get(clave))
-
-
-def _texto_detalle(it: dict) -> str:
-    contado = str(it.get("clasificacion pedido") or "").strip().lower() == "contado"
-
-    campos_contado = ""
-    if contado:
-        campos_contado = "-----------------------------------\n"
-        campos_contado += f"• <b>Fecha Vencimiento:</b> {esc(_fecha(it.get('fecha vencimiento'))) or 'N/A'}\n"
-        num_proforma = esc(it.get("numero proforma"))
-        if num_proforma:
-            campos_contado += f"• <b>Número Proforma:</b> {num_proforma}\n"
-
-    extra = ""
-    for etiqueta, clave in (("Número Factura", "numero factura"), ("Número Guía", "numero guia")):
-        valor = esc(it.get(clave))
-        if valor:
-            extra += f"• <b>{etiqueta}:</b> {valor}\n"
-
-    fecha_despacho = _fecha(it.get("fecha despacho") or it.get("fecha factura"))
-    return (
-        f"• <b>Estado del Pedido:</b> {_raw(it, 'estado factura')}\n"
-        f"• <b>Ubicación:</b> {_raw(it, 'ubicación del pedido')}\n"
-        f"• <b>Referencia:</b> {_raw(it, 'id refer')}\n"
-        f"• <b>Color:</b> {_raw(it, 'color')}\n"
-        f"• <b>Estado Pedido:</b> {esc(_traducir_estado(it.get('document status sap', '')))}\n"
-        f"• <b>Estado Item:</b> {esc(_traducir_estado(it.get('line status sap', '')))}\n"
-        f"• <b>Cantidad pedida:</b> {esc(_num(it.get('cantidad ped')))}\n"
-        f"• <b>Cantidad alistada:</b> {esc(_num(it.get('cantidad alistada')))}\n"
-        f"• <b>Fecha Despacho:</b> {esc(fecha_despacho)}\n"
-        f"{extra}"
-        f"• <b>Operario:</b> {_raw(it, 'nombre operario asignado')}\n"
-        f"• <b>Tipo Pedido:</b> {_raw(it, 'clasificacion pedido')}\n"
-        f"• <b>Observacion:</b> {_raw(it, 'observacion adicional')}\n"
-        f"{campos_contado}"
+    await context.bot.send_chat_action(
+        chat_id=update.effective_chat.id, action="typing"
     )
 
-
-def _colores(items: list, ref) -> list:
-    return list(dict.fromkeys(i.get("color") for i in items if i.get("id refer") == ref))
-
-
-def _pantalla_refs(d: dict):
-    primera = d["items"][0]
-    texto = (
-        f"🔍 Documento <b>{esc(d['doc'])}</b>\n"
-        f"• <b>Vendedor:</b> {_v(primera, 'nombre vendedor')}\n"
-        f"• <b>Cliente:</b> {_v(primera, 'nombre tercero')}\n\n"
-        f"Selecciona una referencia:"
-    )
-    teclado = InlineKeyboardMarkup([
-        [InlineKeyboardButton(str(ref) if ref else "(sin referencia)", callback_data=f"pc_ref_{i}")]
-        for i, ref in enumerate(d["refs"][:MAX_BOTONES])
-    ])
-    return texto, teclado
-
-
-def _pantalla_colores(d: dict):
-    items_ref = [i for i in d["items"] if i.get("id refer") == d["ref"]]
-    filas = [[InlineKeyboardButton("📄 Ver todo", callback_data="pc_all")]]
-    for i, color in enumerate(d["colores"][:MAX_BOTONES]):
-        etiqueta = str(color) if color not in (None, "") else "(sin color)"
-        estados = list(dict.fromkeys(
-            _traducir_estado(x.get("line status sap", "")) for x in items_ref if x.get("color") == color
-        ))
-        if estados:
-            etiqueta += f" - {' / '.join(estados)}"
-        filas.append([InlineKeyboardButton(etiqueta, callback_data=f"pc_col_{i}")])
-    filas.append([InlineKeyboardButton("🔙 Volver", callback_data="pc_back_refs")])
-    texto = f"Referencia seleccionada: <b>{esc(d['ref'])}</b>.\nSelecciona el color:"
-    return texto, InlineKeyboardMarkup(filas)
-
-
-async def iniciar_pc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    if query:
-        await query.answer()
-        registrar_uso_bot(update, "BOTÓN_PC")
-        await editar(query, "🚚 <b>Trazabilidad de Pedidos (PC)</b>\n\nEscribe el <b>número de pedido</b> que deseas buscar:")
-        return ESPERANDO_DOCUMENTO_PC
-
-    registrar_uso_bot(update, "/PC")
-    programar_borrado(context, update.message)
-
-    if not context.args:
-        await responder(
-            update, context,
-            "🚚 <b>Trazabilidad de Pedidos (PC)</b>\n\nEscribe el <b>número de pedido</b> que deseas buscar "
-            "(o usa <code>/PC 7374</code>):",
-        )
-        return ESPERANDO_DOCUMENTO_PC
-
-    return await ejecutar_pc(update, context, context.args[0])
-
-
-async def recibir_texto_pc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    programar_borrado(context, update.message)
-    return await ejecutar_pc(update, context, update.message.text)
-
-
-async def ejecutar_pc(update: Update, context: ContextTypes.DEFAULT_TYPE, texto: str) -> int:
-    doc = texto.strip().split(".")[0].strip()
-    if not doc.isdigit():
-        await responder(
-            update, context,
-            "⚠️ Escribe solo el <b>número de pedido</b>, por ejemplo <code>7374</code>.",
-        )
-        return ESPERANDO_DOCUMENTO_PC
-
-    espera = await responder(update, context, f"⏳ Consultando el pedido <b>{esc(doc)}</b>…")
     try:
-        items = await asyncio.to_thread(consultar_pedido_pc, doc)
-    except RuntimeError as e:
-        logger.error("Configuración de trazabilidad PC: %s", e)
-        await espera.edit_text(f"⚠️ {esc(e)}", parse_mode=ParseMode.HTML)
-        return ConversationHandler.END
-    except Exception:
-        logger.exception("Error consultando trazabilidad del pedido PC %s", doc)
-        await espera.edit_text("⚠️ No pude consultar la trazabilidad ahora. Intenta de nuevo en un momento.")
-        return ConversationHandler.END
+        chat_session = get_or_create_chat(user_id)
+        response = await asyncio.to_thread(chat_session.send_message, user_text)
 
-    if not items:
-        await espera.edit_text(
-            f"❌ No se encontró el documento: <b>{esc(doc)}</b>.\nPuedes escribir otro número.",
-            parse_mode=ParseMode.HTML,
+        if response.text:
+            await update.message.reply_text(response.text, parse_mode="HTML")
+        else:
+            await update.message.reply_text(
+                "Consulta procesada, pero no se generó respuesta.", parse_mode="HTML"
+            )
+
+    except Exception as e:
+        logger.error(f"DETALLE DEL ERROR GEMINI: {e}", exc_info=True)
+        await update.message.reply_text(f"⚠️ Error técnico: {str(e)}")
+
+
+@requiere_acceso("inventario")
+async def handle_voice_message(update, context):
+    """Maneja las notas de voz, permitiendo que Gemini escuche la referencia y consulte el inventario."""
+    user_id = update.effective_user.id
+
+    await context.bot.send_chat_action(
+        chat_id=update.effective_chat.id, action="typing"
+    )
+
+    try:
+        voice_file = await update.message.voice.get_file()
+        audio_bytes = await voice_file.download_as_bytearray()
+
+        chat_session = get_or_create_chat(user_id)
+
+        response = await asyncio.to_thread(
+            chat_session.send_message,
+            [
+                types.Part.from_bytes(
+                    data=bytes(audio_bytes), mime_type="audio/ogg"
+                ),
+                (
+                    "Escucha esta nota de voz. Si el usuario está pidiendo consultar"
+                    " el inventario o stock de una referencia o tela, utiliza la"
+                    " herramienta de inventario para darle el reporte exacto."
+                ),
+            ],
         )
-        return ESPERANDO_DOCUMENTO_PC
 
-    d = {
-        "doc": doc,
-        "items": items,
-        "refs": list(dict.fromkeys(i.get("id refer") for i in items)),
+        await update.message.reply_text(response.text, parse_mode="HTML")
+
+    except Exception as e:
+        logger.error(f"Error procesando nota de voz en Gemini: {e}")
+        await update.message.reply_text(f"⚠️ Error técnico voz: {str(e)}")
+
+
+class SimpleHandler(BaseHTTPRequestHandler):
+
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is alive!")
+
+    def do_HEAD(self):
+        self.send_response(200)
+        self.end_headers()
+
+    def log_message(self, *args):
+        pass
+
+
+def run_dummy_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = ThreadingHTTPServer(("0.0.0.0", port), SimpleHandler)
+    server.serve_forever()
+
+
+async def _post_init(application) -> None:
+    await datos.iniciar(application)
+    application.bot_data["tarea_comandos"] = asyncio.create_task(
+        configurar_comandos(application)
+    )
+
+
+async def _post_shutdown(application) -> None:
+    tarea = application.bot_data.get("tarea_comandos")
+    if tarea and not tarea.done():
+        tarea.cancel()
+    await datos.detener(application)
+
+
+def main() -> None:
+    settings = load_settings()
+    configure_logging(settings.telegram_bot_token)
+
+    threading.Thread(target=run_dummy_server, daemon=True).start()
+
+    logger.info("Iniciando el bot de Telegram...")
+
+    application = (
+        ApplicationBuilder()
+        .token(settings.telegram_bot_token)
+        .connect_timeout(10)
+        .read_timeout(15)
+        .write_timeout(15)
+        .pool_timeout(10)
+        .get_updates_read_timeout(30)
+        .post_init(_post_init)
+        .post_shutdown(_post_shutdown)
+        .build()
+    )
+
+    entradas = [
+        CommandHandler("pv", iniciar_busqueda),
+        CommandHandler("in", iniciar_busqueda_sap),
+        CommandHandler("iv", iniciar_busqueda_vendedor),
+        CommandHandler("pc", iniciar_pc),
+        CommandHandler("gu", iniciar_gu),
+        CommandHandler("etiqueta", iniciar_etiqueta),
+        CommandHandler("ub", iniciar_ubicaciones),
+        CommandHandler("tr", iniciar_transferencias),
+        CallbackQueryHandler(iniciar_busqueda, pattern="^start_pv$"),
+        CallbackQueryHandler(iniciar_busqueda_sap, pattern="^start_sap$"),
+        CallbackQueryHandler(iniciar_busqueda_vendedor, pattern="^start_vend$"),
+        CallbackQueryHandler(iniciar_pc, pattern="^start_pc$"),
+        CallbackQueryHandler(iniciar_gu, pattern="^start_gu$"),
+        CallbackQueryHandler(iniciar_etiqueta, pattern="^start_et$"),
+        CallbackQueryHandler(iniciar_ubicaciones, pattern="^start_ub$"),
+        CallbackQueryHandler(iniciar_transferencias, pattern="^start_tr$"),
+    ]
+
+    texto_pv = MessageHandler(
+        filters.TEXT & ~filters.COMMAND, recibir_texto_documento_pv
+    )
+    texto_sap = MessageHandler(
+        filters.TEXT & ~filters.COMMAND, recibir_texto_ref_sap
+    )
+    texto_vend = MessageHandler(
+        filters.TEXT & ~filters.COMMAND, recibir_texto_ref_vendedor
+    )
+    texto_pc = MessageHandler(
+        filters.TEXT & ~filters.COMMAND, recibir_texto_pc
+    )
+    texto_gu = MessageHandler(
+        filters.TEXT & ~filters.COMMAND, recibir_texto_gu
+    )
+    texto_ref_et = MessageHandler(
+        filters.TEXT & ~filters.COMMAND, recibir_texto_ref_et
+    )
+    texto_metros_et = MessageHandler(
+        filters.TEXT & ~filters.COMMAND, recibir_metros_et
+    )
+    texto_copias_et = MessageHandler(
+        filters.TEXT & ~filters.COMMAND, recibir_copias_et
+    )
+    botones_tipo_gu = CallbackQueryHandler(
+        elegir_tipo_gu, pattern=r"^gu_tipo_(pedido|factura|menu)$"
+    )
+
+    # Ubicaciones de bodega
+    botones_ub_cb = CallbackQueryHandler(
+        botones_ub,
+        pattern=r"^ub_(menu|consultar|cajon|modificar|reemplazar|agregar)$",
+    )
+    ub_ref_cb = CallbackQueryHandler(
+        seleccionar_ref_ub, pattern=r"^ub_ref_\d+$"
+    )
+    ub_color_cb = CallbackQueryHandler(
+        seleccionar_color_ub, pattern=r"^ub_(col_\d+|back_refs|back_cols)$"
+    )
+    ub_seguir_cb = CallbackQueryHandler(
+        seguir_ub, pattern=r"^ub_seguir_(si|no)$"
+    )
+    texto_ub_menu = MessageHandler(
+        filters.TEXT & ~filters.COMMAND, recordar_botones_ub
+    )
+    texto_ub_id = MessageHandler(
+        filters.TEXT & ~filters.COMMAND, recibir_id_ub
+    )
+    texto_ub_ref = MessageHandler(
+        filters.TEXT & ~filters.COMMAND, recibir_ref_ub
+    )
+    texto_ub_cajon = MessageHandler(
+        filters.TEXT & ~filters.COMMAND, recibir_cajon_ub
+    )
+    texto_ub_codigo = MessageHandler(
+        filters.TEXT & ~filters.COMMAND, recibir_codigo_ub
+    )
+    texto_ub_ubicacion = MessageHandler(
+        filters.TEXT & ~filters.COMMAND, recibir_ubicacion_ub
+    )
+
+    # Transferencias
+    texto_tr_id = MessageHandler(
+        filters.TEXT & ~filters.COMMAND, recibir_id_tr
+    )
+
+    estados = {
+        ESPERANDO_DOCUMENTO_PV: [texto_pv],
+        SELECCIONANDO_REFERENCIA: [
+            CallbackQueryHandler(seleccionar_referencia, pattern=r"^pv_ref_\d+$"),
+            texto_pv,
+        ],
+        SELECCIONANDO_COLOR: [
+            CallbackQueryHandler(
+                seleccionar_color, pattern=r"^pv_(col_\d+|all|back_refs|back_cols)$"
+            ),
+            texto_pv,
+        ],
+        ESPERANDO_REF_SAP: [texto_sap],
+        SELECCIONANDO_REF_SAP: [
+            CallbackQueryHandler(
+                seleccionar_referencia_sap, pattern=r"^sap_ref_\d+$"
+            ),
+            texto_sap,
+        ],
+        SELECCIONANDO_COLOR_SAP: [
+            CallbackQueryHandler(
+                seleccionar_color_sap,
+                pattern=r"^sap_(col_\d+|back_refs|back_cols)$",
+            ),
+            texto_sap,
+        ],
+        ESPERANDO_REF_VEND: [texto_vend],
+        SELECCIONANDO_REF_VEND: [
+            CallbackQueryHandler(
+                seleccionar_referencia_vendedor, pattern=r"^vend_ref_\d+$"
+            ),
+            texto_vend,
+        ],
+        SELECCIONANDO_COLOR_VEND: [
+            CallbackQueryHandler(
+                seleccionar_color_vendedor,
+                pattern=r"^vend_(col_\d+|back_refs|share)$",
+            ),
+            texto_vend,
+        ],
+        ESPERANDO_DOCUMENTO_PC: [texto_pc],
+        SELECCIONANDO_REF_PC: [
+            CallbackQueryHandler(
+                seleccionar_referencia_pc, pattern=r"^pc_ref_\d+$"
+            ),
+            texto_pc,
+        ],
+        SELECCIONANDO_COLOR_PC: [
+            CallbackQueryHandler(
+                seleccionar_color_pc,
+                pattern=r"^pc_(col_\d+|all|back_refs|back_cols)$",
+            ),
+            texto_pc,
+        ],
+        ELIGIENDO_TIPO_GU: [botones_tipo_gu, texto_gu],
+        ESPERANDO_DOCUMENTO_GU: [botones_tipo_gu, texto_gu],
+        SELECCIONANDO_GUIA_GU: [
+            CallbackQueryHandler(
+                seleccionar_guia_gu, pattern=r"^gu_sel_\d+$"
+            ),
+            texto_gu,
+        ],
+        ACCIONES_GU: [
+            CallbackQueryHandler(acciones_gu, pattern=r"^gu_(img|back|nuevo)$"),
+            texto_gu,
+        ],
+        # Flujo de etiquetas
+        ESPERANDO_REF_ET: [texto_ref_et],
+        SELECCIONANDO_REF_ET: [
+            CallbackQueryHandler(
+                seleccionar_referencia_et, pattern=r"^et_ref_\d+$"
+            ),
+            texto_ref_et,
+        ],
+        SELECCIONANDO_COLOR_ET: [
+            CallbackQueryHandler(
+                seleccionar_color_et, pattern=r"^et_(col_\d+|back)$"
+            ),
+            texto_ref_et,
+        ],
+        ESPERANDO_METROS_ET: [texto_metros_et],
+        ESPERANDO_COPIAS_ET: [texto_copias_et],
+        PREGUNTANDO_OTRA_ET: [
+            CallbackQueryHandler(manejar_otra_etiqueta, pattern=r"^et_otra_(si|no)$")
+        ],
+        # Ubicaciones de bodega
+        UB_MENU: [botones_ub_cb, texto_ub_menu],
+        UB_ESPERANDO_ID: [
+            botones_ub_cb,
+            texto_ub_id,
+        ],
+        UB_ESPERANDO_REF: [botones_ub_cb, texto_ub_ref],
+        UB_SELECCIONANDO_REF: [ub_ref_cb, botones_ub_cb, texto_ub_ref],
+        UB_SELECCIONANDO_COLOR: [ub_color_cb, botones_ub_cb, texto_ub_ref],
+        UB_ESPERANDO_CAJON: [botones_ub_cb, texto_ub_cajon],
+        UB_ESPERANDO_CODIGO: [ub_seguir_cb, botones_ub_cb, texto_ub_codigo],
+        UB_ESPERANDO_UBICACION: [botones_ub_cb, texto_ub_ubicacion],
+        # Transferencias
+        TR_MENU: [CallbackQueryHandler(botones_tr_menu, pattern=r"^tr_(menu|tipo_.+)$")],
+        TR_ESPERANDO_ID: [
+            CallbackQueryHandler(botones_tr_menu, pattern=r"^tr_menu$"),
+            texto_tr_id,
+        ],
+        TR_ELEGIR_METODO: [
+            CallbackQueryHandler(seleccionar_metodo_tr, pattern=r"^tr_metodo_.+$"),
+            CallbackQueryHandler(botones_tr_menu, pattern=r"^tr_menu$"),
+        ],
+        TR_ESPERANDO_CODIGO: [
+            CallbackQueryHandler(seguir_tr, pattern=r"^tr_seguir_(si|no)$"),
+            CallbackQueryHandler(botones_tr_menu, pattern=r"^tr_menu$"),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_codigo_tr),
+        ],
+        TR_ESPERANDO_REF: [
+            CallbackQueryHandler(botones_tr_menu, pattern=r"^tr_menu$"),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_ref_tr),
+        ],
+        TR_SELECCIONANDO_REF: [
+            CallbackQueryHandler(seleccionar_ref_tr, pattern=r"^tr_ref_\d+$"),
+            CallbackQueryHandler(botones_tr_menu, pattern=r"^tr_menu$"),
+        ],
+        TR_SELECCIONANDO_COLOR: [
+            CallbackQueryHandler(seleccionar_color_tr, pattern=r"^tr_col_\d+$"),
+            CallbackQueryHandler(botones_tr_menu, pattern=r"^tr_menu$"),
+        ],
+        TR_ESPERANDO_CANTIDAD: [
+            CallbackQueryHandler(botones_tr_menu, pattern=r"^tr_menu$"),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_cantidad_tr),
+        ],
     }
-    context.user_data["pc"] = d
 
-    if len(d["refs"]) == 1:
-        d["ref"] = d["refs"][0]
-        d["colores"] = _colores(items, d["ref"])
-        texto_msg, teclado = _pantalla_colores(d)
-        await espera.edit_text(texto_msg, reply_markup=teclado, parse_mode=ParseMode.HTML)
-        return SELECCIONANDO_COLOR_PC
+    fallbacks = entradas + [
+        CommandHandler("cancelar", cancelar),
+        CommandHandler(["i", "inicio", "menu"], menu_inicio),
+    ]
 
-    texto_msg, teclado = _pantalla_refs(d)
-    await espera.edit_text(texto_msg, reply_markup=teclado, parse_mode=ParseMode.HTML)
-    return SELECCIONANDO_REF_PC
-
-
-async def seleccionar_referencia_pc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    d = context.user_data.get("pc")
-    if not d:
-        return await _sesion_expirada(query)
-    try:
-        ref = d["refs"][int(query.data.rsplit("_", 1)[1])]
-    except (ValueError, IndexError):
-        return await _sesion_expirada(query)
-
-    d["ref"] = ref
-    d["colores"] = _colores(d["items"], ref)
-    texto, teclado = _pantalla_colores(d)
-    await editar(query, texto, teclado)
-    return SELECCIONANDO_COLOR_PC
-
-
-async def seleccionar_color_pc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    d = context.user_data.get("pc")
-    if not d or "ref" not in d:
-        return await _sesion_expirada(query)
-    data = query.data
-
-    if data == "pc_back_refs":
-        texto, teclado = _pantalla_refs(d)
-        await editar(query, texto, teclado)
-        return SELECCIONANDO_REF_PC
-
-    if data == "pc_back_cols":
-        texto, teclado = _pantalla_colores(d)
-        await editar(query, texto, teclado)
-        return SELECCIONANDO_COLOR_PC
-
-    base = [i for i in d["items"] if i.get("id refer") == d["ref"]]
-    if data == "pc_all":
-        filas = base
-        titulo = (
-            f"🔍 <b>Detalle Completo - Referencia {esc(d['ref'])}</b> "
-            f"(Documento {esc(d['doc'])}, Total ítems: {len(filas)}):\n"
+    application.add_handler(
+        ConversationHandler(
+            entry_points=entradas,
+            states=estados,
+            fallbacks=fallbacks,
+            conversation_timeout=900 if application.job_queue else None,
         )
-    else:
-        try:
-            color = d["colores"][int(data.rsplit("_", 1)[1])]
-        except (ValueError, IndexError):
-            return await _sesion_expirada(query)
-        filas = [i for i in base if i.get("color") == color]
-        titulo = (
-            f"🔍 <b>Detalle del Documento {esc(d['doc'])}</b> "
-            f"(Color {esc(color)}, Total ítems: {len(filas)}):\n"
-        )
+    )
 
-    bloques = ["\n-----------------------------------\n" + _texto_detalle(it) for it in filas]
-    partes = _agrupar(titulo, bloques)
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("pedido", order_command))
+    application.add_handler(CommandHandler("reiniciar", reiniciar_render))
+    application.add_handler(CommandHandler("actualizar", limpiar_cache_y_deploy))
+    application.add_handler(CommandHandler("refrescar", refrescar_datos))
+    application.add_handler(CommandHandler("miid", miid))
+    application.add_handler(CommandHandler("accesos", recargar_accesos_cmd))
+    application.add_handler(CommandHandler(["i", "inicio", "menu"], menu_inicio))
 
-    teclado = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver a colores", callback_data="pc_back_cols")]])
-    if len(partes) == 1:
-        await editar(query, partes[0], teclado)
-    else:
-        for parte in partes:
-            msg = await query.message.reply_text(parte, parse_mode=ParseMode.HTML)
-            programar_borrado(context, msg)
-        await editar(query, "📌 Fin del detalle.", teclado)
-    return SELECCIONANDO_COLOR_PC
+    application.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_gemini_agent)
+    )
+    application.add_handler(
+        MessageHandler(filters.VOICE, handle_voice_message)
+    )
+
+    application.add_handler(CallbackQueryHandler(callback_expirado))
+    application.add_error_handler(manejar_error)
+
+    application.run_polling(
+        drop_pending_updates=True,
+        allowed_updates=["message", "callback_query"],
+    )
+
+
+if __name__ == "__main__":
+    main()
