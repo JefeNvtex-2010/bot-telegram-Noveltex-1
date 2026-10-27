@@ -23,8 +23,9 @@ from handlers import (
 
 logger = logging.getLogger(__name__)
 
-# Estados 0-8 los usan /PV, /IN y /I; 9-11 los usa /PG. /PC usa 12-14.
-ESPERANDO_DOCUMENTO_PC, SELECCIONANDO_REF_PC, SELECCIONANDO_COLOR_PC = 12, 13, 14
+# Estados 0-8 los usan /PV, /IN y /I; 9-11 los usa /PG; 12-14 los usa /GU.
+# /PC usa 100-102 para no chocar con ningún otro módulo.
+ESPERANDO_DOCUMENTO_PC, SELECCIONANDO_REF_PC, SELECCIONANDO_COLOR_PC = 100, 101, 102
 
 BASE_URL = (
     "https://g6344c28e083a44-dbproyectos.adb.us-ashburn-1.oraclecloudapps.com/"
