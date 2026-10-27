@@ -50,7 +50,7 @@ def _normalizar(item: dict) -> dict:
     return {k.replace("_", " ").lower(): v for k, v in item.items() if k != "links"}
 
 
-def consultar_pedido_pc(documento: str, tipo: str = "PC") -> list:
+def consultar_pedido_pc(documento: str, tipo: str = "PV") -> list:
     """Devuelve todas las líneas del pedido, pidiendo por bloques hasta que no haya más."""
     documento = str(documento).strip()
     llave = quote(_id_llave(), safe="!")
