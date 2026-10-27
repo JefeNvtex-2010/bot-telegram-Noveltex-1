@@ -64,6 +64,18 @@ from inventario_vendedor_handlers import (
     seleccionar_referencia_vendedor,
 )
 
+# Pedidos (/PG) - archivo pedidos_vendedor.py
+from pedidos_vendedor import (
+    ESPERANDO_DOCUMENTO_PG,
+    SELECCIONANDO_COLOR_PG,
+    SELECCIONANDO_REF_PG,
+    iniciar_pg,
+    recibir_texto_pg,
+    seleccionar_color_pg,
+    seleccionar_referencia_pg,
+)
+
+# Pedidos Vendedor (/PC) - archivo pedidos_vendedor_handlers.py
 from pedidos_vendedor_handlers import (
     ESPERANDO_DOCUMENTO_PC,
     SELECCIONANDO_COLOR_PC,
@@ -149,6 +161,7 @@ logger = logging.getLogger(__name__)
 
 # --- CONTROL DE ACCESO POR MÓDULO ---
 iniciar_busqueda_sap = requiere_acceso("inventario")(iniciar_busqueda_sap)
+iniciar_pg = requiere_acceso("PG")(iniciar_pg)
 iniciar_pc = requiere_acceso("PC")(iniciar_pc)
 iniciar_gu = requiere_acceso("guias")(iniciar_gu)
 iniciar_etiqueta = requiere_acceso("etiquetas")(iniciar_etiqueta)
@@ -381,6 +394,7 @@ def main() -> None:
         CommandHandler("pv", iniciar_busqueda),
         CommandHandler("in", iniciar_busqueda_sap),
         CommandHandler("iv", iniciar_busqueda_vendedor),
+        CommandHandler("pg", iniciar_pg),
         CommandHandler("pc", iniciar_pc),
         CommandHandler("gu", iniciar_gu),
         CommandHandler("etiqueta", iniciar_etiqueta),
@@ -389,6 +403,7 @@ def main() -> None:
         CallbackQueryHandler(iniciar_busqueda, pattern="^start_pv$"),
         CallbackQueryHandler(iniciar_busqueda_sap, pattern="^start_sap$"),
         CallbackQueryHandler(iniciar_busqueda_vendedor, pattern="^start_vend$"),
+        CallbackQueryHandler(iniciar_pg, pattern="^start_pg$"),
         CallbackQueryHandler(iniciar_pc, pattern="^start_pc$"),
         CallbackQueryHandler(iniciar_gu, pattern="^start_gu$"),
         CallbackQueryHandler(iniciar_etiqueta, pattern="^start_et$"),
@@ -404,6 +419,9 @@ def main() -> None:
     )
     texto_vend = MessageHandler(
         filters.TEXT & ~filters.COMMAND, recibir_texto_ref_vendedor
+    )
+    texto_pg = MessageHandler(
+        filters.TEXT & ~filters.COMMAND, recibir_texto_pg
     )
     texto_pc = MessageHandler(
         filters.TEXT & ~filters.COMMAND, recibir_texto_pc
@@ -502,6 +520,22 @@ def main() -> None:
             ),
             texto_vend,
         ],
+        # Pedidos (/PG)
+        ESPERANDO_DOCUMENTO_PG: [texto_pg],
+        SELECCIONANDO_REF_PG: [
+            CallbackQueryHandler(
+                seleccionar_referencia_pg, pattern=r"^pg_ref_\d+$"
+            ),
+            texto_pg,
+        ],
+        SELECCIONANDO_COLOR_PG: [
+            CallbackQueryHandler(
+                seleccionar_color_pg,
+                pattern=r"^pg_(col_\d+|all|back_refs|back_cols)$",
+            ),
+            texto_pg,
+        ],
+        # Pedidos Vendedor (/PC)
         ESPERANDO_DOCUMENTO_PC: [texto_pc],
         SELECCIONANDO_REF_PC: [
             CallbackQueryHandler(
