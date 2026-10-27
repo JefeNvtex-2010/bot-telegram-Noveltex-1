@@ -43,7 +43,7 @@ def generar_zpl_noveltex(item, ref, color, metros, centimetros, copias=1) -> str
     ref = _limpiar(ref)[:20]
     m, cm = int(metros), int(centimetros)
     cant = f"{m:03d}.{cm:02d}"
-    codigo = f"{item}{color}{m:03d}{cm:02d}"  # ej. 026852302005
+    codigo = f"{item}{color}{m:03d}{cm:02d}"  # ej. 026852702568
 
     # Cadena hexadecimal de la imagen indexada del logo Noveltex (64x64 pixeles, 512 bytes)
     logo_hex = (
@@ -51,7 +51,7 @@ def generar_zpl_noveltex(item, ref, color, metros, centimetros, copias=1) -> str
         "F8000000000003FFF8000000000007FFF800000000000FFFF800000000001FFFF80000"
         "0000003F1FF800000000000701FF80000000000E01FF80000000001C01FF8000000000"
         "380FFF8000000000700FFF8000000000E00FFF8000000001C00FFF80003FC0380FFF80"
-        "007FE07001FF8000FFF0E0001FF8001FFF1C0001FF8003FFF380001FF8007FFF700001"
+        "007FE07001FF8000FFF0E0001FF801FFF1C0001FF8003FFF380001FF8007FFF700001"
         "FF800FFFFE00001FF801FFFFF00001FF803F1FFF80001FF80701FFF80001FF80E01FFF"
         "80001FF81C01FFF80001FF8380FFF80000FF8700FFF80000FF8E00FFF80000FF8C00FF"
         "F80000FF80000000000000000000000000000000000000000000000000000000000000"
@@ -61,17 +61,17 @@ def generar_zpl_noveltex(item, ref, color, metros, centimetros, copias=1) -> str
         "000000000000000000"
     )
 
-    # Retorno del bloque ZPL optimizado según tus requerimientos
+    # Bloque ZPL estructurado y calibrado milimétricamente
     return f"""^XA
 ^PW799
 ^LL408
 ^LH0,0
 ^CI28
 ^PQ{max(1, int(copias))}
-^FO15,35^BQN,2,5^FDQA,{codigo}^FS
-^FO280,25^GFA,512,512,8,{logo_hex}^FS
-^FO360,40^A0N,44,44^FDNOVELTEX S.A.S^FS
-^FO310,105^A0N,22,22^FDTel 6023798741 - 6023798742^FS
+^FO50,35^BQN,2,5^FDQA,{codigo}^FS
+^FO340,30^GFA,512,512,8,{logo_hex}^FS
+^FO420,45^A0N,38,38^FDNOVELTEX S.A.S^FS
+^FO360,110^A0N,22,22^FDTel 6023798741 - 6023798742^FS
 ^FO50,165^A0N,38,38^FDITEM^FS
 ^FO220,165^A0N,38,38^FD{item}^FS
 ^FO50,210^A0N,38,38^FDREF.^FS
@@ -82,8 +82,8 @@ def generar_zpl_noveltex(item, ref, color, metros, centimetros, copias=1) -> str
 ^FO240,305^A0N,52,52^FD{cant}^FS
 ^FO60,370^A0N,24,24^FD{fecha}^FS
 ^FO310,370^A0N,24,24^FDOPERARIO: ORIGINAL^FS
-^FO675,35^A0R,80,44^FD{codigo}^FS
-^FO740,35^A0R,75,46^FD{ref}^FS
+^FO640,365^A0B,62,34^FD{codigo}^FS
+^FO705,365^A0B,58,36^FD{ref}^FS
 ^XZ"""
 
 
