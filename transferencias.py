@@ -53,7 +53,7 @@ MAX_COLORES = 60
 
 
 def _cargar_operarios() -> dict:
-    """Lee la pestaña ETIQUETAS y devuelve {id: nombre}. Bloqueante: usar con to_thread."""
+    """Lee la pestaña TRASLADOS y devuelve {id: nombre}. Bloqueante: usar con to_thread."""
     url = (
         f"https://docs.google.com/spreadsheets/d/{SHEET_ID_OPERARIOS}"
         f"/gviz/tq?tqx=out:csv&sheet={PESTANA_OPERARIOS}"
