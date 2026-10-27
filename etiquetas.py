@@ -33,8 +33,8 @@ def _limpiar(texto) -> str:
 
 
 def generar_zpl_noveltex(item, ref, color, metros, centimetros, copias=1) -> str:
-    """Etiqueta de rollo de tela: item, referencia, color, cantidad, fecha y lote con diseño final pulido."""
-    tz = datetime.timezone(datetime.timedelta(hours=-5))  # Colombia (Render corre en UTC)
+    """Etiqueta de rollo de tela: item, referencia, color, cantidad, fecha y lote con diseño maximizado."""
+    tz = datetime.timezone(datetime.timedelta(hours=-5))  # Colombia
     ahora = datetime.datetime.now(tz)
     fecha = ahora.strftime("%d/%m/%Y %H:%M")
     lote = ahora.strftime("%d%m%Y")
@@ -43,9 +43,9 @@ def generar_zpl_noveltex(item, ref, color, metros, centimetros, copias=1) -> str
     ref = _limpiar(ref)[:20]
     m, cm = int(metros), int(centimetros)
     cant = f"{m:03d}.{cm:02d}"
-    codigo = f"{item}{color}{m:03d}{cm:02d}"  # ej. 001860000999
+    codigo = f"{item}{color}{m:03d}{cm:02d}"  # ej. 026869509999
 
-    # Diseño optimizado: texto plano NOVELTEX a X=220 e inyección de espacio entre caracteres a la derecha
+    # Bloque ZPL optimizado para ocupar todo el recuadro azul y alinear horizontalmente la referencia
     return f"""^XA
 ^PW799
 ^LL408
@@ -65,8 +65,8 @@ def generar_zpl_noveltex(item, ref, color, metros, centimetros, copias=1) -> str
 ^FO220,305^A0N,52,52^FD{cant}^FS
 ^FO60,370^A0N,24,24^FD{fecha}^FS
 ^FO310,370^A0N,24,24^FDOPERARIO: ORIGINAL^FS
-^FO640,100^EG2^A0B,62,30^FD{codigo}^FS
-^FO705,100^A0B,58,26^FD{ref}^FS
+^FO655,35^A0R,74,38^FD{codigo}^FS
+^FO725,35^A0R,68,40^FD{ref}^FS
 ^XZ"""
 
 
