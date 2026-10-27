@@ -47,7 +47,7 @@ def generar_zpl_noveltex(item, ref, color, metros, centimetros, copias=1, operar
     cant = f"{m:03d}.{cm:02d}"
     codigo = f"{item}{color}{m:03d}{cm:02d}"  # ej. 026869509999
 
-    # Bloque ZPL con el bloque lateral corrido a la izquierda y operario asignado dinámicamente
+    # Bloque ZPL con las coordenadas Y cambiadas a 60 para centrado vertical perfecto a la derecha
     return f"""^XA
 ^PW799
 ^LL408
@@ -67,8 +67,8 @@ def generar_zpl_noveltex(item, ref, color, metros, centimetros, copias=1, operar
 ^FO220,305^A0N,52,52^FD{cant}^FS
 ^FO60,370^A0N,24,24^FD{fecha}^FS
 ^FO310,370^A0N,24,24^FDOPERARIO: {nombre_operario}^FS
-^FO605,35^A0R,74,38^FD{codigo}^FS
-^FO675,35^A0R,68,40^FD{ref}^FS
+^FO605,60^A0R,74,38^FD{codigo}^FS
+^FO675,60^A0R,68,40^FD{ref}^FS
 ^XZ"""
 
 
