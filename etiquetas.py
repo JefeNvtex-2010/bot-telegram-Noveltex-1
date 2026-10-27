@@ -43,41 +43,38 @@ def generar_zpl_noveltex(item, ref, color, metros, centimetros, copias=1) -> str
     ref = _limpiar(ref)[:20]
     m, cm = int(metros), int(centimetros)
     cant = f"{m:03d}.{cm:02d}"
-    codigo = f"{item}{color}{m:03d}{cm:02d}"  # ej. 061560006100
+    codigo = f"{item}{color}{m:03d}{cm:02d}"  # ej. 026850205500
 
-    # Retorno del bloque ZPL estructurado
+    # Retorno del bloque ZPL estructurado bajo la nueva plantilla
     return f"""^XA
 ^PW799
 ^LL408
 ^LH0,0
 ^CI28
 ^PQ{max(1, int(copias))}
-^FO430,35^GB22,22,22^FS
-^FO442,47^GB22,22,22^FS
-^FO454,59^GB22,22,22^FS
-^FO490,42^A0N,45,45^FDNOVELTEX S.A.S^FS
-^FO420,110^A0N,22,22^FDTELEFONO 4442659 - CALI^FS
-^FO425,145^BQN,2,3^FDQA,{codigo}^FS
-^FO80,185^A0N,38,38^FDITEM^FS
-^FO250,185^A0N,38,38^FD{item}^FS
-^FO80,230^A0N,38,38^FDREF.^FS
-^FO250,230^A0N,42,42^FD{ref}^FS
-^FO80,275^A0N,38,38^FDCOLOR^FS
-^FO250,275^A0N,38,38^FD{color}^FS
-^FO80,325^A0N,55,55^FDCANT.^FS
-^FO270,325^A0N,55,55^FD{cant}^FS
-^FO65,390^A0N,20,20^FD{fecha}^FS
-^FO320,380^A0N,32,32^FDLOTE : {lote}^FS
-^FO735,40^A0R,38,24^FD{codigo}^FS
-^FO775,40^A0R,38,26^FD{ref}^FS
+^FO30,35^BQN,2,4^FDQA,{codigo}^FS
+^FO305,30^GB20,20,20^FS
+^FO317,42^GB20,20,20^FS
+^FO329,54^GB20,20,20^FS
+^FO365,37^A0N,36,36^FDNOVELTEX S.A.S^FS
+^FO320,105^A0N,20,20^FDTel 6023798741 - 6023798742^FS
+^FO50,165^A0N,38,38^FDITEM^FS
+^FO220,165^A0N,38,38^FD{item}^FS
+^FO50,210^A0N,38,38^FDREF.^FS
+^FO220,210^A0N,40,40^FD{ref}^FS
+^FO50,255^A0N,38,38^FDCOLOR^FS
+^FO220,255^A0N,38,38^FD{color}^FS
+^FO50,305^A0N,52,52^FDCANT.^FS
+^FO240,305^A0N,52,52^FD{cant}^FS
+^FO60,370^A0N,24,24^FD{fecha}^FS
+^FO310,370^A0N,24,24^FDOPERARIO: ORIGINAL^FS
+^FO690,370^A0B,46,26^FD{codigo}^FS
+^FO750,370^A0B,44,28^FD{ref}^FS
 ^XZ"""
 
 
 def enviar_a_zebra(zpl: str) -> None:
-    """Envía ZPL a la impresora por red, con reintentos.
-
-    Lo usan el modo directo, el agente y las pruebas.
-    """
+    """Envía ZPL a la impresora por red, con reintentos."""
     ultimo_error = None
     for intento in range(1, REINTENTOS + 1):
         try:
@@ -95,7 +92,7 @@ def enviar_a_zebra(zpl: str) -> None:
 
 
 def _encolar(item, referencia, color, metros, centimetros, copias) -> None:
-    import requests  # solo hace falta en modo cola
+    import requests
 
     r = requests.post(
         URL_COLA,
