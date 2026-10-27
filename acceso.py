@@ -66,8 +66,6 @@ ALIAS_FUNCIONES = {
 
 # --------------------------------------------------------------------------- #
 # Comandos que aparecen en la lista "/" de Telegram.
-# Los nombres de comando van en minúsculas (Telegram no admite mayúsculas aquí;
-# escribir /PV igual funciona).
 # --------------------------------------------------------------------------- #
 COMANDOS_BASE = [
     BotCommand("i", "Menú principal"),
@@ -80,7 +78,7 @@ COMANDOS_POR_FUNCION = {
     "guias": [BotCommand("gu", "Guías")],
     "inventario": [BotCommand("in", "Inventario SAP")],
     "inventario_vendedor": [BotCommand("iv", "Inventario vendedor")],
-    "etiquetas": [BotCommand("etiqueta", "Etiquetas")],
+    "etiquetas": [BotCommand("etiqueta", "Impresión de etiquetas Zebra")],
     "ubicaciones": [BotCommand("ub", "Ubicaciones de bodega")],
     "transferencias": [BotCommand("tr", "Transferencia de metros")],
 }
@@ -133,7 +131,6 @@ def _permiso_de(item: str):
     if t in ALIAS_FUNCIONES:
         return ALIAS_FUNCIONES[t]
 
-    # Respaldo por palabras clave (el orden importa: "vendedor" antes que "sap")
     palabras = t.split()
     if "todo" in palabras:
         return "*"
@@ -208,7 +205,6 @@ def _leer_sheet():
     if not filas:
         return {}, set()
 
-    # Columnas por nombre de encabezado (si no se encuentran: grupo, ID, acceso)
     encabezado = [_sin_acentos(c).lower().strip() for c in filas[0]]
 
     def _indice(clave: str, defecto: int) -> int:
@@ -225,7 +221,7 @@ def _leer_sheet():
         if len(fila) <= max(i_id, i_acceso):
             continue
         uid = _a_id(fila[i_id])
-        if uid is None:  # encabezado o fila vacía
+        if uid is None:
             continue
         permisos = _parsear_permisos(fila[i_acceso])
         if not permisos:
@@ -236,9 +232,9 @@ def _leer_sheet():
     return usuarios, masters
 
 
-ADMIN_IDS = _cargar_admins()  # no se reasigna: handlers.py le agrega al dueño
+ADMIN_IDS = _cargar_admins()
 USUARIOS_ENV = _cargar_usuarios_env()
-USUARIOS = {u: set(p) for u, p in USUARIOS_ENV.items()}  # env + hoja
+USUARIOS = {u: set(p) for u, p in USUARIOS_ENV.items()}
 MASTERS_SHEET = set()
 _CONFIGURADOS = set()
 _ESTADO = {"firma": None}
@@ -278,7 +274,6 @@ def tiene_acceso(user_id: int, funcion: str) -> bool:
     funcion = funcion.lower()
     if "*" in permisos or funcion in permisos:
         return True
-    # Quien puede modificar ubicaciones también puede entrar al módulo y consultar
     return funcion == "ubicaciones" and "ubicaciones_modificar" in permisos
 
 
@@ -317,7 +312,18 @@ def requiere_acceso(funcion: str):
 def comandos_de(user_id: int) -> list:
     """Lista de comandos que debe ver esta persona en el menú "/" de Telegram."""
     if not es_admin(user_id):
-        return []
+        # Para usuarios regulares, filtra los comandos permitidos según sus accesos
+        permisos = USUARIOS.get(user_id, set())
+        comandos = list(COMANDOS_BASE)
+        
+        if "*" in permisos:
+            for lista in COMANDOS_POR_FUNCION.values():
+                comandos.extend(lista)
+        else:
+            for funcion, lista in COMANDOS_POR_FUNCION.items():
+                if funcion.lower() in permisos or (funcion == "ubicaciones" and "ubicaciones_modificar" in permisos):
+                    comandos.extend(lista)
+        return comandos
 
     comandos = list(COMANDOS_BASE)
     for lista in COMANDOS_POR_FUNCION.values():
