@@ -64,8 +64,8 @@ from inventario_vendedor_handlers import (
     seleccionar_referencia_vendedor,
 )
 
-# Pedidos (/PG) - archivo pedidos_vendedor.py
-from pedidos_vendedor import (
+# Pedidos (/PG) - archivo geo_handlers.py
+from geo_handlers import (
     ESPERANDO_DOCUMENTO_PG,
     SELECCIONANDO_COLOR_PG,
     SELECCIONANDO_REF_PG,
