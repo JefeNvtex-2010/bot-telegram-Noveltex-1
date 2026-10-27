@@ -92,19 +92,20 @@ from etiquetas_handlers import (  # impresión de etiquetas Zebra
     ESPERANDO_REF_ET,
     SELECCIONANDO_COLOR_ET,
     SELECCIONANDO_REF_ET,
-    PREGUNTANDO_OTRA_ET,      # <-- IMPORTADO
+    PREGUNTANDO_OTRA_ET,
     iniciar_etiqueta,
     recibir_copias_et,
     recibir_metros_et,
     recibir_texto_ref_et,
     seleccionar_color_et,
     seleccionar_referencia_et,
-    manejar_otra_etiqueta,    # <-- IMPORTADO
+    manejar_otra_etiqueta,
 )
 
 from ubicacion import (  # ubicaciones: consultar por nombre, consultar por cajón, modificar por código
     UB_ESPERANDO_CAJON,
     UB_ESPERANDO_CODIGO,
+    UB_ESPERANDO_ID,      # <--- NUEVO IMPORTADO
     UB_ESPERANDO_REF,
     UB_ESPERANDO_UBICACION,
     UB_MENU,
@@ -114,6 +115,7 @@ from ubicacion import (  # ubicaciones: consultar por nombre, consultar por caj�
     iniciar_ubicaciones,
     recibir_cajon_ub,
     recibir_codigo_ub,
+    recibir_id_ub,        # <--- NUEVO IMPORTADO
     recibir_ref_ub,
     recibir_ubicacion_ub,
     recordar_botones_ub,
@@ -421,6 +423,7 @@ def main() -> None:
   botones_tipo_gu = CallbackQueryHandler(
       elegir_tipo_gu, pattern=r"^gu_tipo_(pedido|factura|menu)$"
   )
+  
   # Ubicaciones de bodega
   botones_ub_cb = CallbackQueryHandler(
       botones_ub,
@@ -437,6 +440,9 @@ def main() -> None:
   )
   texto_ub_menu = MessageHandler(
       filters.TEXT & ~filters.COMMAND, recordar_botones_ub
+  )
+  texto_ub_id = MessageHandler(
+      filters.TEXT & ~filters.COMMAND, recibir_id_ub
   )
   texto_ub_ref = MessageHandler(
       filters.TEXT & ~filters.COMMAND, recibir_ref_ub
@@ -517,7 +523,7 @@ def main() -> None:
           CallbackQueryHandler(acciones_gu, pattern=r"^gu_(img|back|nuevo)$"),
           texto_gu,
       ],
-      # Flujo de etiquetas (referencia -> color -> metros)
+      # Flujo de etiquetas
       ESPERANDO_REF_ET: [texto_ref_et],
       SELECCIONANDO_REF_ET: [
           CallbackQueryHandler(
@@ -533,18 +539,22 @@ def main() -> None:
       ],
       ESPERANDO_METROS_ET: [texto_metros_et],
       ESPERANDO_COPIAS_ET: [texto_copias_et],
-      PREGUNTANDO_OTRA_ET: [  # <-- REGISTRADO EL NUEVO MANEJADOR INTERACTIVO
+      PREGUNTANDO_OTRA_ET: [
           CallbackQueryHandler(manejar_otra_etiqueta, pattern=r"^et_otra_(si|no)$")
       ],
       # Ubicaciones de bodega
       UB_MENU: [botones_ub_cb, texto_ub_menu],
+      UB_ESPERANDO_ID: [
+          botones_ub_cb,
+          texto_ub_id,
+      ],
       UB_ESPERANDO_REF: [botones_ub_cb, texto_ub_ref],
       UB_SELECCIONANDO_REF: [ub_ref_cb, botones_ub_cb, texto_ub_ref],
       UB_SELECCIONANDO_COLOR: [ub_color_cb, botones_ub_cb, texto_ub_ref],
       UB_ESPERANDO_CAJON: [botones_ub_cb, texto_ub_cajon],
       UB_ESPERANDO_CODIGO: [ub_seguir_cb, botones_ub_cb, texto_ub_codigo],
       UB_ESPERANDO_UBICACION: [botones_ub_cb, texto_ub_ubicacion],
-      # Transferencias (Faltante, Retazos, Imperfecto)
+      # Transferencias
       TR_MENU: [CallbackQueryHandler(botones_tr_menu, pattern=r"^tr_(menu|tipo_.+)$")],
       TR_ELEGIR_METODO: [
           CallbackQueryHandler(seleccionar_metodo_tr, pattern=r"^tr_metodo_.+$"),
