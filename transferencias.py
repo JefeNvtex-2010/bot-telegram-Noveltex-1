@@ -28,13 +28,13 @@ logger = logging.getLogger(__name__)
 # Estados del módulo Transferencias
 (
     TR_MENU,
+    TR_ESPERANDO_ID,      # <--- 1. Solicitamos el ID primero al entrar al módulo
     TR_ELEGIR_METODO,
     TR_ESPERANDO_CODIGO,
     TR_ESPERANDO_REF,
     TR_SELECCIONANDO_REF,
     TR_SELECCIONANDO_COLOR,
     TR_ESPERANDO_CANTIDAD,
-    TR_ESPERANDO_ID,  # <--- Nuevo estado para solicitar el ID de operario
 ) = 60, 61, 62, 63, 64, 65, 66, 67
 
 URL_TRANSFERENCIAS = os.environ.get("URL_TRANSFERENCIAS", "").strip()
@@ -77,12 +77,6 @@ def _cargar_operarios() -> dict:
     return operarios
 
 
-def _operario_actual(context: ContextTypes.DEFAULT_TYPE) -> dict:
-    """Conserva los datos del operario ya validado entre pasos."""
-    tr = context.user_data.get("tr", {})
-    return {k: tr[k] for k in ("operario", "id_operario") if k in tr}
-
-
 def _extraer_codigo_y_cantidad(texto: str):
     digitos = re.sub(r"\D", "", str(texto))
     if len(digitos) != 12:
@@ -119,7 +113,7 @@ def _llamar_transferencias(payload: dict) -> dict:
 
 
 def _boton_menu():
-    return [InlineKeyboardButton("🔙 Menú Transferencias", callback_data="tr_menu")]
+    return [InlineKeyboardButton("🔙 Menú Principal", callback_data="tr_menu")]
 
 
 def _pantalla_menu():
@@ -211,51 +205,28 @@ def _iniciar_temporizador(context: ContextTypes.DEFAULT_TYPE, tr: dict, mensaje,
 async def iniciar_transferencias(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     _cancelar_temporizador(context.user_data.get("tr") or {})
     context.user_data["tr"] = {}
-    texto, teclado = _pantalla_menu()
+
+    # Al entrar al módulo, pedimos directamente el ID de operario
+    texto = (
+        "🔐 <b>Validación de Operario</b>\n\n"
+        "Por favor, escribe tu <b>ID de operario</b> registrado en el sistema para continuar:"
+    )
 
     query = update.callback_query
     if query:
         await query.answer()
         registrar_uso_bot(update, "BOTÓN_TRANSFERENCIAS")
-        await editar(query, texto, teclado)
-        return TR_MENU
-
-    registrar_uso_bot(update, "/tr")
-    programar_borrado(context, update.message)
-    await responder(update, context, texto, reply_markup=teclado)
-    return TR_MENU
-
-
-async def botones_tr_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-    tr = context.user_data.setdefault("tr", {})
-
-    if data == "tr_menu":
-        _cancelar_temporizador(tr)
-        tr.clear()
-        texto, teclado = _pantalla_menu()
-        await editar(query, texto, teclado)
-        return TR_MENU
-
-    if data.startswith("tr_tipo_"):
-        tipo = data.replace("tr_tipo_", "")
-        tr["tipo"] = tipo
-        
-        # Al seleccionar el tipo de movimiento, solicitamos el ID de operario
-        texto = (
-            f"📌 Tipo seleccionado: <b>{esc(tipo)}</b>\n\n"
-            "🔐 Por favor, escribe tu <b>ID de operario</b> registrado en el sistema:"
-        )
         await editar(query, texto, InlineKeyboardMarkup([_boton_menu()]))
         return TR_ESPERANDO_ID
 
-    return TR_MENU
+    registrar_uso_bot(update, "/tr")
+    programar_borrado(context, update.message)
+    await responder(update, context, texto, reply_markup=InlineKeyboardMarkup([_boton_menu()]))
+    return TR_ESPERANDO_ID
 
 
 async def recibir_id_tr(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Valida el ID introducido contra la pestaña ETIQUETAS antes de continuar con los métodos."""
+    """Valida el ID contra la pestaña ETIQUETAS al ingresar al módulo."""
     programar_borrado(context, update.message)
     tr = context.user_data.setdefault("tr", {})
     id_txt = re.sub(r"\D", "", update.message.text or "")
@@ -284,9 +255,33 @@ async def recibir_id_tr(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     tr["operario"] = nombre
     tr["id_operario"] = id_txt
 
-    texto, teclado = _pantalla_metodo(tr.get("tipo", ""))
+    # Una vez validado el ID, mostramos el menú de tipos de movimiento
+    texto, teclado = _pantalla_menu()
     await responder(update, context, f"✅ ¡Hola, <b>{esc(nombre)}</b>! ID verificado.\n\n{texto}", reply_markup=teclado)
-    return TR_ELEGIR_METODO
+    return TR_MENU
+
+
+async def botones_tr_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    tr = context.user_data.setdefault("tr", {})
+
+    if data == "tr_menu":
+        _cancelar_temporizador(tr)
+        tr.clear()
+        texto, teclado = _pantalla_menu()
+        await editar(query, texto, teclado)
+        return TR_MENU
+
+    if data.startswith("tr_tipo_"):
+        tipo = data.replace("tr_tipo_", "")
+        tr["tipo"] = tipo
+        texto, teclado = _pantalla_metodo(tipo)
+        await editar(query, texto, teclado)
+        return TR_ELEGIR_METODO
+
+    return TR_MENU
 
 
 async def seleccionar_metodo_tr(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
