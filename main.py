@@ -153,6 +153,7 @@ from transferencias import (
 
 logger = logging.getLogger(__name__)
 
+# Control de acceso por función (permisos leídos de la pestaña PERMISOS).
 iniciar_busqueda_sap = requiere_acceso("inventario")(iniciar_busqueda_sap)
 iniciar_pg = requiere_acceso("PG")(iniciar_pg)
 iniciar_pc = requiere_acceso("PC")(iniciar_pc)
@@ -160,31 +161,38 @@ iniciar_gu = requiere_acceso("guias")(iniciar_gu)
 iniciar_etiqueta = requiere_acceso("etiquetas")(iniciar_etiqueta)
 iniciar_transferencias = requiere_acceso("transferencias")(iniciar_transferencias)
 
+
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"Bot is alive!")
+
     def do_HEAD(self):
         self.send_response(200)
         self.end_headers()
+
     def log_message(self, *args):
         pass
+
 
 def run_dummy_server():
     port = int(os.environ.get("PORT", 10000))
     server = ThreadingHTTPServer(("0.0.0.0", port), SimpleHandler)
     server.serve_forever()
 
+
 async def _post_init(application) -> None:
     await datos.iniciar(application)
     application.bot_data["tarea_comandos"] = asyncio.create_task(configurar_comandos(application))
+
 
 async def _post_shutdown(application) -> None:
     tarea = application.bot_data.get("tarea_comandos")
     if tarea and not tarea.done():
         tarea.cancel()
     await datos.detener(application)
+
 
 def main() -> None:
     settings = load_settings()
@@ -200,6 +208,9 @@ def main() -> None:
         .build()
     )
 
+    # ------------------------------------------------------------------ #
+    # Comandos que arrancan un flujo (conversación)
+    # ------------------------------------------------------------------ #
     entradas = [
         CommandHandler("pv", iniciar_busqueda),
         CommandHandler("in", iniciar_busqueda_sap),
@@ -212,23 +223,82 @@ def main() -> None:
         CommandHandler("tr", iniciar_transferencias),
     ]
 
+    texto = filters.TEXT & ~filters.COMMAND
+
     estados = {
-        ESPERANDO_DOCUMENTO_PV: [MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_texto_documento_pv)],
-        SELECCIONANDO_REFERENCIA: [CallbackQueryHandler(seleccionar_referencia, pattern=r"^pv_ref_\\d+$")],
-        SELECCIONANDO_COLOR: [CallbackQueryHandler(seleccionar_color, pattern=r"^pv_(col_\\d+|all|back_refs|back_cols)$")],
-        ESPERANDO_REF_SAP: [MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_texto_ref_sap)],
-        SELECCIONANDO_REF_SAP: [CallbackQueryHandler(seleccionar_referencia_sap, pattern=r"^sap_ref_\\d+$")],
-        SELECCIONANDO_COLOR_SAP: [CallbackQueryHandler(seleccionar_color_sap, pattern=r"^sap_(col_\\d+|back_refs|back_cols)$")],
-        
-        # Flujo de etiquetas corregido e integrado
-        ESPERANDO_REF_ET: [MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_texto_ref_et)],
-        SELECCIONANDO_REF_ET: [CallbackQueryHandler(seleccionar_referencia_et, pattern=r"^et_ref_\\d+$")],
-        SELECCIONANDO_COLOR_ET: [CallbackQueryHandler(seleccionar_color_et, pattern=r"^et_(col_\\d+|back)$")],
-        ESPERANDO_METROS_ET: [MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_metros_et)],
-        ESPERANDO_COPIAS_ET: [MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_copias_et)],
-        SELECCIONANDO_IMPRESORAS_ET: [CallbackQueryHandler(procesar_impresion_et, pattern=r"^et_imp_\\d+$")],
+        # /pv
+        ESPERANDO_DOCUMENTO_PV: [MessageHandler(texto, recibir_texto_documento_pv)],
+        SELECCIONANDO_REFERENCIA: [CallbackQueryHandler(seleccionar_referencia, pattern=r"^pv_ref_\d+$")],
+        SELECCIONANDO_COLOR: [CallbackQueryHandler(seleccionar_color, pattern=r"^pv_(col_\d+|all|back_refs|back_cols)$")],
+
+        # /in
+        ESPERANDO_REF_SAP: [MessageHandler(texto, recibir_texto_ref_sap)],
+        SELECCIONANDO_REF_SAP: [CallbackQueryHandler(seleccionar_referencia_sap, pattern=r"^sap_ref_\d+$")],
+        SELECCIONANDO_COLOR_SAP: [CallbackQueryHandler(seleccionar_color_sap, pattern=r"^sap_(col_\d+|back_refs|back_cols)$")],
+
+        # /etiqueta
+        ESPERANDO_REF_ET: [MessageHandler(texto, recibir_texto_ref_et)],
+        SELECCIONANDO_REF_ET: [CallbackQueryHandler(seleccionar_referencia_et, pattern=r"^et_ref_\d+$")],
+        SELECCIONANDO_COLOR_ET: [CallbackQueryHandler(seleccionar_color_et, pattern=r"^et_(col_\d+|back)$")],
+        ESPERANDO_METROS_ET: [MessageHandler(texto, recibir_metros_et)],
+        ESPERANDO_COPIAS_ET: [MessageHandler(texto, recibir_copias_et)],
+        SELECCIONANDO_IMPRESORAS_ET: [CallbackQueryHandler(procesar_impresion_et, pattern=r"^et_imp_.+$")],
         PREGUNTANDO_OTRA_ET: [CallbackQueryHandler(manejar_otra_etiqueta, pattern=r"^et_otra_(si|no)$")],
+
+        # /iv
+        ESPERANDO_REF_VEND: [MessageHandler(texto, recibir_texto_ref_vendedor)],
+        SELECCIONANDO_REF_VEND: [CallbackQueryHandler(seleccionar_referencia_vendedor)],
+        SELECCIONANDO_COLOR_VEND: [CallbackQueryHandler(seleccionar_color_vendedor)],
+
+        # /pg
+        ESPERANDO_DOCUMENTO_PG: [MessageHandler(texto, recibir_texto_pg)],
+        SELECCIONANDO_REF_PG: [CallbackQueryHandler(seleccionar_referencia_pg)],
+        SELECCIONANDO_COLOR_PG: [CallbackQueryHandler(seleccionar_color_pg)],
+
+        # /pc
+        ESPERANDO_DOCUMENTO_PC: [MessageHandler(texto, recibir_texto_pc)],
+        SELECCIONANDO_REF_PC: [CallbackQueryHandler(seleccionar_referencia_pc)],
+        SELECCIONANDO_COLOR_PC: [CallbackQueryHandler(seleccionar_color_pc)],
+
+        # /gu
+        ELIGIENDO_TIPO_GU: [CallbackQueryHandler(elegir_tipo_gu)],
+        ESPERANDO_DOCUMENTO_GU: [MessageHandler(texto, recibir_texto_gu)],
+        SELECCIONANDO_GUIA_GU: [CallbackQueryHandler(seleccionar_guia_gu)],
+        ACCIONES_GU: [CallbackQueryHandler(acciones_gu)],
+
+        # /ub
+        UB_MENU: [CallbackQueryHandler(seguir_ub)],
+        UB_ESPERANDO_ID: [MessageHandler(texto, recibir_id_ub)],
+        UB_ESPERANDO_REF: [MessageHandler(texto, recibir_ref_ub)],
+        UB_SELECCIONANDO_REF: [CallbackQueryHandler(seleccionar_ref_ub)],
+        UB_SELECCIONANDO_COLOR: [CallbackQueryHandler(seleccionar_color_ub)],
+        UB_ESPERANDO_CODIGO: [MessageHandler(texto, recibir_codigo_ub)],
+        UB_ESPERANDO_CAJON: [MessageHandler(texto, recibir_cajon_ub)],
+        UB_ESPERANDO_UBICACION: [MessageHandler(texto, recibir_ubicacion_ub)],
+
+        # /tr
+        TR_MENU: [CallbackQueryHandler(seguir_tr)],
+        TR_ELEGIR_METODO: [CallbackQueryHandler(seleccionar_metodo_tr)],
+        TR_ESPERANDO_ID: [MessageHandler(texto, recibir_id_tr)],
+        TR_ESPERANDO_REF: [MessageHandler(texto, recibir_ref_tr)],
+        TR_SELECCIONANDO_REF: [CallbackQueryHandler(seleccionar_ref_tr)],
+        TR_SELECCIONANDO_COLOR: [CallbackQueryHandler(seleccionar_color_tr)],
+        TR_ESPERANDO_CODIGO: [MessageHandler(texto, recibir_codigo_tr)],
+        TR_ESPERANDO_CANTIDAD: [MessageHandler(texto, recibir_cantidad_tr)],
     }
+
+    # ------------------------------------------------------------------ #
+    # Comandos sueltos (fuera de la conversación)
+    # ------------------------------------------------------------------ #
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("i", menu_inicio))
+    application.add_handler(CommandHandler("miid", miid))
+    application.add_handler(CommandHandler("accesos", recargar_accesos_cmd))
+    application.add_handler(CommandHandler("refrescar", refrescar_datos))
+    application.add_handler(CommandHandler("pedido", order_command))
+    application.add_handler(CommandHandler("reiniciar", reiniciar_render))
+    application.add_handler(CommandHandler("actualizar", limpiar_cache_y_deploy))
 
     application.add_handler(ConversationHandler(
         entry_points=entradas,
@@ -236,7 +306,12 @@ def main() -> None:
         fallbacks=entradas + [CommandHandler("cancelar", cancelar)],
     ))
 
+    # Botones viejos o sin conversación activa
+    application.add_handler(CallbackQueryHandler(callback_expirado))
+    application.add_error_handler(manejar_error)
+
     application.run_polling(drop_pending_updates=True)
+
 
 if __name__ == "__main__":
     main()
