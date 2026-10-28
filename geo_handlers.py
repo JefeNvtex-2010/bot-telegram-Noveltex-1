@@ -128,17 +128,13 @@ def _texto_detalle(it: dict) -> str:
         if num_proforma:
             campos_contado += f"• <b>Número Proforma:</b> {num_proforma}\n"
             
-        total_items = it.get("total items")
-        if total_items is not None and str(total_items).strip() != "":
-            campos_contado += f"• <b>Total del Pedido:</b> {esc(_num(total_items))}\n"
+
             
         total_abonos = it.get("total abonos")
         if total_abonos is not None and str(total_abonos).strip() != "":
             campos_contado += f"• <b>Total Abonos:</b> {esc(_num(total_abonos))}\n"
             
-        valor_proforma = it.get("valor proforma")
-        if valor_proforma is not None and str(valor_proforma).strip() != "":
-            campos_contado += f"• <b>Valor Proforma:</b> {esc(_num(valor_proforma))}\n"
+
 
     fecha_despacho = _fecha(it.get("fecha despacho") or it.get("fecha factura"))
     return (
