@@ -8,9 +8,28 @@ import socket
 import time
 import requests
 
+# Conexión directa por IP pública + puerto redirigido (variables de entorno en Render).
+#  - ZEBRA 183: usa ZEBRA_IP_183 / ZEBRA_PORT_183 y, si no existen, ZEBRA_IP / ZEBRA_PORT.
+#  - ZEBRA 181: requiere ZEBRA_IP_181 / ZEBRA_PORT_181 (cada impresora tiene su propio puerto).
+def _puerto(*nombres, defecto=9100) -> int:
+    for n in nombres:
+        v = os.environ.get(n, "").strip()
+        if v.isdigit():
+            return int(v)
+    return defecto
+
+
 IMPRESORAS_ZEBRA = {
-    "1": {"nombre": "ZEBRA 183", "ip": "147.120.0.183", "port": 9100},
-    "2": {"nombre": "ZEBRA 181", "ip": "147.120.0.181", "port": 9100},
+    "1": {
+        "nombre": "ZEBRA 183",
+        "ip": (os.environ.get("ZEBRA_IP_183") or os.environ.get("ZEBRA_IP") or "").strip(),
+        "port": _puerto("ZEBRA_PORT_183", "ZEBRA_PORT"),
+    },
+    "2": {
+        "nombre": "ZEBRA 181",
+        "ip": os.environ.get("ZEBRA_IP_181", "").strip(),
+        "port": _puerto("ZEBRA_PORT_181"),
+    },
 }
 
 URL_COLA = os.environ.get("URL_COLA", "")
@@ -108,5 +127,9 @@ def imprimir_etiqueta(item, referencia, color, metros, centimetros, id_impresora
     if URL_COLA:
         _encolar(item, referencia, color, metros, centimetros, copias, operario, id_impresora)
     else:
+        if not config_zebra["ip"]:
+            raise ConnectionError(
+                f"{config_zebra['nombre']} no tiene IP configurada en las variables de entorno."
+            )
         zpl = generar_zpl_noveltex(item, referencia, color, metros, centimetros, copias, operario)
         enviar_a_zebra(zpl, config_zebra["ip"], config_zebra["port"])
