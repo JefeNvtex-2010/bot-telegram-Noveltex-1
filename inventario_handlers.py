@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -80,31 +81,6 @@ def _texto_inventario(df, ref: str, color: str, filas) -> str:
         f"• <b>Total Disponible:</b> <code>{total_disp:,.2f}</code>"
     )
     return mensaje
-
-
-def _partes_todo(df, ref: str, colores: list, limite: int = 3800) -> list:
-    """Arma el detalle completo de TODOS los colores (mismo formato que un color individual)
-    y lo divide en mensajes de hasta `limite` caracteres sin partir el bloque de un color."""
-    titulo = f"📋 <b>Inventario completo</b>\nReferencia: <b>{esc(ref)}</b> ({len(colores)} colores)\n\n"
-
-    bloques = []
-    for color in colores:
-        filas = df[(df["_ref"] == ref) & (df["_color"] == color)]
-        if filas.empty:
-            continue
-        bloques.append(_texto_inventario(df, ref, color, filas) + "\n\n===================\n\n")
-
-    if not bloques:
-        return [titulo + "❌ No se encontró inventario para esta referencia."]
-
-    partes, actual = [], titulo
-    for b in bloques:
-        if actual != titulo and len(actual) + len(b) > limite:
-            partes.append(actual.rstrip())
-            actual = ""
-        actual += b
-    partes.append(actual.rstrip())
-    return partes
 
 
 def _pantalla_refs(d: dict):
@@ -240,14 +216,25 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
     teclado_volver = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver a colores", callback_data="sap_back_cols")]])
 
     if data == "sap_all":
-        partes = _partes_todo(df, d["ref"], d["colores"])
-        if len(partes) == 1:
-            await editar(query, partes[0], teclado_volver)
-        else:  # detalle largo: varios mensajes y el original queda con el botón de volver
-            for parte in partes:
-                msg = await query.message.reply_text(parte, parse_mode="HTML")
-                programar_borrado(context, msg)
-            await editar(query, "📌 Fin del detalle completo.", teclado_volver)
+        enviados = 0
+        await editar(query, f"⏳ Enviando el inventario de <b>{esc(d['ref'])}</b>…")
+        for color in d["colores"]:
+            filas = df[(df["_ref"] == d["ref"]) & (df["_color"] == color)]
+            if filas.empty:
+                continue
+            msg = await query.message.reply_text(
+                recortar(_texto_inventario(df, d["ref"], color, filas)),
+                parse_mode="HTML",
+            )
+            programar_borrado(context, msg)
+            enviados += 1
+            await asyncio.sleep(0.3)  # evita el límite de mensajes por segundo de Telegram
+
+        await editar(
+            query,
+            f"📌 Fin del inventario de <b>{esc(d['ref'])}</b> ({enviados} colores).",
+            teclado_volver,
+        )
         return SELECCIONANDO_COLOR_SAP
 
     try:
