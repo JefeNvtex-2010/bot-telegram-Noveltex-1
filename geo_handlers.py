@@ -128,7 +128,9 @@ def _texto_detalle(it: dict) -> str:
         if num_proforma:
             campos_contado += f"• <b>Número Proforma:</b> {num_proforma}\n"
             
-
+        valor_proforma = it.get("valor proforma")
+        if valor_proforma is not None and str(valor_proforma).strip() != "":
+            campos_contado += f"• <b>Valor Proforma:</b> {esc(_num(valor_proforma))}\n"
             
         total_abonos = it.get("total abonos")
         if total_abonos is not None and str(total_abonos).strip() != "":
