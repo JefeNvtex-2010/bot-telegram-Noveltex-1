@@ -5,6 +5,7 @@ import io
 import logging
 import os
 import re
+import unicodedata
 import urllib.request
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -89,6 +90,38 @@ def _entero(texto: str, minimo: int, maximo: int):
         return None
     n = int(t)
     return n if minimo <= n <= maximo else None
+
+
+def _normalizar(texto) -> str:
+    """Mayúsculas, sin tildes y con espacios simples, para comparar textos."""
+    t = unicodedata.normalize("NFD", str(texto))
+    t = "".join(ch for ch in t if unicodedata.category(ch) != "Mn")
+    return re.sub(r"\s+", " ", t).strip().upper()
+
+
+def _buscar_refs(df, termino: str) -> list:
+    """Busca referencias por coincidencia. Si la búsqueda base no encuentra nada
+    (p. ej. 'MIMO' dentro de un nombre más largo), amplía a coincidencia parcial
+    en cualquier parte de la referencia y también en la descripción."""
+    refs = datos.buscar_referencias(df, termino)
+    if refs:
+        return list(refs)
+
+    palabras = _normalizar(termino).split()
+    if not palabras:
+        return []
+
+    def coincide(valor) -> bool:
+        v = _normalizar(valor)
+        return all(p in v for p in palabras)
+
+    encontradas = {str(r) for r in df["_ref"].dropna().unique() if coincide(r)}
+
+    if not encontradas and "Descripción" in df.columns:
+        mask = df["Descripción"].map(coincide)
+        encontradas = {str(r) for r in df.loc[mask, "_ref"].dropna().unique()}
+
+    return sorted(encontradas)
 
 
 def _formato_color(color: str) -> str:
@@ -181,7 +214,7 @@ async def recibir_texto_ref_et(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("⚠️ Inventario no disponible, intenta en un momento.")
         return ESPERANDO_REF_ET
 
-    refs = datos.buscar_referencias(df, termino)
+    refs = _buscar_refs(df, termino)
     if not refs:
         await update.message.reply_text(f"❌ No encontré la referencia «{termino}». Intenta de nuevo:")
         return ESPERANDO_REF_ET
