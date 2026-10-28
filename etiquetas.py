@@ -9,8 +9,8 @@ import time
 import requests
 
 IMPRESORAS_ZEBRA = {
-    "1": {"nombre": "Zebra Principal (.183)", "ip": "147.120.0.183", "port": 9100},
-    "2": {"nombre": "Zebra Nueva (.181)", "ip": "147.120.0.181", "port": 9100},
+    "1": {"nombre": "ZEBRA 183", "ip": "147.120.0.183", "port": 9100},
+    "2": {"nombre": "ZEBRA 181", "ip": "147.120.0.181", "port": 9100},
 }
 
 URL_COLA = os.environ.get("URL_COLA", "")
