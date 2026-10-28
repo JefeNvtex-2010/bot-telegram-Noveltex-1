@@ -377,7 +377,7 @@ async def safe_callback_wrapper(update, context):
             await update.callback_query.answer()
         except Exception as e:
             logger.debug(f"No se pudo responder automáticamente al callback: {e}")
-    
+
     # Ejecuta el comportamiento original programado en handlers.py
     await callback_expirado(update, context)
 
@@ -515,7 +515,7 @@ def main() -> None:
         SELECCIONANDO_COLOR_SAP: [
             CallbackQueryHandler(
                 seleccionar_color_sap,
-                pattern=r"^sap_(col_\d+|back_refs|back_cols)$",
+                pattern=r"^sap_(col_\d+|all|back_refs|back_cols)$",  # <-- CAMBIO: se agregó "all"
             ),
             texto_sap,
         ],
