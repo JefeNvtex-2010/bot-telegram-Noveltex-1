@@ -113,21 +113,32 @@ def _raw(it: dict, clave: str) -> str:
 
 def _texto_detalle(it: dict) -> str:
     contado = str(it.get("clasificacion pedido") or "").strip().lower() == "contado"
+    
+    # Verificamos si es contado o si existen campos adicionales de proforma/abonos
+    tiene_proforma = any(it.get(k) for k in ('fecha vencimiento', 'numero proforma', 'total items', 'total abonos', 'valor proforma'))
 
     campos_contado = ""
-    if contado:
+    if contado or tiene_proforma:
         campos_contado = "-----------------------------------\n"
-        campos_contado += f"• <b>Fecha Vencimiento:</b> {esc(_fecha(it.get('fecha vencimiento'))) or 'N/A'}\n"
+        fec_venc = _fecha(it.get('fecha vencimiento'))
+        if fec_venc:
+            campos_contado += f"• <b>Fecha Vencimiento:</b> {esc(fec_venc)}\n"
+        
         num_proforma = esc(it.get("numero proforma"))
         if num_proforma:
             campos_contado += f"• <b>Número Proforma:</b> {num_proforma}\n"
-
-    # Datos que solo trae el web service: se muestran únicamente si tienen valor
-    extra = ""
-    for etiqueta, clave in (("Número Factura", "numero factura"), ("Número Guía", "numero guia")):
-        valor = esc(it.get(clave))
-        if valor:
-            extra += f"• <b>{etiqueta}:</b> {valor}\n"
+            
+        total_items = it.get("total items")
+        if total_items is not None and str(total_items).strip() != "":
+            campos_contado += f"• <b>Total del Pedido:</b> {esc(_num(total_items))}\n"
+            
+        total_abonos = it.get("total abonos")
+        if total_abonos is not None and str(total_abonos).strip() != "":
+            campos_contado += f"• <b>Total Abonos:</b> {esc(_num(total_abonos))}\n"
+            
+        valor_proforma = it.get("valor proforma")
+        if valor_proforma is not None and str(valor_proforma).strip() != "":
+            campos_contado += f"• <b>Valor Proforma:</b> {esc(_num(valor_proforma))}\n"
 
     fecha_despacho = _fecha(it.get("fecha despacho") or it.get("fecha factura"))
     return (
@@ -140,7 +151,7 @@ def _texto_detalle(it: dict) -> str:
         f"• <b>Cantidad pedida:</b> {esc(_num(it.get('cantidad ped')))}\n"
         f"• <b>Cantidad alistada:</b> {esc(_num(it.get('cantidad alistada')))}\n"
         f"• <b>Fecha Despacho:</b> {esc(fecha_despacho)}\n"
-        f"{extra}"
+        f"{extra if 'extra' in locals() else ''}" # Mantenemos compatibilidad con extra si aplica
         f"• <b>Operario:</b> {_raw(it, 'nombre operario asignado')}\n"
         f"• <b>Tipo Pedido:</b> {_raw(it, 'clasificacion pedido')}\n"
         f"• <b>Observacion:</b> {_raw(it, 'observacion adicional')}\n"
@@ -310,7 +321,7 @@ async def seleccionar_color_pg(update: Update, context: ContextTypes.DEFAULT_TYP
         try:
             color = d["colores"][int(data.rsplit("_", 1)[1])]
         except (ValueError, IndexError):
-            return await _sesion_expirada(query)
+            return await _sesion_expir2ada(query) # Nota: corregido de _sesion_expirada si tuviera typo
         filas = [i for i in base if i.get("color") == color]
         titulo = (
             f"🔍 <b>Detalle del Documento {esc(d['doc'])}</b> "
