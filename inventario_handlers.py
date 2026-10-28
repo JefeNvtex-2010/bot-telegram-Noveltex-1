@@ -82,6 +82,44 @@ def _texto_inventario(df, ref: str, color: str, filas) -> str:
     return mensaje
 
 
+def _texto_todo(df, ref: str, colores: list) -> str:
+    """Resumen de todos los colores de una referencia (totales sumando almacenes)."""
+    mensaje = f"📋 <b>Inventario completo</b>\nReferencia: <b>{esc(ref)}</b>\n\n"
+    gran_stock = gran_comp = gran_disp = 0.0
+
+    for color in colores:
+        filas = df[(df["_ref"] == ref) & (df["_color"] == color)]
+        stock = comp = disp = 0.0
+        for _, fila in filas.iterrows():
+            s = _num(fila.get("Stock", "0"), 0.0)
+            c = _num(fila.get("Comprometido", "0"), 0.0)
+            dsp = _num(fila.get("Disponible", ""), None)
+            if dsp is None:
+                dsp = s - c
+            stock += s
+            comp += c
+            disp += dsp
+
+        gran_stock += stock
+        gran_comp += comp
+        gran_disp += disp
+        mensaje += (
+            f"🎨 <b>{esc(color)}</b>\n"
+            f"  Stock: <code>{stock:,.2f}</code> | "
+            f"Comp.: <code>{comp:,.2f}</code> | "
+            f"Disp.: <code>{disp:,.2f}</code>\n\n"
+        )
+
+    mensaje += (
+        f"-----------------------------------\n"
+        f"📊 <b>Totales de la referencia:</b>\n"
+        f"• <b>Stock:</b> <code>{gran_stock:,.2f}</code>\n"
+        f"• <b>Comprometido:</b> <code>{gran_comp:,.2f}</code>\n"
+        f"• <b>Disponible:</b> <code>{gran_disp:,.2f}</code>"
+    )
+    return mensaje
+
+
 def _pantalla_refs(d: dict):
     texto = f"🔍 Encontré varias referencias para <b>{esc(d['termino'])}</b>.\nSelecciona una referencia:"
     if d["total"] > len(d["refs"]):
@@ -97,6 +135,7 @@ def _pantalla_colores(d: dict):
         [InlineKeyboardButton(color, callback_data=f"sap_col_{i}")]
         for i, color in enumerate(d["colores"][:MAX_BOTONES])
     ]
+    filas.append([InlineKeyboardButton("📋 Ver todo", callback_data="sap_all")])
     if len(d["refs"]) > 1:
         filas.append([InlineKeyboardButton("🔙 Volver a referencias", callback_data="sap_back_refs")])
     texto = f"🔍 Referencia: <b>{esc(d['ref'])}</b>.\nSelecciona un color:"
@@ -210,6 +249,13 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
     df = await datos.inventario.obtener()
     if df is None:
         return await _expirada(query)
+
+    if data == "sap_all":
+        mensaje = _texto_todo(df, d["ref"], d["colores"])
+        teclado = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver a colores", callback_data="sap_back_cols")]])
+        await editar(query, recortar(mensaje), teclado)
+        return SELECCIONANDO_COLOR_SAP
+
     try:
         color = d["colores"][int(data.rsplit("_", 1)[1])]
     except (ValueError, IndexError):
