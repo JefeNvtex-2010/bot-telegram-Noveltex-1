@@ -82,42 +82,29 @@ def _texto_inventario(df, ref: str, color: str, filas) -> str:
     return mensaje
 
 
-def _texto_todo(df, ref: str, colores: list) -> str:
-    """Resumen de todos los colores de una referencia (totales sumando almacenes)."""
-    mensaje = f"📋 <b>Inventario completo</b>\nReferencia: <b>{esc(ref)}</b>\n\n"
-    gran_stock = gran_comp = gran_disp = 0.0
+def _partes_todo(df, ref: str, colores: list, limite: int = 3800) -> list:
+    """Arma el detalle completo de TODOS los colores (mismo formato que un color individual)
+    y lo divide en mensajes de hasta `limite` caracteres sin partir el bloque de un color."""
+    titulo = f"📋 <b>Inventario completo</b>\nReferencia: <b>{esc(ref)}</b> ({len(colores)} colores)\n\n"
 
+    bloques = []
     for color in colores:
         filas = df[(df["_ref"] == ref) & (df["_color"] == color)]
-        stock = comp = disp = 0.0
-        for _, fila in filas.iterrows():
-            s = _num(fila.get("Stock", "0"), 0.0)
-            c = _num(fila.get("Comprometido", "0"), 0.0)
-            dsp = _num(fila.get("Disponible", ""), None)
-            if dsp is None:
-                dsp = s - c
-            stock += s
-            comp += c
-            disp += dsp
+        if filas.empty:
+            continue
+        bloques.append(_texto_inventario(df, ref, color, filas) + "\n\n===================\n\n")
 
-        gran_stock += stock
-        gran_comp += comp
-        gran_disp += disp
-        mensaje += (
-            f"🎨 <b>{esc(color)}</b>\n"
-            f"  Stock: <code>{stock:,.2f}</code> | "
-            f"Comp.: <code>{comp:,.2f}</code> | "
-            f"Disp.: <code>{disp:,.2f}</code>\n\n"
-        )
+    if not bloques:
+        return [titulo + "❌ No se encontró inventario para esta referencia."]
 
-    mensaje += (
-        f"-----------------------------------\n"
-        f"📊 <b>Totales de la referencia:</b>\n"
-        f"• <b>Stock:</b> <code>{gran_stock:,.2f}</code>\n"
-        f"• <b>Comprometido:</b> <code>{gran_comp:,.2f}</code>\n"
-        f"• <b>Disponible:</b> <code>{gran_disp:,.2f}</code>"
-    )
-    return mensaje
+    partes, actual = [], titulo
+    for b in bloques:
+        if actual != titulo and len(actual) + len(b) > limite:
+            partes.append(actual.rstrip())
+            actual = ""
+        actual += b
+    partes.append(actual.rstrip())
+    return partes
 
 
 def _pantalla_refs(d: dict):
@@ -131,11 +118,11 @@ def _pantalla_refs(d: dict):
 
 
 def _pantalla_colores(d: dict):
-    filas = [
+    filas = [[InlineKeyboardButton("📋 Ver todo", callback_data="sap_all")]]
+    filas += [
         [InlineKeyboardButton(color, callback_data=f"sap_col_{i}")]
         for i, color in enumerate(d["colores"][:MAX_BOTONES])
     ]
-    filas.append([InlineKeyboardButton("📋 Ver todo", callback_data="sap_all")])
     if len(d["refs"]) > 1:
         filas.append([InlineKeyboardButton("🔙 Volver a referencias", callback_data="sap_back_refs")])
     texto = f"🔍 Referencia: <b>{esc(d['ref'])}</b>.\nSelecciona un color:"
@@ -250,10 +237,17 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
     if df is None:
         return await _expirada(query)
 
+    teclado_volver = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver a colores", callback_data="sap_back_cols")]])
+
     if data == "sap_all":
-        mensaje = _texto_todo(df, d["ref"], d["colores"])
-        teclado = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver a colores", callback_data="sap_back_cols")]])
-        await editar(query, recortar(mensaje), teclado)
+        partes = _partes_todo(df, d["ref"], d["colores"])
+        if len(partes) == 1:
+            await editar(query, partes[0], teclado_volver)
+        else:  # detalle largo: varios mensajes y el original queda con el botón de volver
+            for parte in partes:
+                msg = await query.message.reply_text(parte, parse_mode="HTML")
+                programar_borrado(context, msg)
+            await editar(query, "📌 Fin del detalle completo.", teclado_volver)
         return SELECCIONANDO_COLOR_SAP
 
     try:
@@ -267,6 +261,5 @@ async def seleccionar_color_sap(update: Update, context: ContextTypes.DEFAULT_TY
     else:
         mensaje = _texto_inventario(df, d["ref"], color, filas)
 
-    teclado = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver a colores", callback_data="sap_back_cols")]])
-    await editar(query, recortar(mensaje), teclado)
+    await editar(query, recortar(mensaje), teclado_volver)
     return SELECCIONANDO_COLOR_SAP
