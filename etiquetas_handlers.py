@@ -5,14 +5,13 @@ import io
 import logging
 import os
 import re
-import unicodedata
 import urllib.request
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes, ConversationHandler
 
 import datos
-from etiquetas import imprimir_etiqueta
+from etiquetas import IMPRESORAS_ZEBRA, imprimir_etiqueta
 from handlers import registrar_uso_bot
 
 logger = logging.getLogger(__name__)
@@ -28,6 +27,9 @@ PREGUNTANDO_OTRA_ET = "et_preguntando_otra"  # estado para el bucle de "otra eti
 MAX_BOTONES = 40
 MAX_METROS = 999
 MAX_COPIAS = 50
+
+# Impresora por defecto ("1" = Zebra Principal, "2" = Zebra Nueva en etiquetas.py)
+IMPRESORA_DEFECTO = os.environ.get("IMPRESORA_DEFECTO", "1")
 
 # Google Sheet AUDITORIA_BOT, pestaña ETIQUETAS (columnas: OPERARIO | ID)
 SHEET_ID_OPERARIOS = os.environ.get(
@@ -90,38 +92,6 @@ def _entero(texto: str, minimo: int, maximo: int):
         return None
     n = int(t)
     return n if minimo <= n <= maximo else None
-
-
-def _normalizar(texto) -> str:
-    """Mayúsculas, sin tildes y con espacios simples, para comparar textos."""
-    t = unicodedata.normalize("NFD", str(texto))
-    t = "".join(ch for ch in t if unicodedata.category(ch) != "Mn")
-    return re.sub(r"\s+", " ", t).strip().upper()
-
-
-def _buscar_refs(df, termino: str) -> list:
-    """Busca referencias por coincidencia. Si la búsqueda base no encuentra nada
-    (p. ej. 'MIMO' dentro de un nombre más largo), amplía a coincidencia parcial
-    en cualquier parte de la referencia y también en la descripción."""
-    refs = datos.buscar_referencias(df, termino)
-    if refs:
-        return list(refs)
-
-    palabras = _normalizar(termino).split()
-    if not palabras:
-        return []
-
-    def coincide(valor) -> bool:
-        v = _normalizar(valor)
-        return all(p in v for p in palabras)
-
-    encontradas = {str(r) for r in df["_ref"].dropna().unique() if coincide(r)}
-
-    if not encontradas and "Descripción" in df.columns:
-        mask = df["Descripción"].map(coincide)
-        encontradas = {str(r) for r in df.loc[mask, "_ref"].dropna().unique()}
-
-    return sorted(encontradas)
 
 
 def _formato_color(color: str) -> str:
@@ -214,7 +184,7 @@ async def recibir_texto_ref_et(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("⚠️ Inventario no disponible, intenta en un momento.")
         return ESPERANDO_REF_ET
 
-    refs = _buscar_refs(df, termino)
+    refs = datos.buscar_referencias(df, termino)
     if not refs:
         await update.message.reply_text(f"❌ No encontré la referencia «{termino}». Intenta de nuevo:")
         return ESPERANDO_REF_ET
@@ -325,7 +295,10 @@ async def recibir_copias_et(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return ConversationHandler.END
     try:
         await asyncio.to_thread(
-            imprimir_etiqueta, et["item"], et["ref"], et["color"], et["metros"], et["cm"], copias, et["operario"]
+            imprimir_etiqueta,
+            et["item"], et["ref"], et["color"], et["metros"], et["cm"],
+            IMPRESORA_DEFECTO,  # id_impresora: va antes de copias en etiquetas.py
+            copias, et["operario"],
         )
     except Exception:
         logger.exception("No se pudo imprimir la etiqueta")
@@ -349,7 +322,8 @@ async def recibir_copias_et(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await update.message.reply_text(
         f"✅ Etiqueta enviada:\nItem {et['item']} · {et['ref']} · Color {et.get('color_nombre', et['color'])}\n"
         f"Cantidad {cant} · Etiquetas {copias}\n"
-        f"Operario: {et['operario']}\n\n"
+        f"Operario: {et['operario']}\n"
+        f"Impresora: {IMPRESORAS_ZEBRA.get(IMPRESORA_DEFECTO, {}).get('nombre', IMPRESORA_DEFECTO)}\n\n"
         "¿Deseas generar otra etiqueta?",
         reply_markup=reply_markup,
     )
