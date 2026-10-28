@@ -369,6 +369,19 @@ async def _post_shutdown(application) -> None:
     await datos.detener(application)
 
 
+# --- MANEJADOR DE SEGURIDAD PARA LLAMADAS FALLIDAS DE TELEGRAM ---
+async def safe_callback_wrapper(update, context):
+    """Asegura que cualquier botón antiguo, huérfano o fuera de estado sea respondido de inmediato."""
+    if update.callback_query:
+        try:
+            await update.callback_query.answer()
+        except Exception as e:
+            logger.debug(f"No se pudo responder automáticamente al callback: {e}")
+    
+    # Ejecuta el comportamiento original programado en handlers.py
+    await callback_expirado(update, context)
+
+
 def main() -> None:
     settings = load_settings()
     configure_logging(settings.telegram_bot_token)
@@ -657,7 +670,7 @@ def main() -> None:
         MessageHandler(filters.VOICE, handle_voice_message)
     )
 
-    application.add_handler(CallbackQueryHandler(callback_expirado))
+    application.add_handler(CallbackQueryHandler(safe_callback_wrapper))
     application.add_error_handler(manejar_error)
 
     application.run_polling(
