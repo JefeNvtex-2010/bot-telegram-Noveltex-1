@@ -377,7 +377,8 @@ async def safe_callback_wrapper(update, context):
             await update.callback_query.answer()
         except Exception as e:
             logger.debug(f"No se pudo responder automáticamente al callback: {e}")
-     
+    
+    # Ejecuta el comportamiento original programado en handlers.py
     await callback_expirado(update, context)
 
 
@@ -680,4 +681,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-    
