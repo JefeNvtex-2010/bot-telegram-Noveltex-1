@@ -221,6 +221,15 @@ def main() -> None:
         CommandHandler("etiqueta", iniciar_etiqueta),
         CommandHandler("ub", iniciar_ubicaciones),
         CommandHandler("tr", iniciar_transferencias),
+        # Botones del menú principal (callback_data definidos en OPCIONES_MENU de handlers.py)
+        CallbackQueryHandler(iniciar_busqueda_vendedor, pattern=r"^start_vend$"),
+        CallbackQueryHandler(iniciar_busqueda_sap, pattern=r"^start_sap$"),
+        CallbackQueryHandler(iniciar_pg, pattern=r"^start_pg$"),
+        CallbackQueryHandler(iniciar_pc, pattern=r"^start_pc$"),
+        CallbackQueryHandler(iniciar_gu, pattern=r"^start_gu$"),
+        CallbackQueryHandler(iniciar_etiqueta, pattern=r"^start_et$"),
+        CallbackQueryHandler(iniciar_ubicaciones, pattern=r"^start_ub$"),
+        CallbackQueryHandler(iniciar_transferencias, pattern=r"^start_tr$"),
     ]
 
     texto = filters.TEXT & ~filters.COMMAND
@@ -292,7 +301,6 @@ def main() -> None:
     # ------------------------------------------------------------------ #
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("i", menu_inicio))
     application.add_handler(CommandHandler("miid", miid))
     application.add_handler(CommandHandler("accesos", recargar_accesos_cmd))
     application.add_handler(CommandHandler("refrescar", refrescar_datos))
@@ -303,8 +311,14 @@ def main() -> None:
     application.add_handler(ConversationHandler(
         entry_points=entradas,
         states=estados,
-        fallbacks=entradas + [CommandHandler("cancelar", cancelar)],
+        fallbacks=entradas + [
+            CommandHandler("i", menu_inicio),
+            CommandHandler("cancelar", cancelar),
+        ],
     ))
+
+    # /i fuera de una conversación (dentro de una, lo atiende el fallback y la cierra)
+    application.add_handler(CommandHandler("i", menu_inicio))
 
     # Botones viejos o sin conversación activa
     application.add_handler(CallbackQueryHandler(callback_expirado))
