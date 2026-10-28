@@ -65,8 +65,14 @@ ALIAS_FUNCIONES = {
 }
 
 # --------------------------------------------------------------------------- #
-# Comandos que aparecen en la lista "/" de Telegram.
+# Comandos que aparecen en el menú ☰ de Telegram.
 # --------------------------------------------------------------------------- #
+# Menú que ven TODOS los usuarios que no son master.
+COMANDOS_PUBLICOS = [
+    BotCommand("i", "Menú principal"),
+]
+
+# Menú completo (solo master / admin).
 COMANDOS_BASE = [
     BotCommand("i", "Menú principal"),
     BotCommand("miid", "Ver mi ID de Telegram"),
@@ -307,128 +313,8 @@ def requiere_acceso(funcion: str):
 
 
 # --------------------------------------------------------------------------- #
-# Lista "/" de Telegram por persona
+# Menú ☰ de Telegram por persona
 # --------------------------------------------------------------------------- #
 def comandos_de(user_id: int) -> list:
-    """Lista de comandos que debe ver esta persona en el menú "/" de Telegram."""
+    """Master/admin: menú completo. Todos los demás: solo /i (Menú principal)."""
     if not es_admin(user_id):
-        # Para usuarios regulares, filtra los comandos permitidos según sus accesos
-        permisos = USUARIOS.get(user_id, set())
-        comandos = list(COMANDOS_BASE)
-        
-        if "*" in permisos:
-            for lista in COMANDOS_POR_FUNCION.values():
-                comandos.extend(lista)
-        else:
-            for funcion, lista in COMANDOS_POR_FUNCION.items():
-                if funcion.lower() in permisos or (funcion == "ubicaciones" and "ubicaciones_modificar" in permisos):
-                    comandos.extend(lista)
-        return comandos
-
-    comandos = list(COMANDOS_BASE)
-    for lista in COMANDOS_POR_FUNCION.values():
-        comandos.extend(lista)
-    comandos.extend(COMANDOS_ADMIN)
-
-    vistos, unicos = set(), []
-    for c in comandos:
-        if c.command not in vistos:
-            vistos.add(c.command)
-            unicos.append(c)
-    return unicos
-
-
-def _firma():
-    return (
-        frozenset((u, frozenset(p)) for u, p in USUARIOS.items()),
-        frozenset(MASTERS_SHEET),
-        frozenset(ADMIN_IDS),
-    )
-
-
-async def _aplicar_comandos(bot, forzar: bool = False) -> None:
-    """Fija la lista "/" de cada persona."""
-    firma = _firma()
-    if not forzar and firma == _ESTADO["firma"]:
-        return
-
-    fallos = 0
-    objetivos = set(USUARIOS) | set(ADMIN_IDS) | set(MASTERS_SHEET)
-    for uid in sorted(objetivos):
-        try:
-            scope = BotCommandScopeChat(chat_id=uid)
-            lista = comandos_de(uid)
-            if lista:
-                await bot.set_my_commands(lista, scope=scope)
-            else:
-                await bot.delete_my_commands(scope=scope)
-        except Exception as e:
-            fallos += 1
-            log.warning("No se pudo fijar los comandos de %s: %s", uid, e)
-
-    for uid in sorted(_CONFIGURADOS - objetivos):
-        try:
-            await bot.delete_my_commands(scope=BotCommandScopeChat(chat_id=uid))
-        except Exception as e:
-            fallos += 1
-            log.warning("No se pudo restablecer los comandos de %s: %s", uid, e)
-
-    _CONFIGURADOS.clear()
-    _CONFIGURADOS.update(objetivos)
-    if fallos == 0:
-        _ESTADO["firma"] = firma
-    else:
-        log.warning("Comandos: %s fallos; se reintentará en la próxima recarga.", fallos)
-
-
-async def _job_recarga(context: ContextTypes.DEFAULT_TYPE) -> None:
-    if await recargar_accesos():
-        await _aplicar_comandos(context.bot)
-
-
-async def configurar_comandos(application: Application) -> None:
-    """Se lanza en segundo plano desde post_init (main.py)."""
-    await recargar_accesos()
-
-    if application.job_queue:
-        application.job_queue.run_repeating(
-            _job_recarga,
-            interval=REFRESCO_MIN * 60,
-            first=REFRESCO_MIN * 60,
-            name="recarga_accesos",
-        )
-    else:
-        log.warning("No hay job_queue: la hoja de accesos solo se lee al arrancar (usa /accesos).")
-
-    try:
-        await application.bot.delete_my_commands()
-    except Exception as e:
-        log.error("No se pudo vaciar la lista de comandos por defecto: %s", e)
-
-    await _aplicar_comandos(application.bot, forzar=True)
-
-
-# --------------------------------------------------------------------------- #
-# Comandos
-# --------------------------------------------------------------------------- #
-async def recargar_accesos_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/accesos: relee la hoja de accesos ya mismo. Solo administradores."""
-    usuario = update.effective_user
-    mensaje = update.effective_message
-    if not usuario or not mensaje:
-        return
-    if not es_admin(usuario.id):
-        await mensaje.reply_text(MENSAJE_SIN_ACCESO)
-        return
-    if await recargar_accesos():
-        await _aplicar_comandos(context.bot, forzar=True)
-        await mensaje.reply_text(f"✅ Accesos recargados: {len(USUARIOS)} usuarios.")
-    else:
-        await mensaje.reply_text("⚠️ No se pudo leer la hoja de accesos. Revisa el log.")
-
-
-async def miid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Comando /miid: cada persona ve su ID para pasárselo al administrador."""
-    usuario = update.effective_user
-    if update.effective_message and usuario:
-        await update.effective_message.reply_text(f"Tu ID de Telegram es: {usuario.id}")
