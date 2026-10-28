@@ -2,7 +2,9 @@ import asyncio
 import io
 import logging
 import os
+import re
 import time
+import unicodedata
 
 import pandas as pd
 import requests
@@ -44,6 +46,20 @@ def _a_numero(serie: pd.Series) -> pd.Series:
     )
 
 
+def normalizar_texto(texto: str) -> str:
+    """Mayúsculas, sin tildes y con espacios simples (para comparar búsquedas)."""
+    t = unicodedata.normalize("NFKD", str(texto))
+    t = "".join(ch for ch in t if not unicodedata.combining(ch))
+    return re.sub(r"\s+", " ", t).strip().upper()
+
+
+def _normalizar_serie(serie: pd.Series) -> pd.Series:
+    s = serie.astype(str).str.normalize("NFKD")
+    s = s.str.replace(r"[̀-ͯ]", "", regex=True)  # quita tildes
+    s = s.str.replace(r"[\s ]+", " ", regex=True)  # espacios (incl. no separables)
+    return s.str.strip().str.upper()
+
+
 def _preparar_pedidos(df: pd.DataFrame) -> pd.DataFrame:
     if "Documento Pd" in df.columns:
         df["Documento Pd"] = df["Documento Pd"].astype(str).str.split(".").str[0].str.strip()
@@ -60,6 +76,7 @@ def _preparar_inventario(df: pd.DataFrame) -> pd.DataFrame:
         raise ValueError("No se encontraron las columnas REFERENCIA o COLOR en el inventario")
 
     df["_ref"] = df[col_ref].astype(str).str.strip().str.upper()
+    df["_ref_norm"] = _normalizar_serie(df[col_ref])  # solo para buscar
     df["_color"] = df[col_color].astype(str).str.strip()
 
     sin_dato = pd.Series(float("nan"), index=df.index)
@@ -198,7 +215,15 @@ async def detener(application) -> None:
 # Consultas de inventario (comunes a SAP y vendedor)
 # --------------------------------------------------------------------------- #
 def buscar_referencias(df: pd.DataFrame, termino: str) -> list:
-    mask = df["_ref"].str.contains(termino, regex=False, na=False)  # regex=False: "(" o "+" no rompen
+    """Referencias que contienen todas las palabras del término, sin importar
+    tildes, mayúsculas ni espacios repetidos (regex=False: "(" o "+" no rompen)."""
+    palabras = normalizar_texto(termino).split()
+    if not palabras:
+        return []
+    columna = "_ref_norm" if "_ref_norm" in df.columns else "_ref"
+    mask = pd.Series(True, index=df.index)
+    for p in palabras:
+        mask &= df[columna].str.contains(p, regex=False, na=False)
     return df.loc[mask, "_ref"].unique().tolist()
 
 
