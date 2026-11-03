@@ -12,7 +12,8 @@ logger = logging.getLogger(__name__)
 # Estados únicos (no chocan con los de handlers.py ni con los del vendedor)
 SELECCIONANDO_REF_SAP, SELECCIONANDO_COLOR_SAP, ESPERANDO_REF_SAP = 3, 4, 5
 
-MAX_BOTONES = 20
+MAX_BOTONES = 20   # máximo de referencias en botones
+MAX_COLORES = 90   # máximo de colores en botones (Telegram permite 100 por teclado)
 
 
 def _num(valor, defecto):
@@ -97,11 +98,13 @@ def _pantalla_colores(d: dict):
     filas = [[InlineKeyboardButton("📋 Ver todo", callback_data="sap_all")]]
     filas += [
         [InlineKeyboardButton(color, callback_data=f"sap_col_{i}")]
-        for i, color in enumerate(d["colores"][:MAX_BOTONES])
+        for i, color in enumerate(d["colores"][:MAX_COLORES])
     ]
     if len(d["refs"]) > 1:
         filas.append([InlineKeyboardButton("🔙 Volver a referencias", callback_data="sap_back_refs")])
     texto = f"🔍 Referencia: <b>{esc(d['ref'])}</b>.\nSelecciona un color:"
+    if len(d["colores"]) > MAX_COLORES:
+        texto += f"\n(Mostrando {MAX_COLORES} de {len(d['colores'])} colores; usa «Ver todo» para verlos todos)"
     return texto, InlineKeyboardMarkup(filas)
 
 
