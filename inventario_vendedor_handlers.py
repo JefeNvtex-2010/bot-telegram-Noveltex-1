@@ -13,7 +13,8 @@ logger = logging.getLogger(__name__)
 # Estados únicos (no chocan con los de handlers.py ni con los de SAP)
 SELECCIONANDO_REF_VEND, SELECCIONANDO_COLOR_VEND, ESPERANDO_REF_VEND = 6, 7, 8
 
-MAX_BOTONES = 20
+MAX_BOTONES = 20   # máximo de referencias en botones
+MAX_COLORES = 90   # máximo de colores en botones (Telegram permite 100 por teclado)
 
 
 def _fmt(valor: float) -> str:
@@ -32,7 +33,7 @@ def _pantalla_refs(d: dict):
 
 def _pantalla_colores(d: dict, df):
     # (color, disponible en bodega 01) calculado de forma vectorizada
-    d["colores"] = datos.disponibilidad_bodega01(df, d["ref"])[:MAX_BOTONES]
+    d["colores"] = datos.disponibilidad_bodega01(df, d["ref"])[:MAX_COLORES]
     filas = [
         [InlineKeyboardButton(f"{color} - {_fmt(disp)} MTRS", callback_data=f"vend_col_{i}")]
         for i, (color, disp) in enumerate(d["colores"])
