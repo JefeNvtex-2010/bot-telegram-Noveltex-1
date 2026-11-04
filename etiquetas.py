@@ -1,42 +1,60 @@
 """Etiquetas Zebra Noveltex (10x5 cm, 203 dpi).
 
-Modificado para soportar múltiples impresoras en modo DIRECTO sin usar config.py
+Impresión directa por socket a la IP pública + puerto redirigido de cada Zebra.
+
+Variables de entorno en Render (una pareja por impresora):
+  ZEBRA_IP_81 / ZEBRA_PORT_81
+  ZEBRA_IP_82 / ZEBRA_PORT_82
+  ZEBRA_IP_83 / ZEBRA_PORT_83   (si no existen, usa ZEBRA_IP / ZEBRA_PORT)
+
+- La IP puede ser un dominio (DDNS) y también se puede escribir como 'ip:puerto'.
+- Si existe URL_COLA, se usa la cola (Apps Script) y se ignoran las IP. Bórrala para imprimir directo.
 """
 import datetime
+import logging
 import os
 import socket
 import time
 import requests
 
-# Conexión directa por IP pública + puerto redirigido (variables de entorno en Render).
-#  - ZEBRA 183: usa ZEBRA_IP_183 / ZEBRA_PORT_183 y, si no existen, ZEBRA_IP / ZEBRA_PORT.
-#  - ZEBRA 181: requiere ZEBRA_IP_181 / ZEBRA_PORT_181 (cada impresora tiene su propio puerto).
-def _puerto(*nombres, defecto=9100) -> int:
-    for n in nombres:
-        v = os.environ.get(n, "").strip()
-        if v.isdigit():
-            return int(v)
-    return defecto
-
+logger = logging.getLogger(__name__)
 
 IMPRESORAS_ZEBRA = {
-    "1": {
-        "nombre": "ZEBRA 83",
-        "ip": (os.environ.get("ZEBRA_IP_83") or os.environ.get("ZEBRA_IP") or "").strip(),
-        "port": _puerto("ZEBRA_PORT_83", "ZEBRA_PORT"),
-    },
-    "2": {
-        "nombre": "ZEBRA 81",
-        "ip": os.environ.get("ZEBRA_IP_81", "").strip(),
-        "port": _puerto("ZEBRA_PORT_81"),
-    },
+    "81": {"nombre": "ZEBRA 81"},
+    "82": {"nombre": "ZEBRA 82"},
+    "83": {"nombre": "ZEBRA 83"},
 }
-
-URL_COLA = os.environ.get("URL_COLA", "")
-TOKEN_COLA = os.environ.get("TOKEN_COLA", "")
 
 REINTENTOS = 3
 ESPERA_ENTRE_REINTENTOS = 2  # segundos
+
+
+def _env(*nombres) -> str:
+    for n in nombres:
+        v = os.environ.get(n, "").strip()
+        if v:
+            return v
+    return ""
+
+
+def destino_impresora(id_impresora) -> tuple:
+    """Devuelve (ip, puerto) leyendo las variables de entorno en el momento de imprimir."""
+    id_impresora = str(id_impresora)
+    ip = _env(f"ZEBRA_IP_{id_impresora}")
+    puerto_txt = _env(f"ZEBRA_PORT_{id_impresora}")
+
+    # Compatibilidad: la 83 también puede usar las variables sin sufijo
+    if id_impresora == "83":
+        ip = ip or _env("ZEBRA_IP")
+        puerto_txt = puerto_txt or _env("ZEBRA_PORT")
+
+    # Permite escribir 'ip:puerto' en una sola variable
+    if ":" in ip:
+        ip, _, p = ip.rpartition(":")
+        puerto_txt = p.strip()
+
+    puerto = int(puerto_txt) if puerto_txt.isdigit() else 9100
+    return ip.strip(), puerto
 
 
 def _limpiar(texto) -> str:
@@ -47,12 +65,11 @@ def generar_zpl_noveltex(item, ref, color, metros, centimetros, copias=1, operar
     tz = datetime.timezone(datetime.timedelta(hours=-5))  # Colombia
     ahora = datetime.datetime.now(tz)
     fecha = ahora.strftime("%d/%m/%Y %H:%M")
-    lote = ahora.strftime("%d%m%Y")
 
     item, color = _limpiar(item), _limpiar(color)
     ref = _limpiar(ref)[:20]
     nombre_operario = _limpiar(operario).upper()[:25]
-    
+
     m, cm = int(metros), int(centimetros)
     cant = f"{m:03d}.{cm:02d}"
     codigo = f"{item}{color}{m:03d}{cm:02d}"
@@ -90,6 +107,7 @@ def enviar_a_zebra(zpl: str, ip: str, puerto: int) -> None:
             return
         except OSError as e:
             ultimo_error = e
+            logger.warning("Intento %d/%d fallido hacia %s:%s -> %s", intento, REINTENTOS, ip, puerto, e)
             if intento < REINTENTOS:
                 time.sleep(ESPERA_ENTRE_REINTENTOS)
     raise ConnectionError(
@@ -99,8 +117,10 @@ def enviar_a_zebra(zpl: str, ip: str, puerto: int) -> None:
 
 
 def _encolar(item, referencia, color, metros, centimetros, copias, operario, id_impresora=None) -> None:
+    url_cola = os.environ.get("URL_COLA", "").strip()
+    token_cola = os.environ.get("TOKEN_COLA", "")
     payload = {
-        "token": TOKEN_COLA,
+        "token": token_cola,
         "accion": "encolar",
         "item": str(item),
         "referencia": referencia,
@@ -113,7 +133,7 @@ def _encolar(item, referencia, color, metros, centimetros, copias, operario, id_
     if id_impresora:
         payload["impresora"] = id_impresora
 
-    r = requests.post(URL_COLA, json=payload, timeout=20)
+    r = requests.post(url_cola, json=payload, timeout=20)
     r.raise_for_status()
     datos = r.json()
     if not datos.get("ok"):
@@ -121,15 +141,21 @@ def _encolar(item, referencia, color, metros, centimetros, copias, operario, id_
 
 
 def imprimir_etiqueta(item, referencia, color, metros, centimetros, id_impresora, copias=1, operario="ORIGINAL") -> None:
+    id_impresora = str(id_impresora)
     if id_impresora not in IMPRESORAS_ZEBRA:
         raise ValueError(f"La impresora con ID '{id_impresora}' no está registrada.")
-    config_zebra = IMPRESORAS_ZEBRA[id_impresora]
-    if URL_COLA:
+    nombre = IMPRESORAS_ZEBRA[id_impresora]["nombre"]
+
+    if os.environ.get("URL_COLA", "").strip():
+        logger.info("Etiqueta por COLA (URL_COLA definida) para %s: las IP se ignoran", nombre)
         _encolar(item, referencia, color, metros, centimetros, copias, operario, id_impresora)
-    else:
-        if not config_zebra["ip"]:
-            raise ConnectionError(
-                f"{config_zebra['nombre']} no tiene IP configurada en las variables de entorno."
-            )
-        zpl = generar_zpl_noveltex(item, referencia, color, metros, centimetros, copias, operario)
-        enviar_a_zebra(zpl, config_zebra["ip"], config_zebra["port"])
+        return
+
+    ip, puerto = destino_impresora(id_impresora)
+    if not ip:
+        raise ConnectionError(
+            f"{nombre} no tiene IP configurada (define ZEBRA_IP_{id_impresora} en las variables de entorno)."
+        )
+    logger.info("Enviando etiqueta directa a %s (%s:%s)", nombre, ip, puerto)
+    zpl = generar_zpl_noveltex(item, referencia, color, metros, centimetros, copias, operario)
+    enviar_a_zebra(zpl, ip, puerto)
