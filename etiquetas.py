@@ -21,14 +21,14 @@ def _puerto(*nombres, defecto=9100) -> int:
 
 IMPRESORAS_ZEBRA = {
     "1": {
-        "nombre": "ZEBRA 183",
-        "ip": (os.environ.get("ZEBRA_IP_183") or os.environ.get("ZEBRA_IP") or "").strip(),
-        "port": _puerto("ZEBRA_PORT_183", "ZEBRA_PORT"),
+        "nombre": "ZEBRA 83",
+        "ip": (os.environ.get("ZEBRA_IP_83") or os.environ.get("ZEBRA_IP") or "").strip(),
+        "port": _puerto("ZEBRA_PORT_83", "ZEBRA_PORT"),
     },
     "2": {
-        "nombre": "ZEBRA 181",
-        "ip": os.environ.get("ZEBRA_IP_181", "").strip(),
-        "port": _puerto("ZEBRA_PORT_181"),
+        "nombre": "ZEBRA 81",
+        "ip": os.environ.get("ZEBRA_IP_81", "").strip(),
+        "port": _puerto("ZEBRA_PORT_81"),
     },
 }
 
