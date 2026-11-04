@@ -99,17 +99,20 @@ from guias_handlers import (
 )
 
 from etiquetas_handlers import (
+    ELIGIENDO_IMPRESORA_ET,
     ESPERANDO_COPIAS_ET,
     ESPERANDO_METROS_ET,
     ESPERANDO_REF_ET,
     SELECCIONANDO_COLOR_ET,
     SELECCIONANDO_REF_ET,
     PREGUNTANDO_OTRA_ET,
+    _teclado_impresoras,
     iniciar_etiqueta,
     recibir_copias_et,
     recibir_metros_et,
     recibir_texto_ref_et,
     seleccionar_color_et,
+    seleccionar_impresora_et,
     seleccionar_referencia_et,
     manejar_otra_etiqueta,
 )
@@ -334,6 +337,15 @@ async def handle_voice_message(update, context):
         await update.message.reply_text(f"⚠️ Error técnico voz: {str(e)}")
 
 
+async def recordar_impresora_et(update, context) -> str:
+    """Si el operario escribe texto mientras debe elegir impresora, se le recuerdan los botones."""
+    await update.message.reply_text(
+        "🖨️ Elige la impresora con los botones:",
+        reply_markup=_teclado_impresoras(),
+    )
+    return ELIGIENDO_IMPRESORA_ET
+
+
 class SimpleHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
@@ -450,6 +462,9 @@ def main() -> None:
     )
     texto_copias_et = MessageHandler(
         filters.TEXT & ~filters.COMMAND, recibir_copias_et
+    )
+    texto_impresora_et = MessageHandler(
+        filters.TEXT & ~filters.COMMAND, recordar_impresora_et
     )
     botones_tipo_gu = CallbackQueryHandler(
         elegir_tipo_gu, pattern=r"^gu_tipo_(pedido|factura|menu)$"
@@ -577,6 +592,12 @@ def main() -> None:
         ],
         # Flujo de etiquetas
         ESPERANDO_REF_ET: [texto_ref_et],
+        ELIGIENDO_IMPRESORA_ET: [
+            CallbackQueryHandler(
+                seleccionar_impresora_et, pattern=r"^et_imp_\d+$"
+            ),
+            texto_impresora_et,
+        ],
         SELECCIONANDO_REF_ET: [
             CallbackQueryHandler(
                 seleccionar_referencia_et, pattern=r"^et_ref_\d+$"
@@ -592,7 +613,9 @@ def main() -> None:
         ESPERANDO_METROS_ET: [texto_metros_et],
         ESPERANDO_COPIAS_ET: [texto_copias_et],
         PREGUNTANDO_OTRA_ET: [
-            CallbackQueryHandler(manejar_otra_etiqueta, pattern=r"^et_otra_(si|no)$")
+            CallbackQueryHandler(
+                manejar_otra_etiqueta, pattern=r"^et_otra_(si|no|imp)$"
+            )
         ],
         # Ubicaciones de bodega
         UB_MENU: [botones_ub_cb, texto_ub_menu],
