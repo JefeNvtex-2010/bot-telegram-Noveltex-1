@@ -1,4 +1,4 @@
-"""Flujo guiado /etiqueta: ID operario -> referencia -> color -> cantidad (metros.centímetros) -> nº de etiquetas."""
+"""Flujo guiado /etiqueta: ID operario -> impresora -> referencia -> color -> cantidad (metros.centímetros) -> nº de etiquetas."""
 import asyncio
 import csv
 import io
@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 # Estados como texto para no chocar con los de los demás módulos
 ESPERANDO_REF_ET = "et_esperando_ref"
+ELIGIENDO_IMPRESORA_ET = "et_eligiendo_impresora"
 SELECCIONANDO_REF_ET = "et_seleccionando_ref"
 SELECCIONANDO_COLOR_ET = "et_seleccionando_color"
 ESPERANDO_METROS_ET = "et_esperando_metros"
@@ -28,8 +29,10 @@ MAX_BOTONES = 40
 MAX_METROS = 999
 MAX_COPIAS = 50
 
-# Impresora por defecto ("1" = Zebra Principal, "2" = Zebra Nueva en etiquetas.py)
-IMPRESORA_DEFECTO = os.environ.get("IMPRESORA_DEFECTO", "1")
+# Impresora de respaldo si por alguna razón no hay una elegida (IDs: "81", "82", "83")
+IMPRESORA_DEFECTO = os.environ.get("IMPRESORA_DEFECTO", "83").strip()
+if IMPRESORA_DEFECTO not in IMPRESORAS_ZEBRA:
+    IMPRESORA_DEFECTO = "83"
 
 # Google Sheet AUDITORIA_BOT, pestaña ETIQUETAS (columnas: OPERARIO | ID)
 SHEET_ID_OPERARIOS = os.environ.get(
@@ -65,9 +68,21 @@ def _cargar_operarios() -> dict:
 
 
 def _operario_actual(context: ContextTypes.DEFAULT_TYPE) -> dict:
-    """Devuelve solo los datos del operario ya validado (para conservarlos entre pasos)."""
+    """Devuelve los datos del operario validado y su impresora (para conservarlos entre pasos)."""
     et = context.user_data.get("et", {})
-    return {k: et[k] for k in ("operario", "id_operario") if k in et}
+    return {k: et[k] for k in ("operario", "id_operario", "impresora") if k in et}
+
+
+def _teclado_impresoras() -> InlineKeyboardMarkup:
+    fila = [
+        InlineKeyboardButton(f"🖨️ {id_imp}", callback_data=f"et_imp_{id_imp}")
+        for id_imp in IMPRESORAS_ZEBRA
+    ]
+    return InlineKeyboardMarkup([fila])
+
+
+def _nombre_impresora(id_imp: str) -> str:
+    return IMPRESORAS_ZEBRA.get(id_imp, {}).get("nombre", id_imp)
 
 
 async def _responder(update: Update, texto: str, markup=None) -> None:
@@ -146,7 +161,26 @@ async def _validar_id_operario(update: Update, context: ContextTypes.DEFAULT_TYP
     et = context.user_data.setdefault("et", {})
     et["operario"] = nombre
     et["id_operario"] = id_txt
-    await update.message.reply_text(f"✅ Hola, {nombre}.\n\nEscribe la referencia:")
+    await update.message.reply_text(
+        f"✅ Hola, {nombre}.\n\n🖨️ ¿En qué impresora vas a imprimir?",
+        reply_markup=_teclado_impresoras(),
+    )
+    return ELIGIENDO_IMPRESORA_ET
+
+
+async def seleccionar_impresora_et(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
+    q = update.callback_query
+    await q.answer()
+    id_imp = q.data.rsplit("_", 1)[1]
+    if id_imp not in IMPRESORAS_ZEBRA:
+        return ELIGIENDO_IMPRESORA_ET
+
+    et = context.user_data.setdefault("et", {})
+    et["impresora"] = id_imp
+    await _responder(
+        update,
+        f"🖨️ Impresora: {_nombre_impresora(id_imp)}\n\nEscribe la referencia:",
+    )
     return ESPERANDO_REF_ET
 
 
@@ -206,7 +240,7 @@ async def recibir_texto_ref_et(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def seleccionar_referencia_et(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
     q = update.callback_query
-    await q.answer() # Evita expiración de botones de Telegram
+    await q.answer()  # Evita expiración de botones de Telegram
     idx = int(q.data.rsplit("_", 1)[1])
     refs = context.user_data.get("et", {}).get("refs", [])
     if idx >= len(refs):
@@ -220,9 +254,9 @@ async def seleccionar_referencia_et(update: Update, context: ContextTypes.DEFAUL
 
 async def seleccionar_color_et(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
     q = update.callback_query
-    await q.answer() # Evita expiración de botones de Telegram
+    await q.answer()  # Evita expiración de botones de Telegram
     if q.data == "et_back":
-        context.user_data["et"] = _operario_actual(context)  # conserva al operario
+        context.user_data["et"] = _operario_actual(context)  # conserva operario e impresora
         await _responder(update, "Escribe la referencia:")
         return ESPERANDO_REF_ET
 
@@ -293,22 +327,27 @@ async def recibir_copias_et(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if any(k not in et for k in campos):
         await update.message.reply_text("⚠️ Se perdió la selección. Escribe /etiqueta para empezar de nuevo.")
         return ConversationHandler.END
+
+    id_imp = et.get("impresora") or IMPRESORA_DEFECTO
+    nombre_imp = _nombre_impresora(id_imp)
     try:
         await asyncio.to_thread(
             imprimir_etiqueta,
             et["item"], et["ref"], et["color"], et["metros"], et["cm"],
-            IMPRESORA_DEFECTO,  # id_impresora: va antes de copias en etiquetas.py
+            id_imp,  # id_impresora: va antes de copias en etiquetas.py
             copias, et["operario"],
         )
     except Exception:
-        logger.exception("No se pudo imprimir la etiqueta")
+        logger.exception("No se pudo imprimir la etiqueta en %s", nombre_imp)
         await update.message.reply_text(
-            "⚠️ No se pudo enviar la etiqueta a la impresora. Escribe /etiqueta para reintentar."
+            f"⚠️ No se pudo enviar la etiqueta a {nombre_imp}. "
+            "Revisa que esté encendida y con red, o prueba con otra impresora.\n\n"
+            "Escribe /etiqueta para reintentar."
         )
         return ConversationHandler.END
     logger.info(
-        "Etiqueta impresa por %s (ID %s): item %s ref %s color %s cant %03d.%02d copias %d",
-        et["operario"], et.get("id_operario"), et["item"], et["ref"], et["color"],
+        "Etiqueta impresa en %s por %s (ID %s): item %s ref %s color %s cant %03d.%02d copias %d",
+        nombre_imp, et["operario"], et.get("id_operario"), et["item"], et["ref"], et["color"],
         et["metros"], et["cm"], copias,
     )
     cant = f"{et['metros']:03d}.{et['cm']:02d}"
@@ -316,14 +355,15 @@ async def recibir_copias_et(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         [
             InlineKeyboardButton("🔄 Sí, generar otra", callback_data="et_otra_si"),
             InlineKeyboardButton("❌ No, terminar", callback_data="et_otra_no"),
-        ]
+        ],
+        [InlineKeyboardButton("🖨️ Cambiar impresora", callback_data="et_otra_imp")],
     ]
     reply_markup = InlineKeyboardMarkup(botones_otra)
     await update.message.reply_text(
         f"✅ Etiqueta enviada:\nItem {et['item']} · {et['ref']} · Color {et.get('color_nombre', et['color'])}\n"
         f"Cantidad {cant} · Etiquetas {copias}\n"
         f"Operario: {et['operario']}\n"
-        f"Impresora: {IMPRESORAS_ZEBRA.get(IMPRESORA_DEFECTO, {}).get('nombre', IMPRESORA_DEFECTO)}\n\n"
+        f"Impresora: {nombre_imp}\n\n"
         "¿Deseas generar otra etiqueta?",
         reply_markup=reply_markup,
     )
@@ -331,14 +371,22 @@ async def recibir_copias_et(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 
 async def manejar_otra_etiqueta(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
-    """Evalúa la acción elegida por el operador (generar otra o cerrar)."""
+    """Evalúa la acción elegida por el operador (generar otra, cambiar impresora o cerrar)."""
     q = update.callback_query
-    await q.answer() # Evita expiración de botones de Telegram
+    await q.answer()  # Evita expiración de botones de Telegram
     if q.data == "et_otra_si":
-        context.user_data["et"] = _operario_actual(context)  # limpia todo menos al operario
+        context.user_data["et"] = _operario_actual(context)  # limpia todo menos operario e impresora
         await q.edit_message_text("🏷️ Etiqueta Zebra\n\nEscribe la referencia:")
         return ESPERANDO_REF_ET
-    else:
-        context.user_data.pop("et", None)
-        await q.edit_message_text("👍 Entendido. Proceso de etiquetado cerrado correctamente.")
-        return ConversationHandler.END
+    if q.data == "et_otra_imp":
+        et = _operario_actual(context)
+        et.pop("impresora", None)
+        context.user_data["et"] = et
+        await q.edit_message_text(
+            "🖨️ ¿En qué impresora vas a imprimir?",
+            reply_markup=_teclado_impresoras(),
+        )
+        return ELIGIENDO_IMPRESORA_ET
+    context.user_data.pop("et", None)
+    await q.edit_message_text("👍 Entendido. Proceso de etiquetado cerrado correctamente.")
+    return ConversationHandler.END
