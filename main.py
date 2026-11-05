@@ -653,7 +653,7 @@ def main() -> None:
         ESPERANDO_COPIAS_ET: [texto_copias_et],
         PREGUNTANDO_OTRA_ET: [
             CallbackQueryHandler(
-                manejar_otra_etiqueta, pattern=r"^et_otra_(si|no|imp)$"
+                manejar_otra_etiqueta, pattern=r"^et_otra_(si|no|imp|color|metraje)$"
             )
         ],
         # Ubicaciones de bodega
