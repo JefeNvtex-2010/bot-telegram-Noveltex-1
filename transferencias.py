@@ -77,6 +77,25 @@ def _cargar_operarios() -> dict:
     return operarios
 
 
+# --------------------------------------------------------------------------- #
+# Seguridad: el ID del operario no debe quedar visible en el chat
+# --------------------------------------------------------------------------- #
+async def _borrar_mensaje_usuario(update: Update) -> None:
+    """Borra al instante el mensaje del usuario (el ID no queda visible en el chat)."""
+    try:
+        await update.message.delete()
+    except Exception as e:
+        logger.warning(f"Transferencias: no se pudo borrar el mensaje con el ID: {e}")
+
+
+async def _responder_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, texto: str, **kwargs):
+    """Como responder(), pero envía al chat sin citar el mensaje del usuario (ya borrado)."""
+    kwargs.setdefault("parse_mode", ParseMode.HTML)
+    msg = await update.effective_chat.send_message(texto, **kwargs)
+    programar_borrado(context, msg)
+    return msg
+
+
 def _extraer_codigo_y_cantidad(texto: str):
     digitos = re.sub(r"\D", "", str(texto))
     if len(digitos) != 12:
@@ -209,7 +228,8 @@ async def iniciar_transferencias(update: Update, context: ContextTypes.DEFAULT_T
     # Al entrar al módulo, pedimos directamente el ID de operario
     texto = (
         "🔐 <b>Validación de Operario</b>\n\n"
-        "Por favor, escribe tu <b>ID de operario</b> registrado en el sistema para continuar:"
+        "Por favor, escribe tu <b>ID de operario</b> registrado en el sistema para continuar.\n"
+        "<i>Tu mensaje se borrará automáticamente por seguridad.</i>"
     )
 
     query = update.callback_query
@@ -226,28 +246,39 @@ async def iniciar_transferencias(update: Update, context: ContextTypes.DEFAULT_T
 
 
 async def recibir_id_tr(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Valida el ID contra la pestaña TRANSFERENCIAS al ingresar al módulo."""
-    programar_borrado(context, update.message)
+    """Valida el ID contra la pestaña TRANSFERENCIAS al ingresar al módulo.
+
+    El mensaje con el ID se borra al instante para que no quede visible en el chat.
+    """
     tr = context.user_data.setdefault("tr", {})
     id_txt = re.sub(r"\D", "", update.message.text or "")
+    await _borrar_mensaje_usuario(update)  # el ID no queda visible en el chat
 
     if not id_txt:
-        await responder(update, context, "⚠️ Por favor, escribe un ID válido:", reply_markup=InlineKeyboardMarkup([_boton_menu()]))
+        await _responder_chat(
+            update, context,
+            "⚠️ Por favor, escribe un ID válido:",
+            reply_markup=InlineKeyboardMarkup([_boton_menu()]),
+        )
         return TR_ESPERANDO_ID
 
     try:
         operarios = await asyncio.to_thread(_cargar_operarios)
     except Exception as e:
         logger.error(f"Transferencias: no se pudo leer la lista de operarios: {e}", exc_info=True)
-        await responder(update, context, "⚠️ No pude consultar la lista de operarios. Intenta de nuevo:", reply_markup=InlineKeyboardMarkup([_boton_menu()]))
+        await _responder_chat(
+            update, context,
+            "⚠️ No pude consultar la lista de operarios. Intenta de nuevo:",
+            reply_markup=InlineKeyboardMarkup([_boton_menu()]),
+        )
         return TR_ESPERANDO_ID
 
     nombre = operarios.get(id_txt)
     if not nombre:
-        await responder(
+        await _responder_chat(
             update, context,
             "❌ <b>ID no autorizado.</b> El ID ingresado no está registrado en la hoja. Intenta de nuevo:",
-            reply_markup=InlineKeyboardMarkup([_boton_menu()])
+            reply_markup=InlineKeyboardMarkup([_boton_menu()]),
         )
         return TR_ESPERANDO_ID
 
@@ -257,7 +288,11 @@ async def recibir_id_tr(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
     # Una vez validado el ID, mostramos el menú de tipos de movimiento
     texto, teclado = _pantalla_menu()
-    await responder(update, context, f"✅ ¡Hola, <b>{esc(nombre)}</b>! ID verificado.\n\n{texto}", reply_markup=teclado)
+    await _responder_chat(
+        update, context,
+        f"✅ ¡Hola, <b>{esc(nombre)}</b>! ID verificado.\n\n{texto}",
+        reply_markup=teclado,
+    )
     return TR_MENU
 
 
