@@ -18,11 +18,26 @@ MAX_BOTONES = 20   # máximo de referencias en botones
 MAX_COLORES = 90   # máximo de colores en botones (Telegram permite 100 por teclado)
 MAX_CHARS_MSG = 3500  # Telegram permite 4096; se deja margen para las etiquetas
 
-# Espacio del ancho de un dígito: Telegram no lo colapsa ni lo recorta
-ESP = "\u2007"
-# Una letra mayúscula ocupa más que un dígito. Si los precios quedan corridos
-# a la derecha sube este valor; si quedan corridos a la izquierda, bájalo.
-ANCHO_LETRA = 1.3
+# --- Alineación de los botones -------------------------------------------
+# Espacios invisibles que Telegram no recorta:
+ESP_DIGITO = "\u2007"   # ancho de un dígito
+ESP_PUNTO = "\u2008"    # ancho de un punto (≈ medio dígito)
+SEP_BTN = "\u2009·\u2009"  # separador entre columnas (espacios finos)
+PLACEHOLDER_PRECIO = "—"   # lo que se muestra si el color no tiene precio
+
+# Ancho estimado de cada carácter, tomando un dígito = 1.0
+# (si los precios quedan corridos, ajusta estos valores)
+_ANCHO_MAYUS = {
+    "A": 1.16, "B": 1.14, "C": 1.18, "D": 1.16, "E": 1.02, "F": 0.98,
+    "G": 1.20, "H": 1.27, "I": 0.48, "J": 0.96, "K": 1.13, "L": 0.96,
+    "M": 1.55, "N": 1.27, "O": 1.23, "P": 1.11, "Q": 1.23, "R": 1.13,
+    "S": 1.07, "T": 1.07, "U": 1.25, "V": 1.13, "W": 1.61, "X": 1.11,
+    "Y": 1.05, "Z": 1.07,
+}
+_ANCHO_OTROS = {
+    " ": 0.45, ",": 0.45, ".": 0.47, "-": 0.50, "·": 0.47,
+    "$": 1.00, "—": 1.60, "/": 0.60,
+}
 
 
 def _fmt(valor: float) -> str:
@@ -129,17 +144,17 @@ def _precios_por_color(df, ref: str, colores) -> dict:
         if precios:
             resultado[color] = precios[0]
 
-    if not resultado:
+    sin_precio = [c for c, _ in colores if c not in resultado]
+    if sin_precio:
         logger.warning(
-            "Precio Carton: no se pudo asignar precio a ningún color de %s "
-            "(columna de color: %s, columnas del inventario: %s)",
-            ref, col_color or col_desc, list(df.columns),
+            "Precio Carton: %s sin precio en %s (columna de color: %s)",
+            ref, sin_precio, col_color or col_desc,
         )
     return resultado
 
 
 # ---------------------------------------------------------------------------
-# TEXTOS (botones y compartir)
+# TEXTOS (compartir y botones)
 # ---------------------------------------------------------------------------
 def _texto_color(d: dict, color: str, disp: float) -> str:
     """Texto para compartir: '600 NEGRO - 7,941.88 MTRS - $2.990' (sin relleno)."""
@@ -150,31 +165,62 @@ def _texto_color(d: dict, color: str, disp: float) -> str:
     return texto
 
 
+def _ancho(texto: str) -> float:
+    """Ancho estimado del texto, en 'dígitos' (1.0 = lo que mide un dígito)."""
+    total = 0.0
+    for ch in str(texto):
+        if ch.isdigit():
+            total += 1.0
+        elif ch in _ANCHO_OTROS:
+            total += _ANCHO_OTROS[ch]
+        else:
+            base = unicodedata.normalize("NFKD", ch)[:1].upper()
+            total += _ANCHO_MAYUS.get(base, 1.10)
+    return total
+
+
+def _relleno(unidades: float) -> str:
+    """Espacios invisibles que suman aproximadamente 'unidades' dígitos de ancho."""
+    if unidades <= 0:
+        return ""
+    n = int(unidades)
+    resto = unidades - n
+    if resto >= 0.72:
+        n += 1
+    elif resto >= 0.24:
+        return ESP_DIGITO * n + ESP_PUNTO
+    return ESP_DIGITO * n
+
+
 def _calcular_anchos(d: dict) -> None:
-    """Calcula los anchos de columna para alinear los botones."""
+    """Calcula el ancho de cada columna (en 'dígitos') para alinear los botones."""
     colores = d["colores"]
-    d["w_color"] = max((len(str(c)) for c, _ in colores), default=0)
-    d["w_metros"] = max((len(_fmt_metros(v)) for _, v in colores), default=0)
-    d["w_precio"] = max(
-        (len(_fmt_precio(p)) for p in d.get("precios", {}).values()), default=0
-    )
+    precios = d.get("precios", {})
+    d["w_color"] = max((_ancho(c) for c, _ in colores), default=0)
+    d["w_metros"] = max((_ancho(_fmt_metros(v)) for _, v in colores), default=0)
+    if precios:
+        d["w_precio"] = max(
+            max(_ancho(_fmt_precio(p)) for p in precios.values()),
+            _ancho(PLACEHOLDER_PRECIO),
+        )
+    else:
+        d["w_precio"] = 0  # ningún precio: se omite la columna
 
 
 def _texto_boton(d: dict, color: str, disp: float) -> str:
-    """'600 NEGRO · 7,941.88 · $2.990' con relleno para que las columnas queden alineadas."""
-    relleno_color = ESP * round((d["w_color"] - len(str(color))) * ANCHO_LETRA)
-    metros = _fmt_metros(disp)
-    relleno_metros = ESP * (d["w_metros"] - len(metros))
+    """'600 NEGRO · 7,941.88 MTRS · $2.990' con las columnas alineadas."""
+    col = f"{color}{_relleno(d['w_color'] - _ancho(color))}"
 
-    precio = d.get("precios", {}).get(color)
-    txt_precio = _fmt_precio(precio) if precio else ""
-    relleno_precio = ESP * (d["w_precio"] - len(txt_precio))
+    m = _fmt_metros(disp)
+    met = f"{_relleno(d['w_metros'] - _ancho(m))}{m} MTRS"
 
-    return (
-        f"{color}{relleno_color} · "
-        f"{relleno_metros}{metros} · "
-        f"{relleno_precio}{txt_precio}"
-    ).rstrip(" ·" + ESP)
+    texto = f"{col}{SEP_BTN}{met}"
+
+    if d["w_precio"]:
+        precio = d.get("precios", {}).get(color)
+        p = _fmt_precio(precio) if precio else PLACEHOLDER_PRECIO
+        texto += f"{SEP_BTN}{_relleno(d['w_precio'] - _ancho(p))}{p}"
+    return texto
 
 
 # ---------------------------------------------------------------------------
