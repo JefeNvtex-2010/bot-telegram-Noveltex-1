@@ -18,9 +18,20 @@ MAX_BOTONES = 20   # máximo de referencias en botones
 MAX_COLORES = 90   # máximo de colores en botones (Telegram permite 100 por teclado)
 MAX_CHARS_MSG = 3500  # Telegram permite 4096; se deja margen para las etiquetas
 
+# Espacio del ancho de un dígito: Telegram no lo colapsa ni lo recorta
+ESP = "\u2007"
+# Una letra mayúscula ocupa más que un dígito. Si los precios quedan corridos
+# a la derecha sube este valor; si quedan corridos a la izquierda, bájalo.
+ANCHO_LETRA = 1.3
+
 
 def _fmt(valor: float) -> str:
     return f"{int(valor)}" if float(valor).is_integer() else f"{valor:,.2f}"
+
+
+def _fmt_metros(valor: float) -> str:
+    """Siempre con 2 decimales: 7,941.88 / 378.00 / 0.00"""
+    return f"{valor:,.2f}"
 
 
 # ---------------------------------------------------------------------------
@@ -127,14 +138,43 @@ def _precios_por_color(df, ref: str, colores) -> dict:
     return resultado
 
 
+# ---------------------------------------------------------------------------
+# TEXTOS (botones y compartir)
+# ---------------------------------------------------------------------------
 def _texto_color(d: dict, color: str, disp: float) -> str:
-    """'600 NEGRO - 7,941.88 MTRS - $2.990' (sin precio si no tiene).
-    Se usa igual en los botones y en el texto de 'Clic para compartir'."""
-    texto = f"{color} - {_fmt(disp)} MTRS"
+    """Texto para compartir: '600 NEGRO - 7,941.88 MTRS - $2.990' (sin relleno)."""
+    texto = f"{color} - {_fmt_metros(disp)} MTRS"
     precio = d.get("precios", {}).get(color)
     if precio:
         texto += f" - {_fmt_precio(precio)}"
     return texto
+
+
+def _calcular_anchos(d: dict) -> None:
+    """Calcula los anchos de columna para alinear los botones."""
+    colores = d["colores"]
+    d["w_color"] = max((len(str(c)) for c, _ in colores), default=0)
+    d["w_metros"] = max((len(_fmt_metros(v)) for _, v in colores), default=0)
+    d["w_precio"] = max(
+        (len(_fmt_precio(p)) for p in d.get("precios", {}).values()), default=0
+    )
+
+
+def _texto_boton(d: dict, color: str, disp: float) -> str:
+    """'600 NEGRO · 7,941.88 · $2.990' con relleno para que las columnas queden alineadas."""
+    relleno_color = ESP * round((d["w_color"] - len(str(color))) * ANCHO_LETRA)
+    metros = _fmt_metros(disp)
+    relleno_metros = ESP * (d["w_metros"] - len(metros))
+
+    precio = d.get("precios", {}).get(color)
+    txt_precio = _fmt_precio(precio) if precio else ""
+    relleno_precio = ESP * (d["w_precio"] - len(txt_precio))
+
+    return (
+        f"{color}{relleno_color} · "
+        f"{relleno_metros}{metros} · "
+        f"{relleno_precio}{txt_precio}"
+    ).rstrip(" ·" + ESP)
 
 
 # ---------------------------------------------------------------------------
@@ -155,9 +195,10 @@ def _pantalla_colores(d: dict, df):
     d["colores"] = datos.disponibilidad_bodega01(df, d["ref"])[:MAX_COLORES]
     # {color: precio carton}
     d["precios"] = _precios_por_color(df, d["ref"], d["colores"])
+    _calcular_anchos(d)
 
     filas = [
-        [InlineKeyboardButton(_texto_color(d, color, disp), callback_data=f"vend_col_{i}")]
+        [InlineKeyboardButton(_texto_boton(d, color, disp), callback_data=f"vend_col_{i}")]
         for i, (color, disp) in enumerate(d["colores"])
     ]
     if len(d["refs"]) > 1:
@@ -165,12 +206,16 @@ def _pantalla_colores(d: dict, df):
     # Botón final: convierte la lista a texto para copiar/reenviar
     filas.append([InlineKeyboardButton("📋 Clic para compartir", callback_data="vend_share")])
 
-    texto = f"🔍 Referencia: <b>{esc(d['ref'])}</b>.\nSelecciona un color:"
+    texto = (
+        f"🔍 Referencia: <b>{esc(d['ref'])}</b>.\n"
+        "Selecciona un color:\n"
+        "<i>Color · Metros · Precio Carton</i>"
+    )
     return texto, InlineKeyboardMarkup(filas)
 
 
 def _lineas_compartir(d: dict) -> list:
-    """Una línea por botón, con el mismo texto que el botón."""
+    """Una línea por color, en texto plano."""
     return [_texto_color(d, color, disp) for color, disp in d["colores"]]
 
 
@@ -337,7 +382,7 @@ async def seleccionar_color_vendedor(update: Update, context: ContextTypes.DEFAU
 
     # Un solo query.answer() (antes se llamaba dos veces y el aviso nunca se mostraba)
     await query.answer(
-        text=f"{d['ref']} - {color}\nDisponible en bodega 01: {_fmt(disp)} MTRS{linea_precio}",
+        text=f"{d['ref']} - {color}\nDisponible en bodega 01: {_fmt_metros(disp)} MTRS{linea_precio}",
         show_alert=True,
     )
     return SELECCIONANDO_COLOR_VEND
