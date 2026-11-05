@@ -18,7 +18,13 @@ MAX_BOTONES = 20   # máximo de referencias en botones
 MAX_COLORES = 90   # máximo de colores en botones (Telegram permite 100 por teclado)
 MAX_CHARS_MSG = 3500  # Telegram permite 4096; se deja margen para las etiquetas
 
-# --- Alineación de los botones -------------------------------------------
+# Cómo se ve el texto de "Clic para compartir":
+#   "alineado"    -> igual que los botones (columnas con espacios invisibles)
+#   "monoespacio" -> bloque de letra monoespaciada (alineación exacta)
+#   "simple"      -> una línea por color, sin alinear
+COMPARTIR_MODO = "alineado"
+
+# --- Alineación de los botones y del texto compartido ---------------------
 # Espacios invisibles que Telegram no recorta:
 ESP_DIGITO = "\u2007"   # ancho de un dígito
 ESP_PUNTO = "\u2008"    # ancho de un punto (≈ medio dígito)
@@ -154,10 +160,10 @@ def _precios_por_color(df, ref: str, colores) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# TEXTOS (compartir y botones)
+# TEXTOS (botones y compartir)
 # ---------------------------------------------------------------------------
 def _texto_color(d: dict, color: str, disp: float) -> str:
-    """Texto para compartir: '600 NEGRO - 7,941.88 MTRS - $2.990' (sin relleno)."""
+    """Formato simple: '600 NEGRO - 7,941.88 MTRS - $2.990' (sin relleno)."""
     texto = f"{color} - {_fmt_metros(disp)} MTRS"
     precio = d.get("precios", {}).get(color)
     if precio:
@@ -193,7 +199,7 @@ def _relleno(unidades: float) -> str:
 
 
 def _calcular_anchos(d: dict) -> None:
-    """Calcula el ancho de cada columna (en 'dígitos') para alinear los botones."""
+    """Calcula el ancho de cada columna (en 'dígitos') para alinear botones y texto."""
     colores = d["colores"]
     precios = d.get("precios", {})
     d["w_color"] = max((_ancho(c) for c, _ in colores), default=0)
@@ -221,6 +227,21 @@ def _texto_boton(d: dict, color: str, disp: float) -> str:
         p = _fmt_precio(precio) if precio else PLACEHOLDER_PRECIO
         texto += f"{SEP_BTN}{_relleno(d['w_precio'] - _ancho(p))}{p}"
     return texto
+
+
+def _texto_monoespacio(d: dict, color: str, disp: float) -> str:
+    """Línea para bloque monoespaciado: la alineación es exacta."""
+    colores = d["colores"]
+    wc = max((len(str(c)) for c, _ in colores), default=0)
+    wm = max((len(_fmt_metros(v)) for _, v in colores), default=0)
+    linea = f"{str(color):<{wc}} · {_fmt_metros(disp):>{wm}} MTRS"
+    if d["w_precio"]:
+        precios = d.get("precios", {})
+        wp = max((len(_fmt_precio(p)) for p in precios.values()), default=1)
+        precio = precios.get(color)
+        p = _fmt_precio(precio) if precio else PLACEHOLDER_PRECIO
+        linea += f" · {p:>{wp}}"
+    return linea
 
 
 # ---------------------------------------------------------------------------
@@ -261,12 +282,17 @@ def _pantalla_colores(d: dict, df):
 
 
 def _lineas_compartir(d: dict) -> list:
-    """Una línea por color, en texto plano."""
-    return [_texto_color(d, color, disp) for color, disp in d["colores"]]
+    """Una línea por color, según COMPARTIR_MODO."""
+    if COMPARTIR_MODO == "monoespacio":
+        return [_texto_monoespacio(d, color, disp) for color, disp in d["colores"]]
+    if COMPARTIR_MODO == "simple":
+        return [_texto_color(d, color, disp) for color, disp in d["colores"]]
+    # "alineado": exactamente el mismo texto que los botones
+    return [_texto_boton(d, color, disp) for color, disp in d["colores"]]
 
 
 def _mensajes_compartir(d: dict) -> list:
-    """Texto plano listo para copiar/reenviar. Si es muy largo, se divide en varios mensajes."""
+    """Texto listo para copiar/reenviar. Si es muy largo, se divide en varios mensajes."""
     encabezado = f"🔍 Referencia: <b>{esc(d['ref'])}</b> (Bodega 01)\n\n"
     lineas = _lineas_compartir(d)
 
@@ -283,6 +309,8 @@ def _mensajes_compartir(d: dict) -> list:
     mensajes = []
     for i, bloque in enumerate(partes):
         cuerpo = esc("\n".join(bloque))
+        if COMPARTIR_MODO == "monoespacio":
+            cuerpo = f"<pre>{cuerpo}</pre>"
         cabecera = encabezado if i == 0 else f"🔍 <b>{esc(d['ref'])}</b> (continuación)\n\n"
         mensajes.append(cabecera + cuerpo)
     return mensajes
