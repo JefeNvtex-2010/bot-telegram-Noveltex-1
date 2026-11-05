@@ -14,7 +14,7 @@ from telegram.ext import ContextTypes, ConversationHandler
 
 import datos
 from etiquetas import IMPRESORAS_ZEBRA, imprimir_etiqueta
-from handlers import registrar_uso_bot
+from handlers import _teclado_menu, menu_inicio, registrar_uso_bot
 
 logger = logging.getLogger(__name__)
 
@@ -84,12 +84,53 @@ def _operario_actual(context: ContextTypes.DEFAULT_TYPE) -> dict:
     return {k: et[k] for k in ("operario", "id_operario", "impresora") if k in et}
 
 
+# --------------------------------------------------------------------------- #
+# Botón "Menú principal" (vuelve al inicio, igual que /i)
+# --------------------------------------------------------------------------- #
+def _boton_menu_et():
+    return [InlineKeyboardButton("🏠 Menú principal", callback_data="et_menu")]
+
+
+def _teclado_menu_et() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([_boton_menu_et()])
+
+
+async def volver_menu_et(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Cierra el flujo de etiquetas y muestra el menú principal (equivale a /i).
+
+    Funciona desde cualquier paso: en main.py se registra como fallback del
+    ConversationHandler con el patrón ^et_menu$.
+    """
+    context.user_data.pop("et", None)  # se cierra la sesión del operario
+    q = update.callback_query
+    texto_actual = (q.message.text or "") if q and q.message else ""
+
+    if texto_actual.startswith("✅ Etiqueta enviada"):
+        # Se conserva el resumen de la etiqueta como registro (solo se quitan
+        # los botones) y el menú sale en un mensaje nuevo debajo.
+        await q.answer()
+        try:
+            await q.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        user = update.effective_user
+        teclado = _teclado_menu(user.id if user else 0)
+        if teclado is None:
+            texto = "⛔ Todavía no tienes funciones habilitadas. Escribe /miid y pásale tu ID al administrador."
+        else:
+            texto = "👋 ¡Hola! Selecciona una opción del menú principal para comenzar:"
+        await q.message.reply_text(texto, reply_markup=teclado)
+        return ConversationHandler.END
+
+    return await menu_inicio(update, context)
+
+
 def _teclado_impresoras() -> InlineKeyboardMarkup:
     fila = [
         InlineKeyboardButton(f"🖨️ {id_imp}", callback_data=f"et_imp_{id_imp}")
         for id_imp in IMPRESORAS_ZEBRA
     ]
-    return InlineKeyboardMarkup([fila])
+    return InlineKeyboardMarkup([fila, _boton_menu_et()])
 
 
 def _nombre_impresora(id_imp: str) -> str:
@@ -176,14 +217,19 @@ def _registrar_fallo(context: ContextTypes.DEFAULT_TYPE) -> bool:
 async def _avisar_bloqueo(chat, segundos: int) -> None:
     minutos = max(1, (segundos + 59) // 60)
     await chat.send_message(
-        f"⛔ Demasiados intentos fallidos. Intenta de nuevo en {minutos} min."
+        f"⛔ Demasiados intentos fallidos. Intenta de nuevo en {minutos} min.",
+        reply_markup=_teclado_menu_et(),
     )
 
 
 async def iniciar_etiqueta(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
     registrar_uso_bot(update, "BOTÓN_ETIQUETA" if update.callback_query else "/ETIQUETA")
     context.user_data["et"] = {}  # sin operario: se pedirá el ID
-    await _responder(update, "🏷️ Etiqueta Zebra\n\nEscribe tu ID de operario:")
+    await _responder(
+        update,
+        "🏷️ Etiqueta Zebra\n\nEscribe tu ID de operario:",
+        _teclado_menu_et(),
+    )
     return ESPERANDO_REF_ET
 
 
@@ -214,7 +260,8 @@ async def _validar_id_operario(update: Update, context: ContextTypes.DEFAULT_TYP
     except Exception:
         logger.exception("No se pudo leer la lista de operarios de etiquetas")
         await chat.send_message(
-            "⚠️ No pude consultar la lista de operarios. Intenta de nuevo en un momento:"
+            "⚠️ No pude consultar la lista de operarios. Intenta de nuevo en un momento:",
+            reply_markup=_teclado_menu_et(),
         )
         return ESPERANDO_REF_ET
 
@@ -223,14 +270,17 @@ async def _validar_id_operario(update: Update, context: ContextTypes.DEFAULT_TYP
         if _registrar_fallo(context):
             await _avisar_bloqueo(chat, SEGUNDOS_BLOQUEO)
         else:
-            await chat.send_message("❌ ID no autorizado. Escribe tu ID de operario:")
+            await chat.send_message(
+                "❌ ID no autorizado. Escribe tu ID de operario:",
+                reply_markup=_teclado_menu_et(),
+            )
         return ESPERANDO_REF_ET
 
     nombre, pin = registro
     if pin:
         # El ID es válido pero falta el PIN: la sesión aún NO queda abierta
         context.user_data["et"] = {"id_pendiente": id_txt}
-        await chat.send_message("🔒 Escribe tu PIN:")
+        await chat.send_message("🔒 Escribe tu PIN:", reply_markup=_teclado_menu_et())
         return ESPERANDO_REF_ET
 
     return await _aceptar_operario(chat, context, id_txt, nombre)
@@ -253,7 +303,10 @@ async def _validar_pin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> st
         operarios = await asyncio.to_thread(_cargar_operarios)
     except Exception:
         logger.exception("No se pudo leer la lista de operarios de etiquetas")
-        await chat.send_message("⚠️ No pude consultar la lista de operarios. Intenta de nuevo:")
+        await chat.send_message(
+            "⚠️ No pude consultar la lista de operarios. Intenta de nuevo:",
+            reply_markup=_teclado_menu_et(),
+        )
         return ESPERANDO_REF_ET
 
     registro = operarios.get(id_pendiente)
@@ -263,7 +316,10 @@ async def _validar_pin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> st
         if bloqueado:
             await _avisar_bloqueo(chat, SEGUNDOS_BLOQUEO)
         else:
-            await chat.send_message("❌ PIN incorrecto. Escribe tu ID de operario:")
+            await chat.send_message(
+                "❌ PIN incorrecto. Escribe tu ID de operario:",
+                reply_markup=_teclado_menu_et(),
+            )
         return ESPERANDO_REF_ET
 
     return await _aceptar_operario(chat, context, id_pendiente, registro[0])
@@ -281,6 +337,7 @@ async def seleccionar_impresora_et(update: Update, context: ContextTypes.DEFAULT
     await _responder(
         update,
         f"🖨️ Impresora: {_nombre_impresora(id_imp)}\n\nEscribe la referencia:",
+        _teclado_menu_et(),
     )
     return ESPERANDO_REF_ET
 
@@ -293,6 +350,7 @@ async def _mostrar_colores(
         await _responder(
             update,
             f"❌ {ref} no tiene colores registrados.\n\nEscribe otra referencia:",
+            _teclado_menu_et(),
             nuevo=nuevo,
         )
         context.user_data["et"] = _operario_actual(context)
@@ -309,7 +367,10 @@ async def _mostrar_colores(
             fila = []
     if fila:
         botones.append(fila)
-    botones.append([InlineKeyboardButton("↩️ Cambiar referencia", callback_data="et_back")])
+    botones.append([
+        InlineKeyboardButton("↩️ Cambiar referencia", callback_data="et_back"),
+        InlineKeyboardButton("🏠 Menú principal", callback_data="et_menu"),
+    ])
 
     await _responder(
         update,
@@ -331,12 +392,18 @@ async def recibir_texto_ref_et(update: Update, context: ContextTypes.DEFAULT_TYP
     termino = update.message.text.strip().upper()
     df = await datos.inventario.obtener()
     if df is None:
-        await update.message.reply_text("⚠️ Inventario no disponible, intenta en un momento.")
+        await update.message.reply_text(
+            "⚠️ Inventario no disponible, intenta en un momento.",
+            reply_markup=_teclado_menu_et(),
+        )
         return ESPERANDO_REF_ET
 
     refs = datos.buscar_referencias(df, termino)
     if not refs:
-        await update.message.reply_text(f"❌ No encontré la referencia «{termino}». Intenta de nuevo:")
+        await update.message.reply_text(
+            f"❌ No encontré la referencia «{termino}». Intenta de nuevo:",
+            reply_markup=_teclado_menu_et(),
+        )
         return ESPERANDO_REF_ET
 
     if termino in refs:
@@ -347,6 +414,7 @@ async def recibir_texto_ref_et(update: Update, context: ContextTypes.DEFAULT_TYP
     mostradas = refs[:MAX_BOTONES]
     context.user_data["et"] = {**_operario_actual(context), "refs": mostradas}
     botones = [[InlineKeyboardButton(r, callback_data=f"et_ref_{i}")] for i, r in enumerate(mostradas)]
+    botones.append(_boton_menu_et())
     texto = f"Encontré {len(refs)} referencias, elige una:"
     if len(refs) > len(mostradas):
         texto += f"\nSe muestran las primeras {len(mostradas)}, sé más específico para filtrar."
@@ -373,7 +441,7 @@ async def seleccionar_color_et(update: Update, context: ContextTypes.DEFAULT_TYP
     await q.answer()  # Evita expiración de botones de Telegram
     if q.data == "et_back":
         context.user_data["et"] = _operario_actual(context)  # conserva operario e impresora
-        await _responder(update, "Escribe la referencia:")
+        await _responder(update, "Escribe la referencia:", _teclado_menu_et())
         return ESPERANDO_REF_ET
 
     et = context.user_data.get("et", {})
@@ -398,6 +466,7 @@ async def seleccionar_color_et(update: Update, context: ContextTypes.DEFAULT_TYP
         update,
         f"Referencia: {et['ref']}\nItem: {item}\nColor: {color}\n\n"
         "Introduce la cantidad:",
+        _teclado_menu_et(),
     )
     return ESPERANDO_METROS_ET
 
@@ -423,12 +492,16 @@ def _parsear_cantidad(texto: str):
 async def recibir_metros_et(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
     cantidad = _parsear_cantidad(update.message.text)
     if cantidad is None:
-        await update.message.reply_text("⚠️ Cantidad no válida. Introduce la cantidad:")
+        await update.message.reply_text(
+            "⚠️ Cantidad no válida. Introduce la cantidad:",
+            reply_markup=_teclado_menu_et(),
+        )
         return ESPERANDO_METROS_ET
     metros, cm = cantidad
     context.user_data.setdefault("et", {}).update({"metros": metros, "cm": cm})
     await update.message.reply_text(
-        f"Cantidad: {metros:03d}.{cm:02d}\n\nIntroduce el número de etiquetas:"
+        f"Cantidad: {metros:03d}.{cm:02d}\n\nIntroduce el número de etiquetas:",
+        reply_markup=_teclado_menu_et(),
     )
     return ESPERANDO_COPIAS_ET
 
@@ -436,7 +509,10 @@ async def recibir_metros_et(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 async def recibir_copias_et(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
     copias = _entero(update.message.text, 1, MAX_COPIAS)
     if copias is None:
-        await update.message.reply_text(f"⚠️ Escribe un número de etiquetas entre 1 y {MAX_COPIAS}:")
+        await update.message.reply_text(
+            f"⚠️ Escribe un número de etiquetas entre 1 y {MAX_COPIAS}:",
+            reply_markup=_teclado_menu_et(),
+        )
         return ESPERANDO_COPIAS_ET
     et = context.user_data.get("et", {})
     campos = ("operario", "ref", "item", "color", "metros", "cm")
@@ -475,6 +551,7 @@ async def recibir_copias_et(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         [InlineKeyboardButton("🎨 Misma referencia, otro color", callback_data="et_otra_color")],
         [InlineKeyboardButton("📏 Mismo color, otro metraje", callback_data="et_otra_metraje")],
         [InlineKeyboardButton("🖨️ Cambiar impresora", callback_data="et_otra_imp")],
+        _boton_menu_et(),
     ]
     reply_markup = InlineKeyboardMarkup(botones_otra)
     await update.message.reply_text(
@@ -495,7 +572,10 @@ async def manejar_otra_etiqueta(update: Update, context: ContextTypes.DEFAULT_TY
 
     if q.data == "et_otra_si":
         context.user_data["et"] = _operario_actual(context)  # limpia todo menos operario e impresora
-        await q.edit_message_text("🏷️ Etiqueta Zebra\n\nEscribe la referencia:")
+        await q.edit_message_text(
+            "🏷️ Etiqueta Zebra\n\nEscribe la referencia:",
+            reply_markup=_teclado_menu_et(),
+        )
         return ESPERANDO_REF_ET
 
     if q.data == "et_otra_color":
@@ -503,7 +583,10 @@ async def manejar_otra_etiqueta(update: Update, context: ContextTypes.DEFAULT_TY
         ref = context.user_data.get("et", {}).get("ref")
         if not ref:
             context.user_data["et"] = _operario_actual(context)
-            await q.edit_message_text("🏷️ Etiqueta Zebra\n\nEscribe la referencia:")
+            await q.edit_message_text(
+                "🏷️ Etiqueta Zebra\n\nEscribe la referencia:",
+                reply_markup=_teclado_menu_et(),
+            )
             return ESPERANDO_REF_ET
 
         df = await datos.inventario.obtener()
@@ -524,7 +607,10 @@ async def manejar_otra_etiqueta(update: Update, context: ContextTypes.DEFAULT_TY
         et = context.user_data.get("et", {})
         if any(k not in et for k in ("ref", "item", "color")):
             context.user_data["et"] = _operario_actual(context)
-            await q.edit_message_text("🏷️ Etiqueta Zebra\n\nEscribe la referencia:")
+            await q.edit_message_text(
+                "🏷️ Etiqueta Zebra\n\nEscribe la referencia:",
+                reply_markup=_teclado_menu_et(),
+            )
             return ESPERANDO_REF_ET
 
         et.pop("metros", None)
@@ -537,7 +623,8 @@ async def manejar_otra_etiqueta(update: Update, context: ContextTypes.DEFAULT_TY
         await q.message.reply_text(
             f"Referencia: {et['ref']}\nItem: {et['item']}\n"
             f"Color: {et.get('color_nombre', et['color'])}\n\n"
-            "Introduce la nueva cantidad:"
+            "Introduce la nueva cantidad:",
+            reply_markup=_teclado_menu_et(),
         )
         return ESPERANDO_METROS_ET
 
