@@ -7,21 +7,21 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from google import genai
 from google.genai import types
 
-from telegram import Update  # NUEVO
+from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
     CallbackQueryHandler,
     CommandHandler,
     ConversationHandler,
     MessageHandler,
-    TypeHandler,  # NUEVO
+    TypeHandler,
     filters,
 )
 
-import borrar_mensajes  # NUEVO
+import borrar_mensajes
 import datos
 from acceso import configurar_comandos, miid, recargar_accesos_cmd, requiere_acceso
-from borrar_mensajes_handlers import limpiar_cmd, registrar_mensaje  # NUEVO
+from borrar_mensajes_handlers import limpiar_cmd, registrar_mensaje
 from config import load_settings
 from logging_config import configure_logging
 
@@ -166,6 +166,14 @@ from transferencias import (
 
 logger = logging.getLogger(__name__)
 
+# Segundos de inactividad antes de cerrar una conversación (1800 = 30 minutos).
+# Se puede cambiar desde Render con la variable CONVERSATION_TIMEOUT.
+CONVERSATION_TIMEOUT = int(os.environ.get("CONVERSATION_TIMEOUT", "1800"))
+
+# Modelo de Gemini. Se puede cambiar desde Render con la variable GEMINI_MODEL
+# sin tocar el código. Verifica el nombre exacto con ai_client.models.list().
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
+
 # --- CONTROL DE ACCESO POR MÓDULO ---
 iniciar_busqueda_sap = requiere_acceso("inventario")(iniciar_busqueda_sap)
 iniciar_pg = requiere_acceso("PG")(iniciar_pg)
@@ -274,7 +282,7 @@ def get_or_create_chat(user_id):
             tools=[consultar_inventario_sap],
         )
         user_chats[user_id] = ai_client.chats.create(
-            model="gemini-2.5-flash", config=config
+            model=GEMINI_MODEL, config=config
         )
     return user_chats[user_id]
 
@@ -350,6 +358,20 @@ async def recordar_impresora_et(update, context) -> str:
     return ELIGIENDO_IMPRESORA_ET
 
 
+async def conversacion_expirada(update, context) -> int:
+    """Avisa al usuario cuando su conversación se cierra por inactividad."""
+    if update.effective_chat:
+        try:
+            await context.bot.send_message(
+                update.effective_chat.id,
+                "⌛ Tu sesión expiró por inactividad. "
+                "Escribe /etiqueta para empezar de nuevo, o /i para ver el menú.",
+            )
+        except Exception as e:
+            logger.warning(f"No se pudo avisar la expiración de la sesión: {e}")
+    return ConversationHandler.END
+
+
 class SimpleHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
@@ -376,7 +398,7 @@ async def _post_init(application) -> None:
     application.bot_data["tarea_comandos"] = asyncio.create_task(
         configurar_comandos(application)
     )
-    # NUEVO: base de datos y tarea de limpieza diaria
+    # Base de datos y tarea de limpieza diaria
     borrar_mensajes.init_db()
     application.bot_data["tarea_borrado"] = asyncio.create_task(
         borrar_mensajes.bucle_diario(application)
@@ -384,7 +406,7 @@ async def _post_init(application) -> None:
 
 
 async def _post_shutdown(application) -> None:
-    # NUEVO: también se cancela la tarea de limpieza
+    # También se cancela la tarea de limpieza
     for clave in ("tarea_comandos", "tarea_borrado"):
         tarea = application.bot_data.get(clave)
         if tarea and not tarea.done():
@@ -426,7 +448,7 @@ def main() -> None:
         .build()
     )
 
-    # NUEVO: registra el ID de cada mensaje/botón (grupo -1 = corre primero
+    # Registra el ID de cada mensaje/botón (grupo -1 = corre primero
     # y no interfiere con las conversaciones)
     application.add_handler(TypeHandler(Update, registrar_mensaje), group=-1)
 
@@ -524,6 +546,8 @@ def main() -> None:
     )
 
     estados = {
+        # Aviso cuando la conversación expira por inactividad
+        ConversationHandler.TIMEOUT: [TypeHandler(Update, conversacion_expirada)],
         ESPERANDO_DOCUMENTO_PV: [texto_pv],
         SELECCIONANDO_REFERENCIA: [
             CallbackQueryHandler(seleccionar_referencia, pattern=r"^pv_ref_\d+$"),
@@ -545,7 +569,7 @@ def main() -> None:
         SELECCIONANDO_COLOR_SAP: [
             CallbackQueryHandler(
                 seleccionar_color_sap,
-                pattern=r"^sap_(col_\d+|all|back_refs|back_cols)$",  # <-- CAMBIO: se agregó "all"
+                pattern=r"^sap_(col_\d+|all|back_refs|back_cols)$",
             ),
             texto_sap,
         ],
@@ -687,7 +711,7 @@ def main() -> None:
             entry_points=entradas,
             states=estados,
             fallbacks=fallbacks,
-            conversation_timeout=900 if application.job_queue else None,
+            conversation_timeout=CONVERSATION_TIMEOUT if application.job_queue else None,
         )
     )
 
@@ -699,7 +723,7 @@ def main() -> None:
     application.add_handler(CommandHandler("refrescar", refrescar_datos))
     application.add_handler(CommandHandler("miid", miid))
     application.add_handler(CommandHandler("accesos", recargar_accesos_cmd))
-    application.add_handler(CommandHandler("limpiar", limpiar_cmd))  # NUEVO
+    application.add_handler(CommandHandler("limpiar", limpiar_cmd))
     application.add_handler(CommandHandler(["i", "inicio", "menu"], menu_inicio))
 
     application.add_handler(
