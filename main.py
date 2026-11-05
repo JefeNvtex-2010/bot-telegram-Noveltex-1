@@ -120,6 +120,7 @@ from etiquetas_handlers import (
     seleccionar_referencia_et,
     manejar_otra_etiqueta,
     volver_menu_et,
+    volver_paso_et,
 )
 
 from ubicacion import (
@@ -705,8 +706,9 @@ def main() -> None:
     fallbacks = entradas + [
         CommandHandler("cancelar", cancelar),
         CommandHandler(["i", "inicio", "menu"], menu_inicio),
-        # Botón "🏠 Menú principal" del flujo de etiquetas: funciona desde cualquier paso
-        CallbackQueryHandler(volver_menu_et, pattern=r"^et_menu$"),
+        # Botones del flujo de etiquetas: funcionan desde cualquier paso
+        CallbackQueryHandler(volver_menu_et, pattern=r"^et_menu$"),   # 🏠 Menú principal
+        CallbackQueryHandler(volver_paso_et, pattern=r"^et_atras$"),  # ↩️ Atrás
     ]
 
     application.add_handler(
