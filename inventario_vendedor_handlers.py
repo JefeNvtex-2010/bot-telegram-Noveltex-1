@@ -16,6 +16,7 @@ SELECCIONANDO_REF_VEND, SELECCIONANDO_COLOR_VEND, ESPERANDO_REF_VEND = 6, 7, 8
 
 MAX_BOTONES = 20   # máximo de referencias en botones
 MAX_COLORES = 90   # máximo de colores en botones (Telegram permite 100 por teclado)
+MAX_CHARS_MSG = 3500  # Telegram permite 4096; se deja margen para las etiquetas
 
 
 def _fmt(valor: float) -> str:
@@ -78,6 +79,10 @@ def _precios_por_color(df, ref: str, colores) -> dict:
     """Devuelve {color: precio} para los colores de la referencia."""
     col_precio = _col_precio(df)
     if col_precio is None:
+        logger.warning(
+            "Precio Carton: el inventario no tiene esa columna. Columnas actuales: %s",
+            list(df.columns),
+        )
         return {}
 
     filas = df[df["_ref"] == ref]
@@ -123,7 +128,8 @@ def _precios_por_color(df, ref: str, colores) -> dict:
 
 
 def _texto_color(d: dict, color: str, disp: float) -> str:
-    """'600 NEGRO - 7,941.88 MTRS - $2.990' (sin precio si no tiene)."""
+    """'600 NEGRO - 7,941.88 MTRS - $2.990' (sin precio si no tiene).
+    Se usa igual en los botones y en el texto de 'Clic para compartir'."""
     texto = f"{color} - {_fmt(disp)} MTRS"
     precio = d.get("precios", {}).get(color)
     if precio:
@@ -163,10 +169,32 @@ def _pantalla_colores(d: dict, df):
     return texto, InlineKeyboardMarkup(filas)
 
 
-def _texto_compartir(d: dict) -> str:
-    """Lista en texto plano (sin botones) lista para copiar o reenviar."""
-    lineas = [esc(_texto_color(d, color, disp)) for color, disp in d["colores"]]
-    return f"🔍 Referencia: <b>{esc(d['ref'])}</b> (Bodega 01)\n\n" + "\n".join(lineas)
+def _lineas_compartir(d: dict) -> list:
+    """Una línea por botón, con el mismo texto que el botón."""
+    return [_texto_color(d, color, disp) for color, disp in d["colores"]]
+
+
+def _mensajes_compartir(d: dict) -> list:
+    """Texto plano listo para copiar/reenviar. Si es muy largo, se divide en varios mensajes."""
+    encabezado = f"🔍 Referencia: <b>{esc(d['ref'])}</b> (Bodega 01)\n\n"
+    lineas = _lineas_compartir(d)
+
+    partes, actual, largo = [], [], 0
+    for linea in lineas:
+        if actual and largo + len(linea) + 1 > MAX_CHARS_MSG:
+            partes.append(actual)
+            actual, largo = [], 0
+        actual.append(linea)
+        largo += len(linea) + 1
+    if actual:
+        partes.append(actual)
+
+    mensajes = []
+    for i, bloque in enumerate(partes):
+        cuerpo = esc("\n".join(bloque))
+        cabecera = encabezado if i == 0 else f"🔍 <b>{esc(d['ref'])}</b> (continuación)\n\n"
+        mensajes.append(cabecera + cuerpo)
+    return mensajes
 
 
 # ---------------------------------------------------------------------------
@@ -264,6 +292,22 @@ async def seleccionar_referencia_vendedor(update: Update, context: ContextTypes.
     return SELECCIONANDO_COLOR_VEND
 
 
+async def _enviar_compartir(context, chat_id: int, d: dict) -> None:
+    """Envía los botones convertidos en texto. Si Telegram rechaza el formato, lo manda en texto plano."""
+    try:
+        for texto in _mensajes_compartir(d):
+            msg = await context.bot.send_message(
+                chat_id=chat_id, text=texto, parse_mode=ParseMode.HTML
+            )
+            programar_borrado(context, msg)  # se borra a las 24 h como los demás mensajes
+    except Exception:
+        logger.exception("Falló el envío con formato de 'Clic para compartir'; se envía en texto plano.")
+        plano = f"Referencia: {d['ref']} (Bodega 01)\n\n" + "\n".join(_lineas_compartir(d))
+        for i in range(0, len(plano), 4000):
+            msg = await context.bot.send_message(chat_id=chat_id, text=plano[i:i + 4000])
+            programar_borrado(context, msg)
+
+
 async def seleccionar_color_vendedor(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     d = context.user_data.get("vend")
@@ -279,12 +323,7 @@ async def seleccionar_color_vendedor(update: Update, context: ContextTypes.DEFAU
 
     if query.data == "vend_share":
         await query.answer()
-        msg = await context.bot.send_message(
-            chat_id=query.message.chat_id,
-            text=_texto_compartir(d),
-            parse_mode=ParseMode.HTML,
-        )
-        programar_borrado(context, msg)  # se borra a las 24 h como los demás mensajes
+        await _enviar_compartir(context, query.message.chat_id, d)
         return SELECCIONANDO_COLOR_VEND
 
     try:
