@@ -1,4 +1,4 @@
-"""Flujo guiado /etiqueta: ID operario -> impresora -> referencia -> color -> cantidad (metros.centímetros) -> nº de etiquetas."""
+"""Flujo guiado /etiqueta: ID operario (+ PIN opcional) -> impresora -> referencia -> color -> cantidad (metros.centímetros) -> nº de etiquetas."""
 
 import asyncio
 import csv
@@ -6,6 +6,7 @@ import io
 import logging
 import os
 import re
+import time
 import urllib.request
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -30,12 +31,16 @@ MAX_BOTONES = 40
 MAX_METROS = 999
 MAX_COPIAS = 50
 
+# Protección contra adivinar ID/PIN: tras MAX_FALLOS errores seguidos se bloquea el acceso
+MAX_FALLOS = 5
+SEGUNDOS_BLOQUEO = 300
+
 # Impresora de respaldo si por alguna razón no hay una elegida (IDs: "81", "82", "83")
 IMPRESORA_DEFECTO = os.environ.get("IMPRESORA_DEFECTO", "83").strip()
 if IMPRESORA_DEFECTO not in IMPRESORAS_ZEBRA:
     IMPRESORA_DEFECTO = "83"
 
-# Google Sheet AUDITORIA_BOT, pestaña ETIQUETAS (columnas: OPERARIO | ID)
+# Google Sheet AUDITORIA_BOT, pestaña ETIQUETAS (columnas: OPERARIO | ID | PIN opcional)
 SHEET_ID_OPERARIOS = os.environ.get(
     "SHEET_ID_AUDITORIA", "1Si6SMJ7p4DlDugBCxV6ATGicHWMFQNMZtCNQ409qppk"
 )
@@ -43,7 +48,11 @@ PESTANA_OPERARIOS = "ETIQUETAS"
 
 
 def _cargar_operarios() -> dict:
-    """Lee la pestaña ETIQUETAS y devuelve {id: nombre}. Bloqueante: usar con to_thread."""
+    """Lee la pestaña ETIQUETAS y devuelve {id: (nombre, pin)}. Bloqueante: usar con to_thread.
+
+    El PIN es la tercera columna y es opcional: si está vacío (o no existe la columna)
+    solo se pide el ID.
+    """
     url = (
         f"https://docs.google.com/spreadsheets/d/{SHEET_ID_OPERARIOS}"
         f"/gviz/tq?tqx=out:csv&sheet={PESTANA_OPERARIOS}"
@@ -58,13 +67,14 @@ def _cargar_operarios() -> dict:
 
     operarios = {}
     filas = list(csv.reader(io.StringIO(texto)))
-    for fila in filas[1:]:  # se salta el encabezado OPERARIO | ID
+    for fila in filas[1:]:  # se salta el encabezado OPERARIO | ID | PIN
         if len(fila) < 2:
             continue
         nombre = fila[0].strip()
         id_op = re.sub(r"\D", "", fila[1])
+        pin = re.sub(r"\D", "", fila[2]) if len(fila) > 2 else ""
         if nombre and id_op:
-            operarios[id_op] = nombre
+            operarios[id_op] = (nombre, pin)
     return operarios
 
 
@@ -135,6 +145,41 @@ def _item_de(df, ref: str, color: str) -> str:
     return valor.zfill(4) if valor.isdigit() else valor
 
 
+# --------------------------------------------------------------------------- #
+# Seguridad: borrado de mensajes sensibles y bloqueo por intentos fallidos
+# --------------------------------------------------------------------------- #
+async def _borrar_mensaje_usuario(update: Update) -> None:
+    """Borra el mensaje del usuario (para que el ID/PIN no queden visibles en el chat)."""
+    try:
+        await update.message.delete()
+    except Exception as e:
+        logger.warning("No se pudo borrar el mensaje con el ID/PIN: %s", e)
+
+
+def _segundos_bloqueo(context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Segundos que faltan para que termine el bloqueo (0 si no está bloqueado)."""
+    hasta = context.user_data.get("et_bloqueo_hasta", 0)
+    return max(0, int(hasta - time.time()))
+
+
+def _registrar_fallo(context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Suma un intento fallido. Devuelve True si con este fallo se activa el bloqueo."""
+    fallos = context.user_data.get("et_fallos", 0) + 1
+    if fallos >= MAX_FALLOS:
+        context.user_data["et_bloqueo_hasta"] = time.time() + SEGUNDOS_BLOQUEO
+        context.user_data["et_fallos"] = 0
+        return True
+    context.user_data["et_fallos"] = fallos
+    return False
+
+
+async def _avisar_bloqueo(chat, segundos: int) -> None:
+    minutos = max(1, (segundos + 59) // 60)
+    await chat.send_message(
+        f"⛔ Demasiados intentos fallidos. Intenta de nuevo en {minutos} min."
+    )
+
+
 async def iniciar_etiqueta(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
     registrar_uso_bot(update, "BOTÓN_ETIQUETA" if update.callback_query else "/ETIQUETA")
     context.user_data["et"] = {}  # sin operario: se pedirá el ID
@@ -142,32 +187,86 @@ async def iniciar_etiqueta(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     return ESPERANDO_REF_ET
 
 
+async def _aceptar_operario(chat, context: ContextTypes.DEFAULT_TYPE, id_op: str, nombre: str) -> str:
+    """Deja la sesión abierta a nombre del operario y pide la impresora."""
+    context.user_data["et"] = {"operario": nombre, "id_operario": id_op}
+    context.user_data["et_fallos"] = 0
+    await chat.send_message(
+        f"✅ Hola, {nombre}.\n\n🖨️ ¿En qué impresora vas a imprimir?",
+        reply_markup=_teclado_impresoras(),
+    )
+    return ELIGIENDO_IMPRESORA_ET
+
+
 async def _validar_id_operario(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
-    """Valida el ID escrito contra la pestaña ETIQUETAS del Google Sheet."""
+    """Valida el ID escrito contra la pestaña ETIQUETAS. Si el operario tiene PIN, lo pide."""
     id_txt = re.sub(r"\D", "", update.message.text)
+    await _borrar_mensaje_usuario(update)  # el ID no queda visible en el chat
+    chat = update.effective_chat
+
+    espera = _segundos_bloqueo(context)
+    if espera:
+        await _avisar_bloqueo(chat, espera)
+        return ESPERANDO_REF_ET
 
     try:
         operarios = await asyncio.to_thread(_cargar_operarios)
     except Exception:
         logger.exception("No se pudo leer la lista de operarios de etiquetas")
-        await update.message.reply_text(
+        await chat.send_message(
             "⚠️ No pude consultar la lista de operarios. Intenta de nuevo en un momento:"
         )
         return ESPERANDO_REF_ET
 
-    nombre = operarios.get(id_txt) if id_txt else None
-    if not nombre:
-        await update.message.reply_text("❌ ID no autorizado. Escribe tu ID de operario:")
+    registro = operarios.get(id_txt) if id_txt else None
+    if not registro:
+        if _registrar_fallo(context):
+            await _avisar_bloqueo(chat, SEGUNDOS_BLOQUEO)
+        else:
+            await chat.send_message("❌ ID no autorizado. Escribe tu ID de operario:")
         return ESPERANDO_REF_ET
 
-    et = context.user_data.setdefault("et", {})
-    et["operario"] = nombre
-    et["id_operario"] = id_txt
-    await update.message.reply_text(
-        f"✅ Hola, {nombre}.\n\n🖨️ ¿En qué impresora vas a imprimir?",
-        reply_markup=_teclado_impresoras(),
-    )
-    return ELIGIENDO_IMPRESORA_ET
+    nombre, pin = registro
+    if pin:
+        # El ID es válido pero falta el PIN: la sesión aún NO queda abierta
+        context.user_data["et"] = {"id_pendiente": id_txt}
+        await chat.send_message("🔒 Escribe tu PIN:")
+        return ESPERANDO_REF_ET
+
+    return await _aceptar_operario(chat, context, id_txt, nombre)
+
+
+async def _validar_pin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
+    """Valida el PIN del operario cuyo ID ya fue aceptado."""
+    pin_txt = re.sub(r"\D", "", update.message.text)
+    await _borrar_mensaje_usuario(update)  # el PIN no queda visible en el chat
+    chat = update.effective_chat
+    id_pendiente = context.user_data.get("et", {}).get("id_pendiente", "")
+
+    espera = _segundos_bloqueo(context)
+    if espera:
+        context.user_data["et"] = {}
+        await _avisar_bloqueo(chat, espera)
+        return ESPERANDO_REF_ET
+
+    try:
+        operarios = await asyncio.to_thread(_cargar_operarios)
+    except Exception:
+        logger.exception("No se pudo leer la lista de operarios de etiquetas")
+        await chat.send_message("⚠️ No pude consultar la lista de operarios. Intenta de nuevo:")
+        return ESPERANDO_REF_ET
+
+    registro = operarios.get(id_pendiente)
+    if not registro or not pin_txt or pin_txt != registro[1]:
+        bloqueado = _registrar_fallo(context)
+        context.user_data["et"] = {}  # se vuelve a pedir el ID desde cero
+        if bloqueado:
+            await _avisar_bloqueo(chat, SEGUNDOS_BLOQUEO)
+        else:
+            await chat.send_message("❌ PIN incorrecto. Escribe tu ID de operario:")
+        return ESPERANDO_REF_ET
+
+    return await _aceptar_operario(chat, context, id_pendiente, registro[0])
 
 
 async def seleccionar_impresora_et(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
@@ -222,8 +321,11 @@ async def _mostrar_colores(
 
 
 async def recibir_texto_ref_et(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
-    # Mientras no haya un operario validado, el texto recibido es el ID
-    if "operario" not in context.user_data.get("et", {}):
+    et = context.user_data.get("et", {})
+    # Mientras no haya un operario validado, el texto recibido es el ID (o el PIN)
+    if "operario" not in et:
+        if "id_pendiente" in et:
+            return await _validar_pin(update, context)
         return await _validar_id_operario(update, context)
 
     termino = update.message.text.strip().upper()
@@ -449,6 +551,7 @@ async def manejar_otra_etiqueta(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return ELIGIENDO_IMPRESORA_ET
 
+    # "No, terminar": se cierra la sesión del operario para que nadie más use su nombre
     context.user_data.pop("et", None)
     await q.edit_message_text("👍 Entendido. Proceso de etiquetado cerrado correctamente.")
     return ConversationHandler.END
