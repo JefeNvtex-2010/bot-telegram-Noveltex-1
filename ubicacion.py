@@ -146,6 +146,25 @@ def _columna_codigo(df) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# Seguridad: el ID del operario no debe quedar visible en el chat
+# --------------------------------------------------------------------------- #
+async def _borrar_mensaje_usuario(update: Update) -> None:
+    """Borra al instante el mensaje del usuario (el ID no queda visible en el chat)."""
+    try:
+        await update.message.delete()
+    except Exception as e:
+        logger.warning(f"Ubicaciones: no se pudo borrar el mensaje con el ID: {e}")
+
+
+async def _responder_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, texto: str, **kwargs):
+    """Como responder(), pero envía al chat sin citar el mensaje del usuario (ya borrado)."""
+    kwargs.setdefault("parse_mode", ParseMode.HTML)
+    msg = await update.effective_chat.send_message(texto, **kwargs)
+    programar_borrado(context, msg)
+    return msg
+
+
+# --------------------------------------------------------------------------- #
 # Inventario SAP
 # --------------------------------------------------------------------------- #
 _cache = {"firma": None, "indice": {}}
@@ -517,7 +536,9 @@ async def botones_ub(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         ub["modo_pendiente"] = "modificar"
         await editar(
             query,
-            "🔐 <b>Validación de Operario</b>\n\nPor favor, escribe tu <b>ID</b> (registrado en el sistema) para continuar:",
+            "🔐 <b>Validación de Operario</b>\n\nPor favor, escribe tu <b>ID</b> "
+            "(registrado en el sistema) para continuar.\n"
+            "<i>Tu mensaje se borrará automáticamente por seguridad.</i>",
             _teclado_volver()
         )
         return UB_ESPERANDO_ID
@@ -543,13 +564,16 @@ async def botones_ub(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 async def recibir_id_ub(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Valida el ID contra la pestaña UBICACIONES de la hoja AUDITORIA_BOT."""
-    programar_borrado(context, update.message)
+    """Valida el ID contra la pestaña UBICACIONES de la hoja AUDITORIA_BOT.
+
+    El mensaje con el ID se borra al instante para que no quede visible en el chat.
+    """
     ub = context.user_data.setdefault("ub", {})
     id_txt = re.sub(r"\D", "", update.message.text or "")
+    await _borrar_mensaje_usuario(update)  # el ID no queda visible en el chat
 
     if not id_txt:
-        await responder(
+        await _responder_chat(
             update, context,
             "⚠️ Por favor, escribe un ID válido:",
             reply_markup=_teclado_volver()
@@ -560,7 +584,7 @@ async def recibir_id_ub(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         operarios = await asyncio.to_thread(_cargar_operarios)
     except Exception as e:
         logger.error(f"Ubicaciones: no se pudo leer la lista de operarios: {e}", exc_info=True)
-        await responder(
+        await _responder_chat(
             update, context,
             "⚠️ No pude consultar la lista de operarios. Intenta de nuevo:",
             reply_markup=_teclado_volver()
@@ -569,7 +593,7 @@ async def recibir_id_ub(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
     nombre = operarios.get(id_txt)
     if not nombre:
-        await responder(
+        await _responder_chat(
             update, context,
             "❌ <b>ID no autorizado.</b> El ID ingresado no está registrado en la pestaña UBICACIONES. Intenta de nuevo:",
             reply_markup=_teclado_volver()
@@ -581,7 +605,7 @@ async def recibir_id_ub(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     ub.pop("modo_pendiente", None)
 
     texto, teclado = _pantalla_modificar()
-    await responder(
+    await _responder_chat(
         update, context,
         f"✅ ¡Hola, <b>{esc(nombre)}</b>! ID verificado correctamente.\n\n{texto}",
         reply_markup=teclado
