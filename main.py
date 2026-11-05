@@ -7,17 +7,21 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from google import genai
 from google.genai import types
 
+from telegram import Update  # NUEVO
 from telegram.ext import (
     ApplicationBuilder,
     CallbackQueryHandler,
     CommandHandler,
     ConversationHandler,
     MessageHandler,
+    TypeHandler,  # NUEVO
     filters,
 )
 
+import borrar_mensajes  # NUEVO
 import datos
 from acceso import configurar_comandos, miid, recargar_accesos_cmd, requiere_acceso
+from borrar_mensajes_handlers import limpiar_cmd, registrar_mensaje  # NUEVO
 from config import load_settings
 from logging_config import configure_logging
 
@@ -372,12 +376,19 @@ async def _post_init(application) -> None:
     application.bot_data["tarea_comandos"] = asyncio.create_task(
         configurar_comandos(application)
     )
+    # NUEVO: base de datos y tarea de limpieza diaria
+    borrar_mensajes.init_db()
+    application.bot_data["tarea_borrado"] = asyncio.create_task(
+        borrar_mensajes.bucle_diario(application)
+    )
 
 
 async def _post_shutdown(application) -> None:
-    tarea = application.bot_data.get("tarea_comandos")
-    if tarea and not tarea.done():
-        tarea.cancel()
+    # NUEVO: también se cancela la tarea de limpieza
+    for clave in ("tarea_comandos", "tarea_borrado"):
+        tarea = application.bot_data.get(clave)
+        if tarea and not tarea.done():
+            tarea.cancel()
     await datos.detener(application)
 
 
@@ -414,6 +425,10 @@ def main() -> None:
         .post_shutdown(_post_shutdown)
         .build()
     )
+
+    # NUEVO: registra el ID de cada mensaje/botón (grupo -1 = corre primero
+    # y no interfiere con las conversaciones)
+    application.add_handler(TypeHandler(Update, registrar_mensaje), group=-1)
 
     entradas = [
         CommandHandler("pv", iniciar_busqueda),
@@ -684,6 +699,7 @@ def main() -> None:
     application.add_handler(CommandHandler("refrescar", refrescar_datos))
     application.add_handler(CommandHandler("miid", miid))
     application.add_handler(CommandHandler("accesos", recargar_accesos_cmd))
+    application.add_handler(CommandHandler("limpiar", limpiar_cmd))  # NUEVO
     application.add_handler(CommandHandler(["i", "inicio", "menu"], menu_inicio))
 
     application.add_handler(
