@@ -366,8 +366,7 @@ async def conversacion_expirada(update, context) -> int:
         try:
             await context.bot.send_message(
                 update.effective_chat.id,
-                "⌛ Tu sesión expiró por inactividad. "
-                "Escribe /etiqueta para empezar de nuevo, o /i para ver el menú.",
+                "⌛ Tu sesión expiró por inactividad. Escribe /i para ir al inicio.",
             )
         except Exception as e:
             logger.warning(f"No se pudo avisar la expiración de la sesión: {e}")
