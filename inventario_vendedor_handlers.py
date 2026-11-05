@@ -1,4 +1,5 @@
 import logging
+import unicodedata
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
@@ -21,6 +22,118 @@ def _fmt(valor: float) -> str:
     return f"{int(valor)}" if float(valor).is_integer() else f"{valor:,.2f}"
 
 
+# ---------------------------------------------------------------------------
+# PRECIO CARTON (por color)
+# ---------------------------------------------------------------------------
+def _norm(texto) -> str:
+    """Mayúsculas, sin tildes y sin espacios repetidos, para comparar textos."""
+    s = unicodedata.normalize("NFKD", str(texto)).encode("ascii", "ignore").decode()
+    return " ".join(s.upper().split())
+
+
+def _col_precio(df):
+    """Busca la columna 'Precio Carton' (tolera tildes y mayúsculas)."""
+    for c in df.columns:
+        n = _norm(c)
+        if "PRECIO" in n and "CARTON" in n:
+            return c
+    return None
+
+
+def _a_numero(valor) -> float:
+    """Convierte 2990, '2990', '$2,990' o '$ 2.990' en número."""
+    if valor is None:
+        return 0.0
+    if isinstance(valor, (int, float)):
+        return float(valor) if valor == valor else 0.0  # descarta NaN
+    s = str(valor).replace("$", "").replace(" ", "").strip()
+    if not s:
+        return 0.0
+    if "," in s and "." in s:
+        # El último separador es el decimal
+        if s.rfind(",") > s.rfind("."):
+            s = s.replace(".", "").replace(",", ".")
+        else:
+            s = s.replace(",", "")
+    elif "," in s or "." in s:
+        sep = "," if "," in s else "."
+        partes = s.split(sep)
+        # '2,990' o '2.990' = miles; '2,5' = decimal
+        if len(partes) > 1 and len(partes[-1]) == 3:
+            s = s.replace(sep, "")
+        else:
+            s = s.replace(sep, ".")
+    try:
+        return float(s)
+    except ValueError:
+        return 0.0
+
+
+def _fmt_precio(valor: float) -> str:
+    """2990 -> $2.990"""
+    return "$" + f"{valor:,.0f}".replace(",", ".")
+
+
+def _precios_por_color(df, ref: str, colores) -> dict:
+    """Devuelve {color: precio} para los colores de la referencia."""
+    col_precio = _col_precio(df)
+    if col_precio is None:
+        return {}
+
+    filas = df[df["_ref"] == ref]
+    if filas.empty:
+        return {}
+
+    # Columna que identifica el color de cada fila
+    col_color = next((c for c in ("_color", "Color", "COLOR") if c in filas.columns), None)
+    col_desc = next(
+        (c for c in filas.columns if _norm(c) == "DESCRIPCION"), None
+    )
+
+    pares = []  # (clave_color, precio)
+    for _, fila in filas.iterrows():
+        precio = _a_numero(fila[col_precio])
+        if precio <= 0:
+            continue
+        if col_color:
+            clave = _norm(fila[col_color])
+        elif col_desc:
+            clave = _norm(fila[col_desc])  # ej. "SUPERNOVA - 21 CRUDO"
+        else:
+            clave = ""
+        pares.append((clave, precio))
+
+    resultado = {}
+    for color, _disp in colores:
+        c = _norm(color)
+        precios = [p for k, p in pares if k == c]
+        if not precios:
+            # La descripción termina en el color: "SUPERNOVA - 21 CRUDO"
+            precios = [p for k, p in pares if k.endswith(" " + c)]
+        if precios:
+            resultado[color] = precios[0]
+
+    if not resultado:
+        logger.warning(
+            "Precio Carton: no se pudo asignar precio a ningún color de %s "
+            "(columna de color: %s, columnas del inventario: %s)",
+            ref, col_color or col_desc, list(df.columns),
+        )
+    return resultado
+
+
+def _texto_color(d: dict, color: str, disp: float) -> str:
+    """'600 NEGRO - 7,941.88 MTRS - $2.990' (sin precio si no tiene)."""
+    texto = f"{color} - {_fmt(disp)} MTRS"
+    precio = d.get("precios", {}).get(color)
+    if precio:
+        texto += f" - {_fmt_precio(precio)}"
+    return texto
+
+
+# ---------------------------------------------------------------------------
+# PANTALLAS
+# ---------------------------------------------------------------------------
 def _pantalla_refs(d: dict):
     texto = f"🔍 Encontré varias referencias para <b>{esc(d['termino'])}</b>.\nSelecciona una referencia:"
     if d["total"] > len(d["refs"]):
@@ -34,8 +147,11 @@ def _pantalla_refs(d: dict):
 def _pantalla_colores(d: dict, df):
     # (color, disponible en bodega 01) calculado de forma vectorizada
     d["colores"] = datos.disponibilidad_bodega01(df, d["ref"])[:MAX_COLORES]
+    # {color: precio carton}
+    d["precios"] = _precios_por_color(df, d["ref"], d["colores"])
+
     filas = [
-        [InlineKeyboardButton(f"{color} - {_fmt(disp)} MTRS", callback_data=f"vend_col_{i}")]
+        [InlineKeyboardButton(_texto_color(d, color, disp), callback_data=f"vend_col_{i}")]
         for i, (color, disp) in enumerate(d["colores"])
     ]
     if len(d["refs"]) > 1:
@@ -49,10 +165,13 @@ def _pantalla_colores(d: dict, df):
 
 def _texto_compartir(d: dict) -> str:
     """Lista en texto plano (sin botones) lista para copiar o reenviar."""
-    lineas = [f"{esc(color)} - {_fmt(disp)} MTRS" for color, disp in d["colores"]]
+    lineas = [esc(_texto_color(d, color, disp)) for color, disp in d["colores"]]
     return f"🔍 Referencia: <b>{esc(d['ref'])}</b> (Bodega 01)\n\n" + "\n".join(lineas)
 
 
+# ---------------------------------------------------------------------------
+# HANDLERS
+# ---------------------------------------------------------------------------
 @requiere_acceso("inventario_vendedor")
 async def iniciar_busqueda_vendedor(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
@@ -174,9 +293,12 @@ async def seleccionar_color_vendedor(update: Update, context: ContextTypes.DEFAU
         await query.answer()
         return await _expirada(query)
 
+    precio = d.get("precios", {}).get(color)
+    linea_precio = f"\nPrecio Carton: {_fmt_precio(precio)}" if precio else ""
+
     # Un solo query.answer() (antes se llamaba dos veces y el aviso nunca se mostraba)
     await query.answer(
-        text=f"{d['ref']} - {color}\nDisponible en bodega 01: {_fmt(disp)} MTRS",
+        text=f"{d['ref']} - {color}\nDisponible en bodega 01: {_fmt(disp)} MTRS{linea_precio}",
         show_alert=True,
     )
     return SELECCIONANDO_COLOR_VEND
