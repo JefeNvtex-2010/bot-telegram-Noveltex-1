@@ -7,7 +7,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from google import genai
 from google.genai import types
 
-from telegram import Update
+from telegram import CallbackQuery, Update
+from telegram.error import BadRequest
 from telegram.ext import (
     ApplicationBuilder,
     CallbackQueryHandler,
@@ -167,6 +168,31 @@ from transferencias import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# --------------------------------------------------------------------------- #
+# Botones viejos: responder a un botón puede fallar con
+#   BadRequest: Query is too old and response timeout expired or query id is invalid
+# (botón de una conversación ya cerrada, o respuesta tardía). Ese fallo es inofensivo,
+# pero hacía que el handler se cortara y el usuario viera "Ocurrió un error inesperado".
+# Se hace que CallbackQuery.answer() lo ignore en TODO el bot.
+# --------------------------------------------------------------------------- #
+_answer_original = CallbackQuery.answer
+
+
+async def _answer_tolerante(self, *args, **kwargs):
+    try:
+        return await _answer_original(self, *args, **kwargs)
+    except BadRequest as e:
+        msg = str(e).lower()
+        if "query is too old" in msg or "query id is invalid" in msg:
+            logger.debug(f"Botón viejo: no se pudo responder al callback ({e})")
+            return False
+        raise
+
+
+CallbackQuery.answer = _answer_tolerante
+
 
 # Segundos de inactividad antes de cerrar una conversación (1800 = 30 minutos).
 # Se puede cambiar desde Render con la variable CONVERSATION_TIMEOUT.
@@ -415,16 +441,14 @@ async def _post_shutdown(application) -> None:
     await datos.detener(application)
 
 
-# --- MANEJADOR DE SEGURIDAD PARA LLAMADAS FALLIDAS DE TELEGRAM ---
+# --- MANEJADOR DE SEGURIDAD PARA BOTONES VIEJOS O FUERA DE ESTADO ---
 async def safe_callback_wrapper(update, context):
-    """Asegura que cualquier botón antiguo, huérfano o fuera de estado sea respondido de inmediato."""
-    if update.callback_query:
-        try:
-            await update.callback_query.answer()
-        except Exception as e:
-            logger.debug(f"No se pudo responder automáticamente al callback: {e}")
+    """Botón viejo, huérfano o de una conversación ya cerrada: se responde UNA sola vez.
 
-    # Ejecuta el comportamiento original programado en handlers.py
+    callback_expirado() ya responde al botón con el aviso "Esta opción ya no está
+    disponible. Escribe /i." (ventana emergente). Antes se respondía dos veces,
+    y la segunda fallaba con "Query is too old", mostrando "Ocurrió un error inesperado".
+    """
     await callback_expirado(update, context)
 
 
