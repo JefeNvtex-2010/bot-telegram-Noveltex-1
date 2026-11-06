@@ -27,10 +27,15 @@ URL_INVENTARIO = os.environ.get(
 # --------------------------------------------------------------------------- #
 # Catálogo de etiquetas: pestaña "Listado precios" del Google Sheet.
 #
-# Columnas que lee: CODIGO (ej. 0018-200) y DESCRIPCION (ej. SATIN MARBELLA - 200 ROJO).
-#   - Item       = lo que está antes del guion en CODIGO         -> 0018
-#   - Referencia = lo que está antes de " - " en DESCRIPCION     -> SATIN MARBELLA
-#   - Color      = lo que está después de " - " en DESCRIPCION   -> 200 ROJO
+# Columnas que lee:
+#   CODIGO       ej. 0018-200                  -> el item es lo que está antes del guion (0018)
+#   REFERENCIA   ej. SATIN MARBELLA            -> nombre de la referencia (solo el nombre)
+#   COLOR        ej. 200 ROJO                  -> código + nombre del color
+#   DESCRIPCION  ej. SATIN MARBELLA - 200 ROJO -> solo se usa de respaldo
+#
+# Prioridad: si la hoja trae las columnas REFERENCIA y COLOR con valor en la fila, se
+# usan tal cual. Si una fila las trae vacías (o con error, ej. #VALOR!), esa fila se
+# separa a partir de la DESCRIPCION.
 #
 # Solo lo usan las ETIQUETAS. El resto de módulos (inventario SAP, vendedor, ubicaciones,
 # transferencias) siguen usando el inventario de URL_INVENTARIO.
@@ -142,51 +147,101 @@ def _preparar_inventario(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # DESCRIPCION: "SATIN MARBELLA - 200 ROJO" -> ref "SATIN MARBELLA", color "200 ROJO".
-# Se corta en el primer " - " que va seguido de un número (el código del color).
-_RE_DESCRIPCION = r"^(?P<ref>.+?)\s+-\s+(?P<color>\d.*)$"
+# Se prueba de lo más estricto a lo más flexible:
+#   1) " - " con espacios a ambos lados, seguido de un número (el código del color)
+#   2) cualquier guion (-, –, —) con o sin espacios, seguido de un número
+#   3) sin guion: se corta donde empieza el número del color que indica el CODIGO
+_RE_DESC_ESTRICTA = r"^(?P<ref>.+?)\s+[-–—]\s+(?P<color>\d.*)$"
+_RE_DESC_SUELTA = r"^(?P<ref>.+?)\s*[-–—]\s*(?P<color>\d.*)$"
+
+
+def _separar_por_sufijo(descripcion: str, sufijo: str):
+    """Para descripciones sin guion: 'SATIN CIPRIANI 10 OPTICAL WHITE' + sufijo '10'."""
+    m = re.match(r"^(\d+)", str(sufijo))
+    if not m:
+        return None
+    num = m.group(1).lstrip("0") or "0"
+    patron = re.compile(r"^(?P<ref>.+?)\s+(?P<color>0*" + re.escape(num) + r"\b.*)$")
+    r = patron.match(str(descripcion))
+    return (r.group("ref"), r.group("color")) if r else None
+
+
+def _valida(serie: pd.Series) -> pd.Series:
+    """Texto limpio; vacío, 'nan' o errores de fórmula (#VALOR!, #N/A...) pasan a NaN."""
+    s = serie.astype(str).str.strip()
+    return s.where(~(s.eq("") | s.str.startswith("#") | s.str.lower().eq("nan")))
 
 
 def _preparar_catalogo(df: pd.DataFrame) -> pd.DataFrame:
-    """Convierte la pestaña 'Listado precios' (CODIGO | DESCRIPCION | PRECIO...) en el
-    mismo formato que usa el resto del bot: _ref, _ref_norm, _color y Artículo."""
+    """Convierte la pestaña 'Listado precios' en el mismo formato que usa el resto del
+    bot: _ref, _ref_norm, _color y Artículo."""
     cols = {normalizar_texto(c): c for c in df.columns}
     col_cod = next((cols[k] for k in ("CODIGO", "ARTICULO", "CODIGO ARTICULO", "ITEM") if k in cols), None)
     col_desc = next((c for k, c in cols.items() if k.startswith("DESCRIP")), None)
-    if not col_cod or not col_desc:
+    col_ref_h = cols.get("REFERENCIA")
+    col_color_h = cols.get("COLOR")
+
+    if not col_cod or not (col_desc or (col_ref_h and col_color_h)):
         raise ValueError(
-            "En la pestaña del catálogo no encontré las columnas CODIGO y DESCRIPCION "
-            f"(columnas leídas: {', '.join(map(str, df.columns))})"
+            "En la pestaña del catálogo no encontré CODIGO junto con DESCRIPCION "
+            "(o REFERENCIA y COLOR). "
+            f"Columnas leídas: {', '.join(map(str, df.columns))}"
         )
 
     codigo = df[col_cod].astype(str).str.strip()
-    desc = df[col_desc].astype(str).str.strip()
+    desc = df[col_desc].astype(str).str.strip() if col_desc else pd.Series("", index=df.index)
     sufijo = codigo.str.split("-", n=1).str[1].fillna("").str.strip()  # 0018-200 -> 200
 
-    partes = desc.str.extract(_RE_DESCRIPCION)
-    ref = partes["ref"].fillna(desc)  # si no cumple el formato: toda la descripción
-    color = partes["color"].fillna(sufijo)  # si no cumple el formato: el sufijo del código
+    # 1) Columnas REFERENCIA y COLOR de la hoja (prioridad)
+    ref_h = _valida(df[col_ref_h]) if col_ref_h else pd.Series(float("nan"), index=df.index)
+    color_h = _valida(df[col_color_h]) if col_color_h else pd.Series(float("nan"), index=df.index)
+
+    # 2) Separar la DESCRIPCION (respaldo para filas sin REFERENCIA o COLOR)
+    partes = desc.str.extract(_RE_DESC_ESTRICTA)
+    suelta = desc.str.extract(_RE_DESC_SUELTA)
+    ref_p = partes["ref"].fillna(suelta["ref"])
+    color_p = partes["color"].fillna(suelta["color"])
+
+    # 3) Descripciones sin guion: se corta por el número del color del CODIGO
+    pendientes = ref_p.isna() & desc.ne("")
+    for i in ref_p.index[pendientes]:
+        r = _separar_por_sufijo(desc[i], sufijo[i])
+        if r:
+            ref_p[i], color_p[i] = r
+
+    # Por fila: la columna de la hoja manda; si falta, lo separado de la descripción;
+    # y si tampoco hay, la descripción completa / el sufijo del código.
+    ref = ref_h.fillna(ref_p).fillna(desc)
+    color = color_h.fillna(color_p).fillna(sufijo)
 
     out = pd.DataFrame(
         {
             "Artículo": codigo,
             "Descripción": desc,
-            "_ref": ref.str.strip().str.upper(),
-            "_color": color.str.strip(),
+            "_ref": ref.astype(str).str.strip().str.upper(),
+            "_color": color.astype(str).str.strip(),
             "_suf": sufijo,
         }
     )
     out = out[(out["Artículo"] != "") & (out["_ref"] != "")].reset_index(drop=True)
     out["_ref_norm"] = _normalizar_serie(out["_ref"])
 
-    # Aviso en el log si el número del color en la descripción no coincide con el del código
-    num_desc = out["_color"].str.extract(r"^(\d+)")[0].str.lstrip("0")
+    # Avisos en el log (no detienen el bot)
+    num_color = out["_color"].str.extract(r"^(\d+)")[0].str.lstrip("0")
     num_cod = out["_suf"].str.extract(r"^(\d+)")[0].str.lstrip("0")
-    distintos = num_desc.notna() & num_cod.notna() & (num_desc != num_cod)
+    distintos = num_color.notna() & num_cod.notna() & (num_color != num_cod)
     if distintos.any():
-        ejemplos = out.loc[distintos, ["Artículo", "Descripción"]].head(5).values.tolist()
+        ejemplos = out.loc[distintos, ["Artículo", "_ref", "_color"]].head(5).values.tolist()
         logger.warning(
-            f"⚠️ catálogo: {int(distintos.sum())} filas donde el color de la DESCRIPCION no "
+            f"⚠️ catálogo: {int(distintos.sum())} filas donde el número del COLOR no "
             f"coincide con el CODIGO. Ejemplos: {ejemplos}"
+        )
+    con_numero = out["_ref"].str.contains(r"\d{2,}", regex=True) & out["_color"].eq(out["_suf"])
+    if con_numero.any():
+        ejemplos = out.loc[con_numero, ["Artículo", "_ref"]].head(5).values.tolist()
+        logger.warning(
+            f"⚠️ catálogo: {int(con_numero.sum())} referencias parecen incluir el color en el "
+            f"nombre (revisa REFERENCIA/DESCRIPCION). Ejemplos: {ejemplos}"
         )
     return out.drop(columns=["_suf"])
 
