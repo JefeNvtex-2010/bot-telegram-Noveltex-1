@@ -1,10 +1,12 @@
 import asyncio
+import hashlib
 import io
 import logging
 import os
 import re
 import time
 import unicodedata
+from urllib.parse import quote
 
 import pandas as pd
 import requests
@@ -20,6 +22,40 @@ URL_PEDIDOS = os.environ.get(
 URL_INVENTARIO = os.environ.get(
     "URL_INVENTARIO",
     "https://docs.google.com/spreadsheets/d/1FJdfaNhxcFFDVD_AV2lTITHw0f-mB0Y2/export?format=csv",
+)
+
+# --------------------------------------------------------------------------- #
+# Catálogo de etiquetas: pestaña "Listado precios" del Google Sheet.
+#
+# Columnas que lee: CODIGO (ej. 0018-200) y DESCRIPCION (ej. SATIN MARBELLA - 200 ROJO).
+#   - Item       = lo que está antes del guion en CODIGO         -> 0018
+#   - Referencia = lo que está antes de " - " en DESCRIPCION     -> SATIN MARBELLA
+#   - Color      = lo que está después de " - " en DESCRIPCION   -> 200 ROJO
+#
+# Solo lo usan las ETIQUETAS. El resto de módulos (inventario SAP, vendedor, ubicaciones,
+# transferencias) siguen usando el inventario de URL_INVENTARIO.
+#
+# - El archivo (ID) sale de URL_INVENTARIO, salvo que definas URL_CATALOGO en Render
+#   (enlace CSV completo de la pestaña, si está en otro archivo).
+# - El nombre de la pestaña sale de PESTANA_CATALOGO (por defecto "Listado precios");
+#   debe escribirse exactamente igual que en el Google Sheet.
+# --------------------------------------------------------------------------- #
+PESTANA_CATALOGO = os.environ.get("PESTANA_CATALOGO", "Listado precios").strip()
+
+
+def _url_de_pestana(url_base: str, pestana: str) -> str:
+    """Arma el enlace CSV de una pestaña, tomando el ID del archivo de url_base."""
+    m = re.search(r"/d/([A-Za-z0-9_-]+)", url_base)
+    if not m:
+        return url_base
+    return (
+        f"https://docs.google.com/spreadsheets/d/{m.group(1)}"
+        f"/gviz/tq?tqx=out:csv&sheet={quote(pestana)}"
+    )
+
+
+URL_CATALOGO = os.environ.get("URL_CATALOGO", "").strip() or _url_de_pestana(
+    URL_INVENTARIO, PESTANA_CATALOGO
 )
 
 INTERVALO_REFRESCO = int(os.environ.get("INTERVALO_REFRESCO", "120"))  # segundos
@@ -54,10 +90,14 @@ def normalizar_texto(texto: str) -> str:
 
 
 def _normalizar_serie(serie: pd.Series) -> pd.Series:
-    s = serie.astype(str).str.normalize("NFKD")
-    s = s.str.replace(r"[̀-ͯ]", "", regex=True)  # quita tildes
-    s = s.str.replace(r"[\s ]+", " ", regex=True)  # espacios (incl. no separables)
-    return s.str.strip().str.upper()
+    """Igual que normalizar_texto, pero calculado una sola vez por cada valor distinto.
+
+    La misma referencia se repite en muchas filas (un color por fila), así que
+    normalizar solo los valores únicos es mucho más rápido.
+    """
+    s = serie.astype(str)
+    mapa = {valor: normalizar_texto(valor) for valor in s.unique()}
+    return s.map(mapa)
 
 
 def _preparar_pedidos(df: pd.DataFrame) -> pd.DataFrame:
@@ -101,6 +141,56 @@ def _preparar_inventario(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+# DESCRIPCION: "SATIN MARBELLA - 200 ROJO" -> ref "SATIN MARBELLA", color "200 ROJO".
+# Se corta en el primer " - " que va seguido de un número (el código del color).
+_RE_DESCRIPCION = r"^(?P<ref>.+?)\s+-\s+(?P<color>\d.*)$"
+
+
+def _preparar_catalogo(df: pd.DataFrame) -> pd.DataFrame:
+    """Convierte la pestaña 'Listado precios' (CODIGO | DESCRIPCION | PRECIO...) en el
+    mismo formato que usa el resto del bot: _ref, _ref_norm, _color y Artículo."""
+    cols = {normalizar_texto(c): c for c in df.columns}
+    col_cod = next((cols[k] for k in ("CODIGO", "ARTICULO", "CODIGO ARTICULO", "ITEM") if k in cols), None)
+    col_desc = next((c for k, c in cols.items() if k.startswith("DESCRIP")), None)
+    if not col_cod or not col_desc:
+        raise ValueError(
+            "En la pestaña del catálogo no encontré las columnas CODIGO y DESCRIPCION "
+            f"(columnas leídas: {', '.join(map(str, df.columns))})"
+        )
+
+    codigo = df[col_cod].astype(str).str.strip()
+    desc = df[col_desc].astype(str).str.strip()
+    sufijo = codigo.str.split("-", n=1).str[1].fillna("").str.strip()  # 0018-200 -> 200
+
+    partes = desc.str.extract(_RE_DESCRIPCION)
+    ref = partes["ref"].fillna(desc)  # si no cumple el formato: toda la descripción
+    color = partes["color"].fillna(sufijo)  # si no cumple el formato: el sufijo del código
+
+    out = pd.DataFrame(
+        {
+            "Artículo": codigo,
+            "Descripción": desc,
+            "_ref": ref.str.strip().str.upper(),
+            "_color": color.str.strip(),
+            "_suf": sufijo,
+        }
+    )
+    out = out[(out["Artículo"] != "") & (out["_ref"] != "")].reset_index(drop=True)
+    out["_ref_norm"] = _normalizar_serie(out["_ref"])
+
+    # Aviso en el log si el número del color en la descripción no coincide con el del código
+    num_desc = out["_color"].str.extract(r"^(\d+)")[0].str.lstrip("0")
+    num_cod = out["_suf"].str.extract(r"^(\d+)")[0].str.lstrip("0")
+    distintos = num_desc.notna() & num_cod.notna() & (num_desc != num_cod)
+    if distintos.any():
+        ejemplos = out.loc[distintos, ["Artículo", "Descripción"]].head(5).values.tolist()
+        logger.warning(
+            f"⚠️ catálogo: {int(distintos.sum())} filas donde el color de la DESCRIPCION no "
+            f"coincide con el CODIGO. Ejemplos: {ejemplos}"
+        )
+    return out.drop(columns=["_suf"])
+
+
 # --------------------------------------------------------------------------- #
 # Fuente con caché "stale-while-revalidate"
 # --------------------------------------------------------------------------- #
@@ -112,6 +202,7 @@ class FuenteCSV:
         self.df = None
         self.timestamp = 0.0
         self.ultimo_error = None
+        self._huella = None  # huella del último archivo procesado (para saltar si no cambió)
         self._lock = None  # se crea perezosamente dentro del event loop
 
     def _candado(self) -> asyncio.Lock:
@@ -119,13 +210,28 @@ class FuenteCSV:
             self._lock = asyncio.Lock()
         return self._lock
 
-    def _descargar(self) -> pd.DataFrame:
+    def _descargar(self):
+        """Descarga la hoja. Devuelve None si el archivo es idéntico al anterior."""
         t0 = time.time()
         r = _session.get(self.url, timeout=(5, 25))
         r.raise_for_status()
+
+        # Si la hoja no está compartida, Google devuelve una página HTML de login
+        if r.content.lstrip()[:1] == b"<":
+            raise RuntimeError(
+                f"La hoja de {self.nombre} no es accesible (revisa que esté compartida "
+                "con 'cualquier persona con el enlace' y que la pestaña exista)."
+            )
+
+        huella = hashlib.md5(r.content, usedforsecurity=False).hexdigest()
+        if self.df is not None and huella == self._huella:
+            logger.info(f"♻️ {self.nombre}: sin cambios ({time.time() - t0:.1f}s)")
+            return None  # no se vuelve a leer ni a preparar
+
         df = pd.read_csv(io.BytesIO(r.content), dtype=str, keep_default_na=False, encoding="utf-8-sig")
         df.columns = df.columns.str.strip()
         df = self._preparar(df)
+        self._huella = huella
         logger.info(f"📥 {self.nombre}: {len(df)} filas descargadas en {time.time() - t0:.1f}s")
         return df
 
@@ -136,7 +242,8 @@ class FuenteCSV:
             self.ultimo_error = f"{type(e).__name__}: {e}"
             logger.error(f"⚠️ Error cargando {self.nombre}: {self.ultimo_error}")
             return False  # si ya había datos, se conservan los anteriores
-        self.df = df
+        if df is not None:  # None = la hoja no cambió: se conservan los datos actuales
+            self.df = df
         self.timestamp = time.time()
         self.ultimo_error = None
         return True
@@ -158,10 +265,12 @@ class FuenteCSV:
     def invalidar(self) -> None:
         self.df = None
         self.timestamp = 0.0
+        self._huella = None
 
 
 pedidos = FuenteCSV("pedidos", URL_PEDIDOS, _preparar_pedidos)
 inventario = FuenteCSV("inventario", URL_INVENTARIO, _preparar_inventario)
+catalogo = FuenteCSV("catálogo", URL_CATALOGO, _preparar_catalogo)  # solo para etiquetas
 
 
 # --------------------------------------------------------------------------- #
@@ -178,12 +287,13 @@ def _lanzar(coro) -> asyncio.Task:
 
 
 async def refrescar_todo() -> None:
-    await asyncio.gather(pedidos.refrescar(), inventario.refrescar())
+    await asyncio.gather(pedidos.refrescar(), inventario.refrescar(), catalogo.refrescar())
 
 
 def invalidar_todo() -> None:
     pedidos.invalidar()
     inventario.invalidar()
+    catalogo.invalidar()
 
 
 async def _bucle_refresco() -> None:
@@ -202,6 +312,7 @@ _tarea_bucle = None
 async def iniciar(application) -> None:
     """Usar como post_init de la aplicación."""
     global _tarea_bucle
+    logger.info(f"Catálogo de etiquetas: pestaña '{PESTANA_CATALOGO}'")
     _tarea_bucle = _lanzar(_bucle_refresco())
 
 
@@ -212,7 +323,7 @@ async def detener(application) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Consultas de inventario (comunes a SAP y vendedor)
+# Consultas de inventario (comunes a SAP, vendedor y etiquetas)
 # --------------------------------------------------------------------------- #
 def buscar_referencias(df: pd.DataFrame, termino: str) -> list:
     """Referencias que contienen todas las palabras del término, sin importar
