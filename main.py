@@ -202,6 +202,15 @@ CONVERSATION_TIMEOUT = int(os.environ.get("CONVERSATION_TIMEOUT", "1800"))
 # sin tocar el código. Verifica el nombre exacto con ai_client.models.list().
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
 
+# Segundos máximos de espera por una respuesta de Gemini (si Google está saturado,
+# la librería reintenta durante mucho tiempo). Se cambia con la variable GEMINI_TIMEOUT.
+GEMINI_TIMEOUT = float(os.environ.get("GEMINI_TIMEOUT", "25"))
+
+# Cuántos mensajes puede atender el bot a la vez. Por defecto el bot atiende uno por
+# uno, y una espera lenta (Gemini, impresora, Google Sheets) hace esperar a todos los
+# operarios. Con la variable UPDATES_CONCURRENTES=0 se vuelve al comportamiento anterior.
+UPDATES_CONCURRENTES = int(os.environ.get("UPDATES_CONCURRENTES", "8"))
+
 # --- CONTROL DE ACCESO POR MÓDULO ---
 iniciar_busqueda_sap = requiere_acceso("inventario")(iniciar_busqueda_sap)
 iniciar_pg = requiere_acceso("PG")(iniciar_pg)
@@ -315,6 +324,12 @@ def get_or_create_chat(user_id):
     return user_chats[user_id]
 
 
+MENSAJE_GEMINI_OCUPADO = (
+    "⏳ El asistente está ocupado en este momento. Intenta de nuevo en un momento "
+    "o escribe /i para ir al inicio."
+)
+
+
 @requiere_acceso("inventario")
 async def handle_gemini_agent(update, context):
     """Maneja las conversaciones y ejecución automática de herramientas (Function Calling)."""
@@ -327,7 +342,10 @@ async def handle_gemini_agent(update, context):
 
     try:
         chat_session = get_or_create_chat(user_id)
-        response = await asyncio.to_thread(chat_session.send_message, user_text)
+        response = await asyncio.wait_for(
+            asyncio.to_thread(chat_session.send_message, user_text),
+            timeout=GEMINI_TIMEOUT,
+        )
 
         if response.text:
             await update.message.reply_text(response.text, parse_mode="HTML")
@@ -335,6 +353,10 @@ async def handle_gemini_agent(update, context):
             await update.message.reply_text(
                 "Consulta procesada, pero no se generó respuesta.", parse_mode="HTML"
             )
+
+    except asyncio.TimeoutError:
+        logger.warning(f"Gemini no respondió en {GEMINI_TIMEOUT:.0f}s (usuario {user_id})")
+        await update.message.reply_text(MENSAJE_GEMINI_OCUPADO)
 
     except Exception as e:
         logger.error(f"DETALLE DEL ERROR GEMINI: {e}", exc_info=True)
@@ -356,21 +378,28 @@ async def handle_voice_message(update, context):
 
         chat_session = get_or_create_chat(user_id)
 
-        response = await asyncio.to_thread(
-            chat_session.send_message,
-            [
-                types.Part.from_bytes(
-                    data=bytes(audio_bytes), mime_type="audio/ogg"
-                ),
-                (
-                    "Escucha esta nota de voz. Si el usuario está pidiendo consultar"
-                    " el inventario o stock de una referencia o tela, utiliza la"
-                    " herramienta de inventario para darle el reporte exacto."
-                ),
-            ],
+        response = await asyncio.wait_for(
+            asyncio.to_thread(
+                chat_session.send_message,
+                [
+                    types.Part.from_bytes(
+                        data=bytes(audio_bytes), mime_type="audio/ogg"
+                    ),
+                    (
+                        "Escucha esta nota de voz. Si el usuario está pidiendo consultar"
+                        " el inventario o stock de una referencia o tela, utiliza la"
+                        " herramienta de inventario para darle el reporte exacto."
+                    ),
+                ],
+            ),
+            timeout=GEMINI_TIMEOUT,
         )
 
         await update.message.reply_text(response.text, parse_mode="HTML")
+
+    except asyncio.TimeoutError:
+        logger.warning(f"Gemini no respondió la nota de voz en {GEMINI_TIMEOUT:.0f}s (usuario {user_id})")
+        await update.message.reply_text(MENSAJE_GEMINI_OCUPADO)
 
     except Exception as e:
         logger.error(f"Error procesando nota de voz en Gemini: {e}")
@@ -460,7 +489,7 @@ def main() -> None:
 
     logger.info("Iniciando el bot de Telegram...")
 
-    application = (
+    constructor = (
         ApplicationBuilder()
         .token(settings.telegram_bot_token)
         .connect_timeout(10)
@@ -470,8 +499,12 @@ def main() -> None:
         .get_updates_read_timeout(30)
         .post_init(_post_init)
         .post_shutdown(_post_shutdown)
-        .build()
     )
+    if UPDATES_CONCURRENTES > 1:
+        # Atiende varios mensajes a la vez: una espera lenta ya no congela a los demás
+        constructor = constructor.concurrent_updates(UPDATES_CONCURRENTES)
+        logger.info(f"Atención simultánea activada: hasta {UPDATES_CONCURRENTES} mensajes a la vez")
+    application = constructor.build()
 
     # Registra el ID de cada mensaje/botón (grupo -1 = corre primero
     # y no interfiere con las conversaciones)
