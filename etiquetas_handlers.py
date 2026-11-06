@@ -1,4 +1,7 @@
-"""Flujo guiado /etiqueta: ID operario (+ PIN opcional) -> impresora -> referencia -> color -> cantidad (metros.centímetros) -> nº de etiquetas."""
+"""Flujo guiado /etiqueta: ID operario (+ PIN opcional) -> impresora -> referencia -> color -> cantidad (metros.centímetros) -> nº de etiquetas.
+
+Referencias, colores e item salen del catálogo (pestaña "Listado precios"), ver datos.catalogo.
+"""
 
 import asyncio
 import csv
@@ -297,7 +300,7 @@ def _formato_color(color: str) -> str:
 
 
 def _item_de(df, ref: str, color: str) -> str:
-    """Código de artículo (item) de la referencia, tomado del inventario."""
+    """Código de artículo (item) de la referencia, tomado del catálogo."""
     if "Artículo" not in df.columns:
         return ""
     filas = df[(df["_ref"] == ref) & (df["_color"] == color)]
@@ -509,7 +512,7 @@ async def recibir_texto_ref_et(update: Update, context: ContextTypes.DEFAULT_TYP
         return await _validar_id_operario(update, context)
 
     termino = update.message.text.strip().upper()
-    df = await datos.inventario.obtener()
+    df = await datos.catalogo.obtener()
     if df is None:
         await update.message.reply_text(
             "⚠️ Inventario no disponible, intenta en un momento.",
@@ -547,7 +550,7 @@ async def seleccionar_referencia_et(update: Update, context: ContextTypes.DEFAUL
     if idx >= len(refs):
         return ESPERANDO_REF_ET
 
-    df = await datos.inventario.obtener()
+    df = await datos.catalogo.obtener()
     if df is None:
         return ESPERANDO_REF_ET
     return await _mostrar_colores(update, context, refs[idx], df, refs=refs)
@@ -568,7 +571,7 @@ async def seleccionar_color_et(update: Update, context: ContextTypes.DEFAULT_TYP
     if "ref" not in et or idx >= len(colores):
         return ESPERANDO_REF_ET
 
-    df = await datos.inventario.obtener()
+    df = await datos.catalogo.obtener()
     if df is None:
         return ESPERANDO_REF_ET
 
@@ -702,7 +705,7 @@ async def manejar_otra_etiqueta(update: Update, context: ContextTypes.DEFAULT_TY
             )
             return ESPERANDO_REF_ET
 
-        df = await datos.inventario.obtener()
+        df = await datos.catalogo.obtener()
         if df is None:
             await q.message.reply_text("⚠️ Inventario no disponible, intenta de nuevo en un momento.")
             return PREGUNTANDO_OTRA_ET
